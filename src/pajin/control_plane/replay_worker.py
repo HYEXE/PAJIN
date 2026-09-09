@@ -44,6 +44,11 @@ from pajin.control_plane.worker_lifecycle import (
     encode_status,
     validate_lifecycle_timing,
 )
+from pajin.control_plane.worker_stop_reporting import (
+    StopReportingStatus,
+    WorkerStopReporter,
+    publish_worker_stop,
+)
 from pajin.domain.models import StrictModel
 from pajin.domain.validation import (
     ConfirmationBasis,
@@ -155,6 +160,7 @@ class ReplayWorkerStatus(StrictModel):
     last_contact_at: datetime
     last_error: str | None = Field(default=None, max_length=500)
     last_cancellation: ExecutionCancellationSnapshot | None = None
+    stop_reporting_status: StopReportingStatus = "not-requested"
 
 
 class ReplayWorkerDaemon:
@@ -166,10 +172,13 @@ class ReplayWorkerDaemon:
         client: ReplayWorkerControlPlanePort,
         executor: ReplayClaimExecutor,
         config: ReplayWorkerConfig,
+        stop_reporter: WorkerStopReporter | None = None,
     ) -> None:
         if executor.profile != config.executor_profile:
             raise ValueError("Replay executor profile differs from daemon configuration")
         self._client = client
+        self._stop_reporter = stop_reporter
+        self._stop_reporting_status: StopReportingStatus = "not-requested"
         self._executor = executor
         self._config = config
         self._handled_replays = 0
@@ -340,7 +349,14 @@ class ReplayWorkerDaemon:
             self._status("cancelled", error=cancellation.snapshot().reason)
             raise
         finally:
-            await self._lifecycle.drain_claim_tasks((execution, finalization, heartbeat))
+            try:
+                await self._lifecycle.drain_claim_tasks((execution, finalization, heartbeat))
+            finally:
+                self._stop_reporting_status = await publish_worker_stop(
+                    self._stop_reporter, cancellation,
+                    job_id=claim.job.job_id, worker_id=self._config.worker_id,
+                    lease_token=claim.lease_token, replay=True,
+                )
 
     async def _heartbeat_loop(
         self,
@@ -817,6 +833,7 @@ class ReplayWorkerDaemon:
             last_contact_at=datetime.now(UTC),
             last_error=error[:500] if error else None,
             last_cancellation=self._last_cancellation,
+            stop_reporting_status=self._stop_reporting_status,
         )
         payload = encode_status(status)
         self._write_status(path, payload)

@@ -22,6 +22,7 @@ from pajin.control_plane.capability_deployment import (
 )
 from pajin.control_plane.executors import CampaignJobExecutor, PermanentExecutionError
 from pajin.control_plane.models import JobState, JobView
+from pajin.control_plane.run_budgets import RunBudgetRegistry
 from pajin.domain.models import CampaignManifest, ToolRiskTier
 from pajin.graph import ActionApprovalEnvelope
 from pajin.runtime.store import load_verified_run_events
@@ -223,9 +224,11 @@ class _CancellingSimulatedWorker(SimulatedWorkerBackend):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("durable_budget", [False, True])
 async def test_control_plane_profile_executes_t0_once_and_authenticates_outcome(
     tmp_path: Path,
     low_risk_context: _PermitContext,
+    durable_budget: bool,
 ) -> None:
     context = low_risk_context
     runtime = _runtime(
@@ -238,6 +241,7 @@ async def test_control_plane_profile_executes_t0_once_and_authenticates_outcome(
         output_root=tmp_path / "unused-local-runs",
         worker=worker,
         capability_deployment=runtime,
+        budget_registry=RunBudgetRegistry(tmp_path / "budgets") if durable_budget else None,
     )
     job = _job(_job_input(context))
 

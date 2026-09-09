@@ -121,6 +121,7 @@ def _scenario(
     include_second: bool = False,
     stale_after_result: bool = False,
     result_bytes: bytes = RESULT_BYTES,
+    durable_store=None,
 ) -> tuple[
     TerminalResultHandoffAuthority,
     TerminalResultHandoff,
@@ -273,9 +274,15 @@ def _scenario(
         creatorDigest=genesis.creator_digest,
         projection=projection,
     )
-    store = InMemoryGraphSnapshotStore()
+    store = (
+        durable_store.snapshot_store if durable_store is not None else InMemoryGraphSnapshotStore()
+    )
     writer = store.claim_writer(genesis.creator_id, genesis.creator_digest)
     store.append(genesis, writer=writer)
+    if durable_store is not None:
+        from recovery_graph_support import publish_urgent_projection
+
+        fact_graph = publish_urgent_projection(durable_store, fact_graph)
     stored_fact = store.append(fact_graph, writer=writer)
     historical = create_collaboration_snapshot(
         graph_snapshot_ref(stored_fact), graph_snapshot_store=store
@@ -303,6 +310,8 @@ def _scenario(
         graph_snapshot_store=store,
         admitted_at=NOW + timedelta(seconds=1),
     )
+    if durable_store is not None:
+        current_graph = publish_urgent_projection(durable_store, current_graph)
     stored_current = store.append(current_graph, writer=writer)
     reference = create_shared_artifact_ref(evidence, source_run_path=run.path)
     binding = SharedArtifactSource(

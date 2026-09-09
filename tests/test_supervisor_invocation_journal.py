@@ -9,6 +9,9 @@ from pathlib import Path
 import pytest
 
 from pajin.graph.projection import GraphSnapshotReason
+from pajin.runtime.budget_state import BUDGET_SCHEMA_SQL, BUDGET_TABLE, BudgetPersistenceError
+from pajin.runtime.control import BudgetController
+from pajin.supervision import invocation_journal as journal_module
 from pajin.supervision.checkpoint_scheduler import (
     SupervisorCheckpointSchedule,
     SupervisorCheckpointSchedulePublication,
@@ -154,9 +157,21 @@ def _request_context(publication: SupervisorCheckpointSchedulePublication):
     )
 
 
-def test_claim_is_exact_idempotent_and_survives_reopen(tmp_path: Path) -> None:
+@pytest.mark.parametrize("run_bound", [False, True])
+def test_claim_is_exact_idempotent_and_survives_reopen(tmp_path: Path, run_bound: bool) -> None:
+    from pajin.supervision.run_binding import SupervisorRunBinding
+
     publication = _publication(tmp_path)
     journal = _journal(tmp_path)
+    binding = SupervisorRunBinding(
+        controlPlaneRunId="isolated-supervisor-run", campaignDigest=SHA_A,
+        inputDigest=SHA_B, budgetMode="campaign-and-supervisor",
+    ) if run_bound else None
+    if binding is not None:
+        journal = SupervisorInvocationJournal(
+            journal.path, clock=lambda: NOW, run_id_factory=lambda: PROVIDER_RUN_ID,
+            run_binding=binding,
+        )
 
     first = journal.claim(publication)
     second = journal.claim(publication)
@@ -164,6 +179,7 @@ def test_claim_is_exact_idempotent_and_survives_reopen(tmp_path: Path) -> None:
         journal.path,
         clock=lambda: NOW,
         run_id_factory=lambda: "run_20260805T010205Z_cccccccc",
+        run_binding=binding,
     )
 
     assert second == first
@@ -336,3 +352,84 @@ def test_immutable_intent_and_append_only_events_are_database_enforced(
                 "DELETE FROM supervisor_invocation_events WHERE intent_id = ?",
                 (entry.intent.intent_id,),
             )
+
+
+def _remove_budget_schema(path: Path, *, legacy: bool) -> None:
+    """Build an exact pre-budget fixture or an incomplete current schema."""
+
+    with sqlite3.connect(path) as connection:
+        for kind, name in BUDGET_SCHEMA_SQL:
+            if kind == "trigger":
+                connection.execute(f"DROP TRIGGER {name}")
+        connection.execute(f"DROP TABLE {BUDGET_TABLE}")
+        if legacy:
+            connection.execute("DROP TRIGGER supervisor_invocation_metadata_no_update")
+            connection.executemany(
+                "UPDATE supervisor_invocation_metadata SET value=? WHERE key=?",
+                [("1", "schema_version"), (journal_module._V1_SCHEMA_DIGEST, "schema_digest")],
+            )
+            connection.execute("PRAGMA user_version=1")
+            connection.execute(journal_module._METADATA_NO_UPDATE_SQL)
+
+
+@pytest.mark.parametrize("has_history", [False, True])
+def test_exact_legacy_journal_migration_preserves_history_without_inventing_usage(
+    tmp_path: Path, has_history: bool
+) -> None:
+    from pajin.domain.models import Budgets
+
+    journal = _journal(tmp_path)
+    publication = _publication(tmp_path)
+    entry = journal.claim(publication) if has_history else None
+    _remove_budget_schema(journal.path, legacy=True)
+
+    reopened = _journal(tmp_path)
+    campaign, dedicated = BudgetController(Budgets()), BudgetController(Budgets())
+    arguments = dict(
+        campaign_digest=publication.schedule.campaign_digest,
+        policy_digest=publication.schedule.dedicated_budget_policy_digest,
+        campaign=campaign,
+        dedicated=dedicated,
+    )
+    if has_history:
+        assert entry is not None
+        assert reopened.inspect(entry.intent.intent_id) == entry
+        assert reopened.checkpoint_entry(publication.schedule.checkpoint_key) == entry
+        with pytest.raises(BudgetPersistenceError, match="no budget checkpoint"):
+            reopened.bind_budgets(**arguments)
+        with pytest.raises(BudgetPersistenceError):
+            campaign.reserve_tool_usage()
+    else:
+        reopened.bind_budgets(**arguments)
+        campaign.reserve_tool_usage()
+        assert campaign.tool_calls == 1
+    with sqlite3.connect(journal.path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        count = connection.execute(f"SELECT count(*) FROM {BUDGET_TABLE}").fetchone()[0]
+    assert count == (0 if has_history else 3)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_missing_current_budget_table_and_corrupt_legacy_history_are_not_repaired(
+    tmp_path: Path, legacy: bool
+) -> None:
+    journal = _journal(tmp_path)
+    entry = journal.claim(_publication(tmp_path))
+    _remove_budget_schema(journal.path, legacy=legacy)
+    if legacy:
+        with sqlite3.connect(journal.path) as connection:
+            connection.execute(
+                "UPDATE supervisor_invocation_intents SET state_digest=? WHERE intent_id=?",
+                ("0" * 64, entry.intent.intent_id),
+            )
+
+    with pytest.raises(SupervisorInvocationJournalError):
+        _journal(tmp_path)
+
+    with sqlite3.connect(journal.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE name=?", (BUDGET_TABLE,)
+            ).fetchone()
+            is None
+        )

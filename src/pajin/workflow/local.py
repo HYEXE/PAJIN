@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -32,6 +33,7 @@ from pajin.domain.validation import (
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
 from pajin.reporting.markdown import render_markdown_report
+from pajin.runtime.budgeted_execution import budgeted_tool_call
 from pajin.runtime.control import BudgetController, BudgetExceeded, ExecutionCancellationContext
 from pajin.runtime.error_safety import (
     audit_safe_exception_diagnostic,
@@ -270,15 +272,12 @@ class LocalCampaignRunner:
             if not ledger.can_consume(grant.grant_id):
                 raise CapabilityError("local capability has no remaining authorized call")
             used_calls = grant.max_calls - ledger.record(grant.grant_id).remaining_calls
-            outcome = await gateway.execute(
-                campaign,
-                grant,
-                step.request,
-                used_calls=used_calls,
+            outcome = await budgeted_tool_call(
+                budget,
+                partial(gateway.execute, campaign, grant, step.request, used_calls=used_calls),
             )
             if outcome.executed:
                 ledger.consume(grant.grant_id)
-                budget.record_tool_call()
             results.append(outcome.result)
         failed_tool_calls = sum(not result.success for result in results)
         if failed_tool_calls:

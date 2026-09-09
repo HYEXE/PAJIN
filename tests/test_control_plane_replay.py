@@ -133,6 +133,7 @@ from pajin.control_plane.replay_worker import (
     ReplayWorkerDaemon,
     ReplayWorkerStatus,
 )
+from pajin.control_plane.run_budgets import RunBudgetRegistry
 from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.control_plane.service import (
     ControlPlaneService,
@@ -976,6 +977,7 @@ def test_public_api_rejects_replay_job_injection_and_exposes_bounded_replay_rout
             "/v1/worker/replay/jobs/{job_id}/artifact-upload",
             "/v1/worker/replay/jobs/{job_id}/artifact-upload/parts",
             "/v1/worker/replay/jobs/{job_id}/finalize",
+            "/v1/worker/replay/jobs/{job_id}/stop-observations",
         }
 
         with app.state.repository.transaction() as session:
@@ -4733,8 +4735,10 @@ def test_ordinary_campaign_lease_expiry_still_requeues_the_same_job(tmp_path: Pa
         repository.close()
 
 
+@pytest.mark.parametrize("durable_budget", [False, True])
 def test_kisa_exact_executor_uses_durable_permits_and_server_finalizes_one_item(
     tmp_path: Path,
+    durable_budget: bool,
 ) -> None:
     database_path = tmp_path / "kisa-exact-execution.db"
     repository, service = _service(database_path)
@@ -4749,13 +4753,21 @@ def test_kisa_exact_executor_uses_durable_permits_and_server_finalizes_one_item(
         )
         claim = _claim(service, actor=actor)
         staging_root, _artifact_root = _artifact_roots(database_path)
+        budget_registry = RunBudgetRegistry(tmp_path / "run-budgets") if durable_budget else None
         executor = KISAExactReplayExecutor(
             client=_ReplayServicePort(service, actor=actor),
             staging_root=staging_root,
             worker=_trusted_replay_backend(),
+            budget_registry=budget_registry,
         )
 
         finalize_request = asyncio.run(executor.execute(claim))
+        if budget_registry is not None:
+            recovered = RunBudgetRegistry(tmp_path / "run-budgets").bind(
+                claim.job, claim.execution_context.campaign,
+                original_input=claim.execution_context, resuming=True,
+            )
+            assert recovered.tool_calls == claim.compilation.spec.repetitions
         assert finalize_request == ReplayFinalizeRequest(
             executor_profile=EXECUTOR_PROFILE,
             lease_token=claim.lease_token,
@@ -6360,8 +6372,14 @@ async def test_replay_worker_daemon_forced_cancellation_seals_quiescence(
             staging_root=staging_root,
             worker=backend,
         )
+        class StopReporter:
+            async def observe_worker_stop(self, job_id, request, *, replay=False):
+                assert replay is True
+                return service.stop_observations.record(job_id, request, actor=actor, replay=True)
+
         daemon = ReplayWorkerDaemon(
             client=port,
+            stop_reporter=StopReporter(),
             executor=executor,
             config=ReplayWorkerConfig(
                 worker_id=actor,
@@ -6403,6 +6421,16 @@ async def test_replay_worker_daemon_forced_cancellation_seals_quiescence(
         assert status.last_cancellation is not None
         assert status.last_cancellation.kind.value == "run-cancelled"
         assert status.last_cancellation.forced_at is not None
+        assert status.stop_reporting_status == "recorded"
+        events = service.list_events(claim.job.run_id)
+        stopped = [event for event in events if event.event_type == "worker.stop-observed"]
+        assert len(stopped) == 1
+        # Replay seals its child Run's cleanup separately; the daemon reports only
+        # its own drained stack and must not promote child evidence to host cleanup.
+        assert stopped[0].payload["report"]["cleanupStatus"] == "executor-drained"
+        assert stopped[0].payload["report"]["executorDrainedAt"] is not None
+        assert stopped[0].payload["report"]["cleanupCompletedAt"] is None
+        assert stopped[0].payload["report"]["resourceCleanupVerified"] is False
     finally:
         repository.close()
 

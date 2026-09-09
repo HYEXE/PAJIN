@@ -49,6 +49,11 @@ from pajin.control_plane.worker_lifecycle import (
     encode_status,
     validate_lifecycle_timing,
 )
+from pajin.control_plane.worker_stop_reporting import (
+    StopReportingStatus,
+    WorkerStopReporter,
+    publish_worker_stop,
+)
 from pajin.domain.models import StrictModel
 from pajin.runtime.control import (
     CancellationKind,
@@ -120,6 +125,7 @@ class WorkerDaemonStatus(StrictModel):
     last_contact_at: datetime
     last_error: str | None = Field(default=None, max_length=500)
     last_cancellation: ExecutionCancellationSnapshot | None = None
+    stop_reporting_status: StopReportingStatus = "not-requested"
 
 
 class WorkerDaemon:
@@ -131,6 +137,7 @@ class WorkerDaemon:
         client: WorkerControlPlanePort,
         executors: ExecutorRegistry,
         config: WorkerDaemonConfig,
+        stop_reporter: WorkerStopReporter | None = None,
     ) -> None:
         unsupported = set(config.kinds) - set(executors.kinds)
         if unsupported:
@@ -138,6 +145,8 @@ class WorkerDaemon:
                 f"Worker configured with unregistered Job kinds: {sorted(unsupported)}"
             )
         self._client = client
+        self._stop_reporter = stop_reporter
+        self._stop_reporting_status: StopReportingStatus = "not-requested"
         self._executors = executors
         self._config = config
         self._handled_jobs = 0
@@ -293,7 +302,14 @@ class WorkerDaemon:
             self._status("cancelled", error=cancellation.snapshot().reason)
             raise
         finally:
-            await self._lifecycle.drain_claim_tasks((execution, finalize, heartbeat))
+            try:
+                await self._lifecycle.drain_claim_tasks((execution, finalize, heartbeat))
+            finally:
+                self._stop_reporting_status = await publish_worker_stop(
+                    self._stop_reporter, cancellation,
+                    job_id=claimed.job.job_id, worker_id=self._config.worker_id,
+                    lease_token=claimed.lease_token,
+                )
 
     async def _execution_action(
         self,
@@ -576,6 +592,7 @@ class WorkerDaemon:
             last_contact_at=datetime.now(UTC),
             last_error=error[:500] if error else None,
             last_cancellation=self._last_cancellation,
+            stop_reporting_status=self._stop_reporting_status,
         )
         payload = encode_status(status)
         self._write_status(path, payload)

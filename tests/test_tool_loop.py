@@ -15,7 +15,7 @@ from pajin.domain.models import ToolRequest, ToolResult, ToolRiskTier
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import OpenAICompatibleChatTool, ProviderRegistration
 from pajin.providers.session import PolicyBoundProviderPort
-from pajin.runtime.control import CancellationKind, ExecutionCancellationContext
+from pajin.runtime.control import BudgetController, CancellationKind, ExecutionCancellationContext
 from pajin.runtime.secrets import SecretBroker, SecretMaterial
 from pajin.runtime.store import RunIntegrityError, RunStore, verify_run_integrity
 from pajin.runtime.worker import (
@@ -712,6 +712,48 @@ async def test_tool_loop_resume_uses_sealed_campaign_after_digest_check(
     assert outcome.tool_results[0].error == ("policy denied: target matches an explicit deny rule")
     sealed = json.loads((outcome.run_path / "campaign.json").read_text(encoding="utf-8"))
     assert _binding().target in sealed["spec"]["scope"]["deny"]
+
+
+@pytest.mark.parametrize("uncertain_extra_call", [False, True])
+def test_resume_shared_budget_cannot_erase_usage_or_consume_claim_on_rejection(
+    tmp_path: Path, uncertain_extra_call: bool,
+) -> None:
+    worker = LoopWorker()
+    runner, _ = _runner(tmp_path, worker, high_risk=True)
+    campaign = _campaign(high_risk=True)
+    campaign.spec.budgets.max_tool_calls += 1
+    budget = BudgetController(campaign.spec.budgets)
+    waiting = asyncio.run(runner.run(campaign, prompt="Request the T3 probe.", budget=budget))
+    assert waiting.pending_call is not None
+    assert budget.model_calls > 0
+    source = waiting.checkpoint_path.read_bytes()
+    before = set(waiting.run_path.parent.iterdir())
+    now = datetime.now(UTC)
+    approval = ToolLoopApproval(
+        call_fingerprint=waiting.pending_call.fingerprint,
+        tool_id=waiting.pending_call.tool_id,
+        target=waiting.pending_call.target,
+        approved_by="security-owner",
+        approved_at=now - timedelta(seconds=1),
+        expires_at=now + timedelta(minutes=5),
+    )
+    with pytest.raises(ValueError, match="omits consumption"):
+        asyncio.run(runner.resume(
+            campaign, checkpoint_path=waiting.checkpoint_path, approvals=[approval],
+            budget=BudgetController(campaign.spec.budgets),
+        ))
+    assert set(waiting.run_path.parent.iterdir()) == before
+    assert waiting.checkpoint_path.read_bytes() == source
+    assert worker.tool_calls == 0
+    if uncertain_extra_call:
+        budget.record_tool_call()
+    resumed = asyncio.run(runner.resume(
+        campaign, checkpoint_path=waiting.checkpoint_path, approvals=[approval], budget=budget,
+    ))
+    assert resumed.status is ToolLoopStatus.COMPLETED
+    assert worker.tool_calls == 1
+    assert budget.tool_calls == 3 + int(uncertain_extra_call)
+    assert waiting.checkpoint_path.read_bytes() == source
 
 
 def test_resume_accepts_semantically_exact_control_plane_checkpoint_copy(

@@ -1239,6 +1239,11 @@ class RunStore:
     """Store and append integrity extensions under one isolated Run directory."""
 
     def __init__(self, run_id: str, path: Path) -> None:
+        from pajin.runtime.host_recovery import prepare_store_enrollment
+
+        enrollment = prepare_store_enrollment(
+            path.absolute(), kind="run-store", run_id=run_id,
+        )
         self.run_id = run_id
         self.path = path.resolve()
         self.evidence_path = self.path / "evidence"
@@ -1248,6 +1253,8 @@ class RunStore:
         self._event_head_hash: str | None = None
         self._campaign_terminal_event: str | None = None
         self._path_identities: dict[str, str] | None = None
+        if enrollment is not None:
+            enrollment.complete()
 
     @classmethod
     def create(
@@ -1281,11 +1288,16 @@ class RunStore:
         if re.fullmatch(_GENERATED_RUN_ID_PATTERN, run_id) is None:
             raise ValueError("provided RunStore identifier is not a generated Run ID")
         path = campaign_path / run_id
+        from pajin.runtime.host_recovery import prepare_store_enrollment
+
+        enrollment = prepare_store_enrollment(path, kind="run-store", run_id=run_id)
         _ensure_private_directory(path, exist_ok=False)
         evidence_path = path / "evidence"
         _ensure_private_directory(evidence_path, exist_ok=False)
         _fsync_directory(path)
         _fsync_directory(campaign_path)
+        if enrollment is not None:
+            enrollment.complete()
         return cls(run_id=run_id, path=path)
 
     @staticmethod

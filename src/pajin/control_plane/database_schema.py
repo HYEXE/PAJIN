@@ -39,7 +39,8 @@ REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION = 12
 REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION = 13
 TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION = 14
 MEASURED_REVIEW_SCHEMA_VERSION = 15
-CURRENT_SCHEMA_VERSION = MEASURED_REVIEW_SCHEMA_VERSION
+CHECKPOINT_KEY_IDENTITY_SCHEMA_VERSION = 16
+CURRENT_SCHEMA_VERSION = CHECKPOINT_KEY_IDENTITY_SCHEMA_VERSION
 MAX_JOB_LEASE_LIFETIME_SECONDS = 24 * 60 * 60
 _MIGRATION_BACKFILL_BATCH_SIZE = 500
 _JSON_AUTHORITY_BATCH_SIZE = 8
@@ -2355,3 +2356,43 @@ class MeasuredReviewRevisionRecord(Base):
     request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     record_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+V15_CONTROL_PLANE_TABLES = CURRENT_CONTROL_PLANE_TABLES
+
+
+def _build_v15_metadata() -> MetaData:
+    """Freeze schema v15 before checkpoint key identities are added."""
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V15_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V15_METADATA = _build_v15_metadata()
+CHECKPOINT_KEY_IDENTITY_TABLES = frozenset({"cp_checkpoint_key_identities"})
+CURRENT_CONTROL_PLANE_TABLES = frozenset(
+    {*V15_CONTROL_PLANE_TABLES, *CHECKPOINT_KEY_IDENTITY_TABLES}
+)
+
+
+class CheckpointKeyIdentityRecord(Base):
+    """Permanent key-ID bindings; these commitments cannot sign checkpoints."""
+
+    __tablename__ = "cp_checkpoint_key_identities"
+    __table_args__ = (
+        CheckConstraint(
+            "length(key_id) > 0 AND length(key_id) <= 100",
+            name="ck_cp_checkpoint_key_identity_id",
+        ),
+        CheckConstraint(
+            _lower_hex_check("key_commitment", 64),
+            name="ck_cp_checkpoint_key_identity_commitment",
+        ),
+    )
+
+    key_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    key_commitment: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

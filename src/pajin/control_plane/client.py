@@ -54,6 +54,10 @@ from pajin.control_plane.pentest_workflow_coordination import (
     PentestWorkflowCoordinationView,
 )
 from pajin.control_plane.security import validate_bearer_token
+from pajin.control_plane.stop_observations import (
+    WorkerStopObservation,
+    WorkerStopObservationRequest,
+)
 
 # Worker responses can contain a one-megabyte bounded Job payload plus the
 # server-derived Replay authority envelope. Keep enough room for that typed
@@ -410,6 +414,16 @@ class ControlPlaneClient:
                 "Control Plane rejected the signed Pentest workflow stage"
             ) from exc
         return self._validated(response, PentestWorkflowCoordinationView)
+
+    async def observe_worker_stop(
+        self, job_id: str, request: WorkerStopObservationRequest, *, replay: bool = False,
+    ) -> WorkerStopObservation:
+        family = "worker/replay" if replay else "worker"
+        response = await self._request(
+            "POST", f"/v1/{family}/jobs/{job_id}/stop-observations",
+            json=request.model_dump(mode="json", by_alias=True),
+        )
+        return self._validated(response, WorkerStopObservation)
 
     async def heartbeat(self, job_id: str, request: LeaseRequest) -> JobView:
         response = await self._request(

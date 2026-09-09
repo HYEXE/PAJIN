@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 from dataclasses import dataclass
+from functools import partial
 from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
@@ -34,6 +35,7 @@ from pajin.domain.orchestration import (
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.providers.models import ProviderRegistration
 from pajin.providers.session import PolicyBoundProviderPort
+from pajin.runtime.budgeted_execution import budgeted_tool_call
 from pajin.runtime.control import BudgetController, BudgetExceeded, KillSwitch
 from pajin.runtime.store import RunStore
 from pajin.tools.base import ToolRegistry
@@ -619,11 +621,9 @@ class MultiAgentExecutionScheduler:
                 )
                 used_calls = grant.max_calls - ledger.record(grant.grant_id).remaining_calls
                 gateway_outcome = await self._host._within_budget(
-                    gateway.execute(
-                        campaign,
-                        grant,
-                        request,
-                        used_calls=used_calls,
+                    budgeted_tool_call(
+                        budget,
+                        partial(gateway.execute, campaign, grant, request, used_calls=used_calls),
                     ),
                     budget,
                 )
@@ -631,7 +631,6 @@ class MultiAgentExecutionScheduler:
                 results.append(outcome.result)
                 if outcome.executed:
                     ledger.consume(grant.grant_id)
-                    budget.record_tool_call()
                 self._host._evaluate_stop_conditions(campaign, outcome)
                 if outcome.result.success:
                     self._host._task_transition(

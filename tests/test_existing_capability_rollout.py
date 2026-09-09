@@ -1979,16 +1979,22 @@ def test_batch_deployment_rejects_relative_state_paths(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("durable_budget", [False, True])
 async def test_worker_deployment_dispatches_once_and_retry_never_reexecutes(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
+    durable_budget: bool,
 ) -> None:
+    from pajin.control_plane.run_budgets import RunBudgetRegistry
+
     runtime, job_input, _, _ = _capability_worker_fixture(tmp_path, sample_campaign)
     worker = _CountingSimulatedWorker()
+    budget_registry = RunBudgetRegistry(tmp_path / "budgets") if durable_budget else None
     executor = CampaignJobExecutor(
         output_root=tmp_path / "unused-local-runs",
         worker=worker,
         capability_deployment=runtime,
+        budget_registry=budget_registry,
     )
     job = _capability_worker_job(job_input)
 
@@ -2012,6 +2018,12 @@ async def test_worker_deployment_dispatches_once_and_retry_never_reexecutes(
     assert retry.result["dispatchStatus"] == "completed"
     assert retry.result["outcomeAvailableInProcess"] is False
     assert worker.calls == 1
+    if budget_registry is not None:
+        recovered = budget_registry.bind(
+            job.model_copy(update={"attempts": 2}), sample_campaign,
+            original_input=CapabilityGraphCampaignJobInput.model_validate(job_input),
+        )
+        assert recovered.tool_calls == 1
 
     injected = dict(job_input)
     injected["envelope"] = runtime.deployment.mission_envelope.model_dump(

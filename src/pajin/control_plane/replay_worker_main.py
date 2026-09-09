@@ -24,7 +24,9 @@ from pajin.control_plane.execution_attestation import (
 from pajin.control_plane.models import KISA_EXACT_REPLAY_EXECUTOR_PROFILE
 from pajin.control_plane.replay_executor import KISAExactReplayExecutor
 from pajin.control_plane.replay_worker import ReplayWorkerConfig, ReplayWorkerDaemon
+from pajin.control_plane.run_budgets import RunBudgetRegistry
 from pajin.control_plane.status_file import default_replay_worker_status_path
+from pajin.runtime.host_gate import runtime_activity
 from pajin.runtime.worker import DockerWorkerBackend
 
 _DOCKER_CLEANUP_BOUND_SECONDS = 20.0
@@ -86,6 +88,11 @@ def _execution_attestor_from_env() -> ExecutorExecutionAttestor | None:
 
 
 async def run_from_env() -> None:
+    with runtime_activity("replay-worker"):
+        await _run_admitted_worker()
+
+
+async def _run_admitted_worker() -> None:
     worker_image = _env("PAJIN_REPLAY_WORKER_IMAGE", "pajin-worker:dev")
     executor_profile = _env(
         "PAJIN_REPLAY_EXECUTOR_PROFILE",
@@ -138,6 +145,15 @@ async def run_from_env() -> None:
     )
     stop = install_stop_event()
     execution_attestor = _execution_attestor_from_env()
+    staging_root = Path(_required_env("PAJIN_REPLAY_STAGING_ROOT"))
+    from pajin.runtime.host_recovery import require_recovery_output_root
+
+    budget_root = Path(_env(
+        "PAJIN_REPLAY_BUDGET_ROOT", str(staging_root / "_control-plane-budgets"),
+    ))
+    require_recovery_output_root(staging_root)
+    require_recovery_output_root(budget_root)
+    budget_registry = RunBudgetRegistry(budget_root)
 
     async with ControlPlaneClient(
         base_url=_required_env("PAJIN_CP_URL"),
@@ -150,14 +166,17 @@ async def run_from_env() -> None:
     ) as client:
         executor = KISAExactReplayExecutor(
             client=client,
-            staging_root=Path(_required_env("PAJIN_REPLAY_STAGING_ROOT")),
+            staging_root=staging_root,
             worker=backend,
             worker_image=worker_image,
             retry_base_seconds=config.retry_base_seconds,
             retry_max_seconds=config.retry_max_seconds,
             execution_attestor=execution_attestor,
+            budget_registry=budget_registry,
         )
-        daemon = ReplayWorkerDaemon(client=client, executor=executor, config=config)
+        daemon = ReplayWorkerDaemon(
+            client=client, executor=executor, config=config, stop_reporter=client,
+        )
         await daemon.run_forever(stop)
 
 

@@ -661,7 +661,13 @@ class PolicyBoundProviderPort(StructuredModelPort):
         error: str,
         original: BaseException,
     ) -> None:
-        self._commit_model_usage_reservation(call.reservation)
+        try:
+            self._commit_model_usage_reservation(call.reservation)
+        except Exception as accounting_error:
+            original.add_note(
+                "provider budget accounting also failed: "
+                f"{audit_safe_exception_type(accounting_error)}"
+            )
         try:
             self._record_failed_call(call, error=error)
         except Exception as audit_error:

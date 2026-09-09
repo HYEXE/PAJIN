@@ -420,6 +420,7 @@ def test_web_console_shell_and_assets_are_public_but_hardened(tmp_path: Path) ->
             "js": client.get("/ui/assets/app.js"),
             "protocol-js": client.get("/ui/assets/protocol.js"),
             "render-js": client.get("/ui/assets/render.js"),
+            "urgent-stops-js": client.get("/ui/assets/urgent-stops.js"),
         }
         for response in responses.values():
             assert response.status_code == 200

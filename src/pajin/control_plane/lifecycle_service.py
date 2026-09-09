@@ -41,6 +41,7 @@ from pajin.control_plane.models import (
 )
 from pajin.control_plane.records import ControlPlaneRecords
 from pajin.control_plane.security import CheckpointSigner
+from pajin.control_plane.stop_observations import record_job_stop_fence
 from pajin.control_plane.view_mapper import ControlPlaneViewMapper
 
 _CANCELLABLE_RUN_STATES = frozenset(
@@ -131,92 +132,104 @@ class ControlPlaneLifecycleService:
         actor: str,
     ) -> CancelRunView:
         with self.repository.transaction() as session:
-            replay_item = session.scalar(
-                select(ReplayItemRecord).where(ReplayItemRecord.replay_run_id == run_id)
-            )
-            if replay_item is not None:
-                return self._cancel_replay_run(
-                    session,
-                    replay_item,
-                    request=request,
-                    actor=actor,
-                )
-            jobs_by_id = {job.job_id: job for job in self._lock_cancellable_jobs(session, run_id)}
-            approvals = self._lock_revocable_approvals(session, run_id)
-            # Resume locks its Approval before it inserts a continuation Job. Re-read Jobs after
-            # acquiring Approval locks so a continuation created while cancellation was waiting
-            # cannot escape the same transaction.
-            jobs_by_id.update(
-                {job.job_id: job for job in self._lock_cancellable_jobs(session, run_id)}
-            )
-            run = self._records.run(session, run_id, lock=True)
-            if self._run_cancellation_authorizer is not None:
-                self._run_cancellation_authorizer.authorize_run_cancellation(
-                    principal_subject=actor,
-                    submission_authority_digest=run.submission_authority_digest,
-                )
-            if run.state == RunState.CANCELLED.value:
-                return CancelRunView(
-                    run=self._views.run(run),
-                    applied=False,
-                    cancelled_job_ids=[],
-                    revoked_approval_ids=[],
-                )
-            if run.state not in _CANCELLABLE_RUN_STATES:
-                raise StateConflict(f"run in {run.state} state cannot be cancelled")
+            return self.cancel_run_in_transaction(session, run_id, request, actor=actor)
 
-            now = self._hooks.transaction.clock()
-            cancelled_job_ids: list[str] = []
-            for job in sorted(jobs_by_id.values(), key=lambda item: item.job_id):
-                previous_lease_owner = job.lease_owner
-                self._cancel_job(job, now=now)
-                cancelled_job_ids.append(job.job_id)
-                self._hooks.transaction.event_writer(
-                    session,
-                    run,
-                    "job.cancelled",
-                    actor,
-                    {
-                        "jobId": job.job_id,
-                        "previousLeaseOwner": previous_lease_owner,
-                        "reason": request.reason,
-                    },
-                )
+    def cancel_run_in_transaction(
+        self,
+        session: Session,
+        run_id: str,
+        request: CancelRunRequest,
+        *,
+        actor: str,
+    ) -> CancelRunView:
+        """Keep the existing cancellation and ABAC boundary in a caller-owned transaction."""
 
-            revoked_approval_ids: list[str] = []
-            for approval in approvals:
-                approval.state = ApprovalState.REVOKED.value
-                revoked_approval_ids.append(approval.approval_id)
-                self._hooks.transaction.event_writer(
-                    session,
-                    run,
-                    "approval.revoked",
-                    actor,
-                    {
-                        "approvalId": approval.approval_id,
-                        "checkpointId": approval.checkpoint_id,
-                        "reason": request.reason,
-                    },
-                )
-
-            self.cancel_run_record(
+        replay_item = session.scalar(
+            select(ReplayItemRecord).where(ReplayItemRecord.replay_run_id == run_id)
+        )
+        if replay_item is not None:
+            return self._cancel_replay_run(
                 session,
-                run,
+                replay_item,
+                request=request,
                 actor=actor,
-                now=now,
-                reason=request.reason,
-                cause="operator-request",
-                extra={
-                    "cancelledJobIds": cancelled_job_ids,
-                    "revokedApprovalIds": revoked_approval_ids,
-                },
             )
+        jobs_by_id = {job.job_id: job for job in self._lock_cancellable_jobs(session, run_id)}
+        approvals = self._lock_revocable_approvals(session, run_id)
+        # Resume locks its Approval before it inserts a continuation Job. Re-read Jobs after
+        # acquiring Approval locks so a continuation created while cancellation was waiting
+        # cannot escape the same transaction.
+        jobs_by_id.update(
+            {job.job_id: job for job in self._lock_cancellable_jobs(session, run_id)}
+        )
+        run = self._records.run(session, run_id, lock=True)
+        if self._run_cancellation_authorizer is not None:
+            self._run_cancellation_authorizer.authorize_run_cancellation(
+                principal_subject=actor,
+                submission_authority_digest=run.submission_authority_digest,
+            )
+        if run.state == RunState.CANCELLED.value:
             return CancelRunView(
                 run=self._views.run(run),
-                applied=True,
-                cancelled_job_ids=cancelled_job_ids,
-                revoked_approval_ids=revoked_approval_ids,
+                applied=False,
+                cancelled_job_ids=[],
+                revoked_approval_ids=[],
             )
+        if run.state not in _CANCELLABLE_RUN_STATES:
+            raise StateConflict(f"run in {run.state} state cannot be cancelled")
+
+        now = self._hooks.transaction.clock()
+        cancelled_job_ids: list[str] = []
+        for job in sorted(jobs_by_id.values(), key=lambda item: item.job_id):
+            previous_lease_owner = job.lease_owner
+            self._cancel_job(session, run, job, actor=actor, now=now)
+            cancelled_job_ids.append(job.job_id)
+            self._hooks.transaction.event_writer(
+                session,
+                run,
+                "job.cancelled",
+                actor,
+                {
+                    "jobId": job.job_id,
+                    "previousLeaseOwner": previous_lease_owner,
+                    "reason": request.reason,
+                },
+            )
+
+        revoked_approval_ids: list[str] = []
+        for approval in approvals:
+            approval.state = ApprovalState.REVOKED.value
+            revoked_approval_ids.append(approval.approval_id)
+            self._hooks.transaction.event_writer(
+                session,
+                run,
+                "approval.revoked",
+                actor,
+                {
+                    "approvalId": approval.approval_id,
+                    "checkpointId": approval.checkpoint_id,
+                    "reason": request.reason,
+                },
+            )
+
+        self.cancel_run_record(
+            session,
+            run,
+            actor=actor,
+            now=now,
+            reason=request.reason,
+            cause="operator-request",
+            extra={
+                "cancelledJobIds": cancelled_job_ids,
+                "revokedApprovalIds": revoked_approval_ids,
+            },
+        )
+        return CancelRunView(
+            run=self._views.run(run),
+            applied=True,
+            cancelled_job_ids=cancelled_job_ids,
+            revoked_approval_ids=revoked_approval_ids,
+        )
 
     def requeue_expired(self, *, actor: str) -> int:
         now = self._hooks.transaction.clock()
@@ -617,7 +630,7 @@ class ControlPlaneLifecycleService:
             reason="cancelled Replay lease was reaped",
         )
         self._claims.release_replay_reservations(session, ticket, batch, now=now)
-        self._cancel_job(job, now=now)
+        self._cancel_job(session, run, job, actor=actor, now=now)
         item.state = ReplayItemState.CANCELLED.value
         item.updated_at = now
         self._hooks.transaction.replay_event_writer(
@@ -642,7 +655,7 @@ class ControlPlaneLifecycleService:
     ) -> int:
         transition_time = self._hooks.transaction.clock()
         if run.state == RunState.CANCELLED.value:
-            self._cancel_job(job, now=transition_time)
+            self._cancel_job(session, run, job, actor=actor, now=transition_time)
             self._hooks.transaction.event_writer(
                 session,
                 run,
@@ -822,7 +835,7 @@ class ControlPlaneLifecycleService:
             if job.kind != _INTERNAL_REPLAY_KIND:
                 raise StateConflict("Replay batch owns a non-Replay active Job")
             previous_lease_owner = job.lease_owner
-            self._cancel_job(job, now=now)
+            self._cancel_job(session, graph.run, job, actor=actor, now=now)
             cancelled_job_ids.append(job.job_id)
             if job.run_id != graph.run.run_id:
                 raise StateConflict("Replay Job belongs to an unexpected Run")
@@ -967,8 +980,10 @@ class ControlPlaneLifecycleService:
         )
         return list(session.scalars(statement).all())
 
-    @staticmethod
-    def _cancel_job(job: JobRecord, *, now: datetime) -> None:
+    def _cancel_job(
+        self, session: Session, run: RunRecord, job: JobRecord, *, actor: str, now: datetime,
+    ) -> None:
+        record_job_stop_fence(session, run, job, actor=actor, hooks=self._hooks.transaction)
         job.state = JobState.CANCELLED.value
         job.lease_owner = None
         job.lease_token_hash = None

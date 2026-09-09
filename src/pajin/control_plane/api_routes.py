@@ -130,6 +130,15 @@ from pajin.control_plane.replay_comparison import (
     VerifiedReplayEvidenceComparisonView,
 )
 from pajin.control_plane.service import MAX_AUDIT_EVENT_PAGE_SIZE, ControlPlaneService
+from pajin.control_plane.stop_observations import (
+    WorkerStopObservation,
+    WorkerStopObservationRequest,
+)
+from pajin.control_plane.urgent_stops import (
+    UrgentStopAcknowledgeRequest,
+    UrgentStopAcknowledgment,
+    UrgentStopAlertPage,
+)
 from pajin.control_plane.validation_comparison import (
     VerifiedWalkingControlComparisonReader,
     VerifiedWalkingControlComparisonView,
@@ -224,6 +233,10 @@ def register_health_and_ui_routes(
     def web_console_measured_reviews() -> Response:
         return console_asset_response("measured-reviews.js")
 
+    @app.get("/ui/assets/urgent-stops.js", include_in_schema=False)
+    def web_console_urgent_stops() -> Response:
+        return console_asset_response("urgent-stops.js")
+
 
 def register_session_and_run_routes(
     app: FastAPI,
@@ -235,6 +248,30 @@ def register_session_and_run_routes(
 
     require_roles = dependencies.require_roles
 
+    @app.get("/v1/urgent-stops", response_model=UrgentStopAlertPage)
+    def list_urgent_stops(
+        principal: Annotated[Principal, Depends(require_roles(
+            PrincipalRole.OPERATOR, PrincipalRole.APPROVER, PrincipalRole.AUDITOR,
+        ))],
+        cursor: Annotated[str | None, Query(pattern=r"^event_[a-f0-9]{32}$")] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    ) -> UrgentStopAlertPage:
+        if PrincipalRole.WORKER in principal.roles:
+            raise HTTPException(status_code=403, detail="Urgent stop alerts require a human role")
+        return service.urgent_stops.list_alerts(cursor=cursor, limit=limit)
+
+    @app.post(
+        "/v1/urgent-stops/{alert_id}/acknowledgment", response_model=UrgentStopAcknowledgment,
+    )
+    def acknowledge_urgent_stop(
+        alert_id: str, request: UrgentStopAcknowledgeRequest,
+        principal: Annotated[Principal, Depends(require_roles(PrincipalRole.OPERATOR))],
+    ) -> UrgentStopAcknowledgment:
+        if PrincipalRole.WORKER in principal.roles:
+            raise HTTPException(
+                status_code=403, detail="Urgent stop acknowledgment requires an operator",
+            )
+        return service.urgent_stops.acknowledge(alert_id, request, actor=principal.subject)
 
     @app.get("/v1/session", response_model=Principal)
     def get_session(
@@ -1119,6 +1156,17 @@ def register_replay_worker_routes(
 ) -> None:
     """Register routes available only to a configured Replay Worker subject."""
 
+    @app.post(
+        "/v1/worker/replay/jobs/{job_id}/stop-observations", response_model=WorkerStopObservation,
+    )
+    def observe_replay_stop(
+        job_id: str,
+        request: WorkerStopObservationRequest,
+        principal: Annotated[Principal, Depends(dependencies.require_replay_worker)],
+    ) -> WorkerStopObservation:
+        return service.stop_observations.record(
+            job_id, request, actor=principal.subject, replay=True,
+        )
 
     @app.post(
         "/v1/worker/replay/jobs/claim",
@@ -1222,6 +1270,15 @@ def register_generic_worker_job_routes(
 ) -> None:
     """Register lease-fenced mutation routes for the generic Worker."""
 
+    @app.post(
+        "/v1/worker/jobs/{job_id}/stop-observations", response_model=WorkerStopObservation,
+    )
+    def observe_stop(
+        job_id: str,
+        request: WorkerStopObservationRequest,
+        principal: Annotated[Principal, Depends(dependencies.require_generic_worker)],
+    ) -> WorkerStopObservation:
+        return service.stop_observations.record(job_id, request, actor=principal.subject)
 
     @app.post(
         "/v1/worker/jobs/{job_id}/heartbeat",

@@ -53,6 +53,7 @@ from pajin.control_plane.models import (
     ReplayToolPermitRequest,
     ReplayToolPermitView,
 )
+from pajin.control_plane.run_budgets import RunBudgetRegistry
 from pajin.domain.models import ToolRequest, ToolResult
 from pajin.domain.replay import CompiledReplaySpec, replay_argument_digest
 from pajin.modes.ai_redteam.replay import kisa_replay_registries
@@ -487,6 +488,7 @@ class KISAExactReplayExecutor:
         retry_base_seconds: float = 0.25,
         retry_max_seconds: float = 5,
         execution_attestor: ExecutorExecutionAttestor | None = None,
+        budget_registry: RunBudgetRegistry | None = None,
     ) -> None:
         if (
             type(permit_attempts) is not int
@@ -514,6 +516,7 @@ class KISAExactReplayExecutor:
         self._retry_base_seconds = float(retry_base_seconds)
         self._retry_max_seconds = float(retry_max_seconds)
         self._execution_attestor = execution_attestor
+        self._budget_registry = budget_registry
 
     async def execute(
         self,
@@ -526,6 +529,15 @@ class KISAExactReplayExecutor:
             or claim.ticket.executor_profile != self.profile
         ):
             raise PermissionError("Replay claim requires a different executor profile")
+        budget = (
+            self._budget_registry.bind(
+                claim.job, claim.execution_context.campaign,
+                original_input=claim.execution_context,
+                resuming=claim.ticket.attempt > 1,
+            )
+            if self._budget_registry is not None
+            else BudgetController(claim.execution_context.campaign.spec.budgets)
+        )
         target_proofs = _TargetExecutionProofLedger(
             required=(claim.batch.policy_version == KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION)
         )
@@ -555,7 +567,7 @@ class KISAExactReplayExecutor:
             oracles=oracles,
             materializers=materializers,
             tickets=ticket_backend.claimer(),
-            budget=BudgetController(claim.execution_context.campaign.spec.budgets),
+            budget=budget,
             rate_limits=RequestRateLimitLedger(),
             clock=self._clock,
             dispatch_authorizer=dispatch_authorizer,

@@ -28,6 +28,7 @@ from pajin.discovery.projection import (
 from pajin.domain.models import CampaignManifest, StrictModel, ToolRequest, ToolResult
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
+from pajin.runtime.budgeted_execution import budgeted_tool_call
 from pajin.runtime.control import BudgetController, BudgetExceeded, ExecutionCancellationContext
 from pajin.runtime.error_safety import audit_safe_exception_type
 from pajin.runtime.store import RunStore
@@ -860,10 +861,11 @@ class SingleReconWaveRunner:
         state.budget.check_tool_call()
         if not ledger.can_consume(grant.grant_id):
             raise CapabilityError("Recon capability has no remaining authorized call")
-        outcome = await gateway.execute(campaign, grant, plan.request, used_calls=0)
+        outcome = await budgeted_tool_call(
+            state.budget, lambda: gateway.execute(campaign, grant, plan.request, used_calls=0)
+        )
         if outcome.executed:
             ledger.consume(grant.grant_id)
-            state.budget.record_tool_call()
         result = outcome.result.model_copy(deep=True)
         if (
             not outcome.executed

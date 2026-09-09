@@ -31,6 +31,7 @@ from pajin.providers.receipts import (
     verify_provider_bound_chat_outcome,
 )
 from pajin.providers.session import PolicyBoundProviderPort
+from pajin.runtime.budget_state import BudgetPersistenceError
 from pajin.runtime.control import BudgetController, DualModelUsageBudget
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.secrets import SecretBroker, SecretLease, SecretLeaseStatus
@@ -327,6 +328,9 @@ class SupervisorCheckpointInvoker:
         journal: SupervisorInvocationJournal,
         provider_runtime: SupervisorProviderRuntime,
     ) -> None:
+        from pajin.runtime.host_recovery import require_recovery_output_root
+
+        require_recovery_output_root(Path(output_root).absolute())
         self._output_root = Path(output_root).resolve()
         self._journal = journal
         self._provider_runtime = provider_runtime
@@ -346,11 +350,52 @@ class SupervisorCheckpointInvoker:
     ) -> SupervisorInvocationCompletion:
         """Dispatch at most once per journal and return only a verified SUP-003 proposal."""
 
+        from pajin.runtime.host_gate import host_work
+
+        with host_work():
+            return await self._invoke(
+                schedule_publication, authorities, request_context=request_context,
+            )
+
+    async def _invoke(
+        self,
+        schedule_publication: SupervisorCheckpointSchedulePublication,
+        authorities: SupervisorInvocationAuthorities,
+        *,
+        request_context: SupervisorBenchmarkRequestContext | None = None,
+    ) -> SupervisorInvocationCompletion:
+
         try:
+            from pajin.runtime.host_recovery import require_recovery_output_root
+
+            require_recovery_output_root(self._output_root)
             schedule, chat = _verify_and_rebuild_schedule(
                 schedule_publication,
                 authorities,
             )
+            from pajin.runtime.recovery_bindings import require_registered_producer
+
+            require_registered_producer(
+                graph_store=authorities.graph_snapshot_store,
+                journal_path=self._journal.path,
+                campaign=authorities.campaign,
+                sources=(
+                    (schedule_publication.run_path, schedule_publication.run_id,
+                     schedule_publication.root_digest),
+                    *((source.source_run_path, source.reference.source_run_id,
+                       source.reference.source_root_digest)
+                      for source in authorities.shared_artifact_sources),
+                ),
+            )
+            existing = self._journal.checkpoint_entry(schedule.checkpoint_key)
+            if existing is None or existing.state == "intent-recorded":
+                self._verify_provider_runtime(authorities, schedule)
+                self._journal.bind_budgets(
+                    campaign_digest=schedule.campaign_digest,
+                    policy_digest=schedule.dedicated_budget_policy_digest,
+                    campaign=self._provider_runtime.campaign_budget,
+                    dedicated=self._provider_runtime.dedicated_budget,
+                )
             entry = self._journal.claim(
                 schedule_publication,
                 request_context=request_context,
@@ -391,6 +436,7 @@ class SupervisorCheckpointInvoker:
             raise
         except (
             AttributeError,
+            BudgetPersistenceError,
             RunIntegrityError,
             OSError,
             SupervisorInvocationJournalError,
@@ -1356,7 +1402,7 @@ def _rebuild_provider_worker_job(
                     allowed_methods={"POST"},
                     allow_private_networks=registration.allow_private_networks,
                     max_requests=request_cost,
-                ),
+                            ),
             },
             deep=True,
         ).model_dump(mode="python")

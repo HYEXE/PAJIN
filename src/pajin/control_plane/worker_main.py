@@ -26,8 +26,10 @@ from pajin.control_plane.executors import (
     ToolLoopJobExecutor,
 )
 from pajin.control_plane.models import JobKind
+from pajin.control_plane.run_budgets import RunBudgetRegistry
 from pajin.control_plane.status_file import default_worker_status_path
 from pajin.control_plane.worker import WorkerDaemon, WorkerDaemonConfig
+from pajin.runtime.host_gate import runtime_activity
 
 _PLAINTEXT_LAB_ENV = "PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB"
 _CAPABILITY_DEPLOYMENT_PATH_ENV = "PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_PATH"
@@ -65,6 +67,13 @@ def _capability_graph_deployment_from_env() -> CapabilityGraphDeploymentRuntime 
 
 
 async def run_from_env() -> None:
+    with runtime_activity("worker"):
+        await _run_admitted_worker()
+
+
+async def _run_admitted_worker() -> None:
+    from pajin.runtime.host_recovery import require_recovery_output_root
+
     output_root = Path(
         env(
             "PAJIN_DAEMON_OUTPUT_ROOT",
@@ -72,14 +81,22 @@ async def run_from_env() -> None:
             owner="Worker daemon",
         )
     ).resolve()
+    budget_root = Path(env(
+        "PAJIN_DAEMON_BUDGET_ROOT", str(output_root / "_control-plane-budgets"),
+        owner="Worker daemon",
+    ))
+    require_recovery_output_root(output_root)
+    require_recovery_output_root(budget_root)
     capability_deployment = _capability_graph_deployment_from_env()
+    budget_registry = RunBudgetRegistry(budget_root)
     executors = ExecutorRegistry(
         [
             CampaignJobExecutor(
                 output_root=output_root,
                 capability_deployment=capability_deployment,
+                budget_registry=budget_registry,
             ),
-            ToolLoopJobExecutor(output_root=output_root),
+            ToolLoopJobExecutor(output_root=output_root, budget_registry=budget_registry),
         ]
     )
     raw_kinds = env(
@@ -138,7 +155,9 @@ async def run_from_env() -> None:
         tls_client_key_file=os.environ.get("PAJIN_CP_MTLS_KEY_FILE"),
         tls_client_key_password=os.environ.get("PAJIN_CP_MTLS_KEY_PASSWORD"),
     ) as client:
-        daemon = WorkerDaemon(client=client, executors=executors, config=config)
+        daemon = WorkerDaemon(
+            client=client, executors=executors, config=config, stop_reporter=client,
+        )
         await daemon.run_forever(stop)
 
 

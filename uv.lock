@@ -792,7 +792,7 @@ requires-dist = [
     { name = "idna", specifier = ">=3.10,<4" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.15,<2" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'control-plane'", specifier = ">=3.2,<4" },
-    { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pydantic-ai-slim", specifier = ">=1.0,<2" },
     { name = "pydantic-ai-slim", extras = ["openai"], marker = "extra == 'openai'", specifier = ">=1.0,<2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },

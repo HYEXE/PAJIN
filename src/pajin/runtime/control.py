@@ -16,6 +16,8 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from pajin.domain.models import Budgets
+from pajin.runtime.budget_persistence import BudgetAccountBinding, budget_change
+from pajin.runtime.budget_state import BudgetPersistenceError
 from pajin.runtime.safe_files import read_bounded_regular_bytes
 
 _KILL_SWITCH_SIGNAL_MAX_BYTES = 2_048
@@ -37,6 +39,13 @@ class ModelUsageReservation:
     cost_usd: float
     tool_calls: int
     model_calls: int
+
+
+@dataclass(frozen=True)
+class ToolUsageReservation:
+    """One Tool call charged before dispatch, including an uncertain outcome."""
+
+    reservation_id: str
 
 
 @dataclass(frozen=True)
@@ -336,6 +345,11 @@ class BudgetController:
         default_factory=dict,
         repr=False,
     )
+    _tool_usage_reservations: dict[str, ToolUsageReservation] = field(
+        init=False, default_factory=dict, repr=False,
+    )
+    _persistence: BudgetAccountBinding | None = field(init=False, default=None, repr=False)
+    _accounting_failed: bool = field(init=False, default=False, repr=False)
 
     def __post_init__(self) -> None:
         self.budgets = Budgets.model_validate(
@@ -363,7 +377,7 @@ class BudgetController:
             return max(0.0, self.budgets.duration_seconds - self.elapsed_seconds)
 
     def reserve_agent(self, *, depth: int) -> None:
-        with self._usage_lock:
+        with budget_change(self), self._usage_lock:
             self.check_duration()
             if depth > self.budgets.max_spawn_depth:
                 raise BudgetExceeded("maximum agent spawn depth exceeded")
@@ -378,13 +392,42 @@ class BudgetController:
                 raise BudgetExceeded("maximum tool-call budget exceeded")
 
     def record_tool_call(self) -> None:
-        with self._usage_lock:
+        with budget_change(self), self._usage_lock:
             if self.tool_calls >= self.budgets.max_tool_calls:
                 raise BudgetExceeded("maximum tool-call budget exceeded")
             self.tool_calls += 1
 
+    def reserve_tool_usage(self) -> ToolUsageReservation:
+        """Charge one call before entering a potentially executing Gateway."""
+
+        with budget_change(self), self._usage_lock:
+            self.check_tool_call()
+            reservation = ToolUsageReservation(f"tool-reservation_{uuid4().hex}")
+            self.tool_calls += 1
+            self._tool_usage_reservations[reservation.reservation_id] = reservation
+            return reservation
+
+    def commit_tool_usage_reservation(self, reservation: ToolUsageReservation) -> None:
+        """Keep the charge for executed or uncertain calls."""
+
+        with budget_change(self), self._usage_lock:
+            self._require_tool_usage_reservation(reservation)
+            del self._tool_usage_reservations[reservation.reservation_id]
+
+    def release_tool_usage_reservation(self, reservation: ToolUsageReservation) -> None:
+        """Refund only when the Gateway proves that execution did not occur."""
+
+        with budget_change(self), self._usage_lock:
+            self._require_tool_usage_reservation(reservation)
+            del self._tool_usage_reservations[reservation.reservation_id]
+            self.tool_calls -= 1
+
+    def _require_tool_usage_reservation(self, reservation: ToolUsageReservation) -> None:
+        if self._tool_usage_reservations.get(reservation.reservation_id) is not reservation:
+            raise ValueError("Tool usage reservation is not active on this budget")
+
     def record_cost(self, amount_usd: float) -> None:
-        with self._usage_lock:
+        with budget_change(self), self._usage_lock:
             if type(amount_usd) not in {int, float}:
                 raise ValueError("cost must be a finite JSON number")
             if not isfinite(amount_usd) or amount_usd < 0:
@@ -400,7 +443,7 @@ class BudgetController:
                 raise BudgetExceeded("maximum model-call budget exceeded")
 
     def record_model_call(self) -> None:
-        with self._usage_lock:
+        with budget_change(self), self._usage_lock:
             self.check_model_call()
             self.model_calls += 1
 
@@ -411,7 +454,7 @@ class BudgetController:
         completion_tokens: int,
         cost_usd: float,
     ) -> None:
-        with self._usage_lock:
+        with budget_change(self), self._usage_lock:
             self._check_model_usage_capacity(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -453,7 +496,7 @@ class BudgetController:
     ) -> ModelUsageReservation:
         """Atomically charge one model/Tool call and its bound before dispatch."""
 
-        with self._usage_lock:
+        with budget_change(self), self._usage_lock:
             self.check_tool_call()
             self.check_model_call()
             self._check_model_usage_capacity(
@@ -487,7 +530,7 @@ class BudgetController:
     ) -> None:
         """Replace one active conservative reservation with trusted actual usage."""
 
-        with self._usage_lock:
+        with budget_change(self), self._usage_lock:
             self._require_model_usage_reservation(reservation)
             if type(prompt_tokens) is not int or type(completion_tokens) is not int:
                 raise ValueError("model token usage must use JSON integers")
@@ -513,14 +556,14 @@ class BudgetController:
     def commit_model_usage_reservation(self, reservation: ModelUsageReservation) -> None:
         """Consume an active reservation at its bound when actual usage is unknowable."""
 
-        with self._usage_lock:
+        with budget_change(self), self._usage_lock:
             self._require_model_usage_reservation(reservation)
             del self._model_usage_reservations[reservation.reservation_id]
 
     def release_model_usage_reservation(self, reservation: ModelUsageReservation) -> None:
         """Release a reservation only when the model request provably was not dispatched."""
 
-        with self._usage_lock:
+        with budget_change(self), self._usage_lock:
             self._require_model_usage_reservation(reservation)
             del self._model_usage_reservations[reservation.reservation_id]
             self.tool_calls -= reservation.tool_calls
@@ -538,6 +581,10 @@ class BudgetController:
             if active is not reservation:
                 raise ValueError("model usage reservation is not active on this budget")
 
+    def _require_unbound_accounting(self) -> None:
+        if self._persistence is not None or self._accounting_failed:
+            raise BudgetPersistenceError("a bound budget cannot accept caller-restored usage")
+
     def restore_usage(
         self,
         *,
@@ -550,7 +597,8 @@ class BudgetController:
         elapsed_seconds: object,
     ) -> None:
         with self._usage_lock:
-            if self._model_usage_reservations or any(
+            self._require_unbound_accounting()
+            if self._model_usage_reservations or self._tool_usage_reservations or any(
                 value != 0
                 for value in (
                     self.tool_calls,
@@ -614,6 +662,10 @@ class BudgetController:
 
     def check_duration(self) -> None:
         with self._usage_lock:
+            if self._accounting_failed:
+                raise BudgetPersistenceError("budget accounting failed; dispatch is fenced")
+            if self._persistence is not None:
+                self._persistence.require_usable()
             if self.remaining_seconds <= 0:
                 raise BudgetExceeded("maximum campaign duration exceeded")
 
@@ -700,7 +752,7 @@ class DualModelUsageBudget:
         cost_usd: float,
     ) -> DualModelUsageReservation:
         first, second = self._ordered_budgets
-        with first._usage_lock, second._usage_lock:
+        with budget_change(first, second), first._usage_lock, second._usage_lock:
             campaign_reservation = self._campaign_budget.reserve_model_usage(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -745,7 +797,7 @@ class DualModelUsageBudget:
         reservation: DualModelUsageReservation,
     ) -> None:
         first, second = self._ordered_budgets
-        with first._usage_lock, second._usage_lock:
+        with budget_change(first, second), first._usage_lock, second._usage_lock:
             campaign_reservation, dedicated_reservation = self._require_reservation(
                 reservation
             )
@@ -768,7 +820,7 @@ class DualModelUsageBudget:
         reservation: DualModelUsageReservation,
     ) -> None:
         first, second = self._ordered_budgets
-        with first._usage_lock, second._usage_lock:
+        with budget_change(first, second), first._usage_lock, second._usage_lock:
             campaign_reservation, dedicated_reservation = self._require_reservation(
                 reservation
             )

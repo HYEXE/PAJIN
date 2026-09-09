@@ -134,14 +134,35 @@ Construction, recovery, or consumption fails closed for:
 The journal, invoker, receipt, consumer, and dual-budget identity check are additive. Existing
 Provider `chat()`, `complete()`, and `chat_bound()` callers, SUP-004A publications, SUP-004B1 budget
 controllers, SUP-004B2 outcomes, Gateway evidence, and SUP-003 compilation remain compatible. No
-existing artifact or database is migrated. Campaign set-backed fields now serialize as sorted JSON
+existing artifact is migrated. The additive OPS-001 schema-v2 budget migration is described below.
+Campaign set-backed fields serialize as sorted JSON
 arrays so embedded Supervisor authorities remain deterministic across Python hash seeds; the parsed
 Campaign API remains set-valued.
 
 Context-free callers continue to emit `v1alpha1` with no serialized `requestContext` field and the
 same request identity. Context-bound calls opt into explicit `v1alpha2`; the canonical intent is
-already stored in the existing journal column, so the SQLite schema and existing rows do not
-change.
+already stored in the existing journal column, so that wire extension does not change existing rows.
+
+[OPS-001](OPS-001-single-host-recovery-and-urgent-stop.md) adds append-only budget histories to the
+journal in schema v2. An exact v1 schema and its complete invocation history are verified before
+upgrading. Existing Campaign invocations without complete budget accounting remain readable but
+cannot initialize a zero budget for new dispatch. A missing v2 object is rejected without repair.
+The invoker binds both full controllers to the journal before new or unstarted claims; recovery
+retains uncertain usage and duration, and fences previous owners. Rollback to a schema-v1 executable
+requires a separately retained compatible checkpoint under the OPS-001 recovery contract.
+
+ADR-0267 adds an optional immutable CP Run binding in schema v3. Unbound journals retain v2.
+The trusted constructor must provide the same binding on every reopen, and every operation verifies
+it. An empty journal may be enrolled; existing nonempty history cannot be relabeled. A bound
+Supervisor uses `campaign-and-supervisor` with the existing pair. Campaign-only default Worker
+accounting cannot claim a Supervisor invocation or be promoted to a dual account. Run-scoped retry
+and approval continuation require an existing journal; old readers reject v3. The binding does not
+alter intent/receipt wires or establish a cross-store recovery checkpoint.
+
+ADR-0268 requires enrolled-host journal initialization/transactions and complete invocations to
+run inside the admitted `runtime_activity` context. They retain shared activity until completion,
+excluding a concurrent checkpoint. Unenrolled callers retain the existing behavior. The activity
+gate does not replace exact Run/budget/receipt verification or complete cross-store recovery.
 
 Rollback stops creating B3 journal databases and invocation Runs and removes the additive runtime
 API. Existing B3 journals and sealed Runs should be retained as audit evidence; they do not grant
@@ -152,8 +173,9 @@ request.
 
 - The SQLite journal is one canonical host-local file. Alternate journal files, copied databases,
   cross-host callers, and distributed dispatchers are outside this authority.
-- SUP-004B1 budget reservation is process-local. Restarted consumption proves the sealed charged
-  projection, not the current in-memory ledger balance or distributed accounting.
+- Unbound SUP-004B1 controllers remain process-local. OPS-001 binds the invoker's complete ledgers
+  to this journal before further dispatch; sealed receipt projections alone cannot restore complete
+  Campaign usage. Cross-store and distributed accounting remain separate boundaries.
 - A started intent without a fully sealed receipt remains outcome-unknown and requires operator
   resolution; availability is intentionally traded for no automatic duplicate dispatch.
 - Current Graph/Snapshot verification and journal transition are separate transactions.

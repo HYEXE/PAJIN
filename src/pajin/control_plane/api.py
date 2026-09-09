@@ -8,7 +8,7 @@ import os
 import re
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -121,12 +121,14 @@ from pajin.control_plane.pentest_workflow_deployment import (
 )
 from pajin.control_plane.replay_comparison import VerifiedReplayEvidenceComparisonReader
 from pajin.control_plane.security import (
+    CHECKPOINT_VERIFICATION_KEYS_ENV,
     AuthenticationError,
     BearerAuthenticator,
     ChainedAuthenticator,
     CheckpointIntegrityError,
     CheckpointSigner,
     TokenAuthenticator,
+    checkpoint_keys_from_environment,
     validate_bearer_token,
 )
 from pajin.control_plane.service import ControlPlaneService
@@ -152,6 +154,7 @@ from pajin.target_attestation import (
 )
 
 if TYPE_CHECKING:
+    from pajin.runtime.host_recovery import StoreEnrollment
     from pajin.workflow.ai_measured_product_reader import AIMeasuredProductReader
     from pajin.workflow.network_measured_product_reader import NetworkMeasuredProductReader
     from pajin.workflow.web_measured_product_reader import WebMeasuredProductReader
@@ -1106,6 +1109,8 @@ class ControlPlaneSettings:
                 private_key=self.replay_attestation_private_key,
                 trust_anchor=self.replay_attestation_trust_anchor,
             )
+        CheckpointSigner(active_key_id=self.active_checkpoint_key_id, keys=self.checkpoint_keys)
+        object.__setattr__(self, "checkpoint_keys", MappingProxyType(dict(self.checkpoint_keys)))
         object.__setattr__(self, "credentials", MappingProxyType(credentials))
         object.__setattr__(self, "replay_executor_profiles", normalized)
 
@@ -1555,7 +1560,11 @@ class ControlPlaneSettings:
                 "PAJIN_CP_DATABASE_URL", "sqlite:///./.pajin/control-plane.db"
             ),
             credentials=credentials,
-            checkpoint_keys={key_id: checkpoint_key.encode()},
+            checkpoint_keys=checkpoint_keys_from_environment(
+                active_key_id=key_id,
+                active_key=checkpoint_key,
+                verification_keys=os.environ.get(CHECKPOINT_VERIFICATION_KEYS_ENV),
+            ),
             active_checkpoint_key_id=key_id,
             measured_product_deployment_path=(
                 Path(measured_deployment_path) if measured_deployment_path is not None else None
@@ -1651,6 +1660,7 @@ class ControlPlaneSettings:
 class _ControlPlaneApplicationContext:
     settings: ControlPlaneSettings
     repository: ControlPlaneRepository
+    recovery_enrollment: "StoreEnrollment | None"
     artifact_repository: ManagedArtifactRepository | None
     campaign_draft_reader: ControlPlaneCampaignDraftReader
     campaign_draft_compiler: ControlPlaneCampaignDraftCompiler
@@ -1695,6 +1705,9 @@ def _build_bearer_authenticator(settings: ControlPlaneSettings) -> BearerAuthent
 def _build_application_context(
     settings: ControlPlaneSettings,
 ) -> _ControlPlaneApplicationContext:
+    from pajin.runtime.host_recovery import prepare_control_plane_enrollment
+
+    recovery_enrollment = prepare_control_plane_enrollment(settings.database_url)
     repository = ControlPlaneRepository(
         settings.database_url,
         echo=settings.database_echo,
@@ -1802,6 +1815,7 @@ def _build_application_context(
     return _ControlPlaneApplicationContext(
         settings=settings,
         repository=repository,
+        recovery_enrollment=recovery_enrollment,
         artifact_repository=artifact_repository,
         campaign_draft_reader=campaign_draft_reader,
         campaign_draft_compiler=ControlPlaneCampaignDraftCompiler(reader=campaign_draft_reader),
@@ -1832,20 +1846,32 @@ def _create_lifespan(
 ) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        if context.settings.initialize_schema:
-            context.repository.initialize()
-        else:
-            # Deployment-managed migrations may disable DDL at process startup, but
-            # they must never disable the Control Plane's schema compatibility fence.
-            context.repository.schema_version()
-        context.service.activate_target_attestation_registry()
-        app.state.repository = context.repository
-        app.state.artifact_repository = context.artifact_repository
-        app.state.control_plane = context.service
-        try:
+        from pajin.runtime.host_gate import runtime_activity
+
+        with ExitStack() as cleanup:
+            try:
+                cleanup.enter_context(runtime_activity(
+                    "control-plane", configuration=context.settings,
+                ))
+            except BaseException:
+                context.repository.close()
+                raise
+            cleanup.callback(context.repository.close)
+            if context.recovery_enrollment is not None:
+                context.recovery_enrollment.before_open()
+            if context.settings.initialize_schema:
+                context.repository.initialize()
+            else:
+                # Disabling startup DDL never disables schema or key verification.
+                context.repository.schema_version()
+            context.service.activate_checkpoint_keyring()
+            context.service.activate_target_attestation_registry()
+            if context.recovery_enrollment is not None:
+                context.recovery_enrollment.complete()
+            app.state.repository = context.repository
+            app.state.artifact_repository = context.artifact_repository
+            app.state.control_plane = context.service
             yield
-        finally:
-            context.repository.close()
 
     return lifespan
 
@@ -2136,9 +2162,43 @@ def create_app(
     network_measured_product_reader: "NetworkMeasuredProductReader | None" = None,
     web_measured_product_reader: "WebMeasuredProductReader | None" = None,
 ) -> FastAPI:
-    from pajin.control_plane.measured_product_deployment import load_measured_product_readers
+    from pajin.runtime.host_gate import runtime_activity
 
     resolved = settings or ControlPlaneSettings.from_env()
+    with runtime_activity(
+        "control-plane",
+        configuration=resolved,
+        injected_runtime=any(value is not None for value in (
+            pentest_recon_runtime, pentest_replay_runtime, pentest_workflow_runtime,
+            pentest_workflow_coordination_runtime, ai_measured_product_reader,
+            network_measured_product_reader, web_measured_product_reader,
+        )),
+    ):
+        return _create_admitted_app(
+            resolved,
+            pentest_recon_runtime=pentest_recon_runtime,
+            pentest_replay_runtime=pentest_replay_runtime,
+            pentest_workflow_runtime=pentest_workflow_runtime,
+            pentest_workflow_coordination_runtime=pentest_workflow_coordination_runtime,
+            ai_measured_product_reader=ai_measured_product_reader,
+            network_measured_product_reader=network_measured_product_reader,
+            web_measured_product_reader=web_measured_product_reader,
+        )
+
+
+def _create_admitted_app(
+    resolved: ControlPlaneSettings,
+    *,
+    pentest_recon_runtime: PentestReconDispatchRuntime | None,
+    pentest_replay_runtime: PentestReplayDispatchRuntime | None,
+    pentest_workflow_runtime: PentestOperatorWorkflowRuntime | None,
+    pentest_workflow_coordination_runtime: PentestWorkflowCoordinationDispatchRuntime | None,
+    ai_measured_product_reader: "AIMeasuredProductReader | None",
+    network_measured_product_reader: "NetworkMeasuredProductReader | None",
+    web_measured_product_reader: "WebMeasuredProductReader | None",
+) -> FastAPI:
+    from pajin.control_plane.measured_product_deployment import load_measured_product_readers
+
     if resolved.measured_product_deployment_path is not None and any(
         reader is not None
         for reader in (

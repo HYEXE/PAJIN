@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -7,7 +8,7 @@ from typing import cast
 import pytest
 
 from pajin.agents.base import ModelCallFailure
-from pajin.domain.models import CampaignManifest, CapabilityGrant, ToolRequest, ToolResult
+from pajin.domain.models import Budgets, CampaignManifest, CapabilityGrant, ToolRequest, ToolResult
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyDecision
 from pajin.providers import (
@@ -28,9 +29,12 @@ from pajin.providers import (
     ProviderReportedUsage,
     verify_provider_bound_chat_outcome,
 )
+from pajin.runtime import budget_persistence
+from pajin.runtime.budget_state import BudgetPersistenceError
 from pajin.runtime.control import BudgetController, BudgetExceeded, DualModelUsageBudget
 from pajin.runtime.store import RunStore
 from pajin.runtime.worker import WorkerResult, WorkerStatus
+from pajin.supervision.invocation_journal import SupervisorInvocationJournal
 from pajin.tools.gateway import GatewayOutcome, canonical_tool_request_digest
 
 
@@ -170,6 +174,7 @@ def _port(
     max_cost_usd: float = 10,
     max_tool_calls: int = 10,
     max_model_calls: int = 10,
+    duration_seconds: int = 1,
     elapsed_seconds: float = 0,
     dedicated_budget: BudgetController | None = None,
     dual_model_usage_budget: DualModelUsageBudget | None = None,
@@ -177,7 +182,7 @@ def _port(
     registration = _registration()
     budgets = sample_campaign.spec.budgets.model_copy(
         update={
-            "duration_seconds": 1,
+            "duration_seconds": duration_seconds,
             "max_tool_calls": max_tool_calls,
             "max_model_calls": max_model_calls,
             "max_model_tokens": max_model_tokens,
@@ -1262,6 +1267,62 @@ async def test_provider_session_preserves_cancellation_when_failure_audit_breaks
 
     assert gateway.cancelled
     assert budget.snapshot()["modelTokens"] > 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dual", [False, True])
+async def test_provider_cancellation_survives_persistent_budget_failure(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+    dual: bool,
+) -> None:
+    gateway = StubProviderGateway(block=True)
+    dedicated = BudgetController(Budgets(maxCostUsd=10))
+    port, budget = _port(
+        tmp_path,
+        sample_campaign,
+        gateway,
+        duration_seconds=60,
+        dedicated_budget=dedicated if dual else None,
+    )
+    journal_path = tmp_path / "invocations.sqlite3"
+    SupervisorInvocationJournal(journal_path).bind_budgets(
+        campaign_digest="a" * 64,
+        policy_digest="b" * 64,
+        campaign=budget,
+        dedicated=dedicated,
+    )
+    task = asyncio.create_task(port.chat(role="test", attempt=1, chat=_chat()))
+    async with asyncio.timeout(2):
+        while gateway.calls == 0:
+            await asyncio.sleep(0)
+
+    def fail_terminal_write(connection, checkpoint):
+        raise sqlite3.OperationalError("simulated accounting outage")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(budget_persistence, "_insert", fail_terminal_write)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+    assert any("budget accounting" in note for note in caught.value.__notes__)
+    assert gateway.cancelled
+    with pytest.raises(BudgetPersistenceError):
+        budget.reserve_tool_usage()
+    restored, restored_dedicated = (
+        BudgetController(budget.budgets),
+        BudgetController(dedicated.budgets),
+    )
+    SupervisorInvocationJournal(journal_path).bind_budgets(
+        campaign_digest="a" * 64,
+        policy_digest="b" * 64,
+        campaign=restored,
+        dedicated=restored_dedicated,
+    )
+    assert restored.model_calls == 1
+    assert restored.model_prompt_tokens == budget.model_prompt_tokens > 10
+    assert restored_dedicated.model_calls == (1 if dual else 0)
 
 
 @pytest.mark.asyncio

@@ -60,7 +60,13 @@ fails after both internal reservations succeed.
 ## Compatibility and limits
 
 The dual controller and Provider constructor parameter are additive. Existing runtime callers use
-the original single Campaign controller. Budget accounting remains process-local; two processes
-with independent `BudgetController` objects are not one global budget authority. SUP-004B3 must
-use a durable invocation journal for at-most-once dispatch, while any future distributed budget
-authority requires a separate persistent ledger and contract.
+the original single Campaign controller. Unbound controllers remain process-local. The additive
+[OPS-001](OPS-001-single-host-recovery-and-urgent-stop.md) journal binding persists both complete
+ledgers in one local transaction and restores conservative usage before another Supervisor dispatch.
+It retains unknown reservations and fences previous owners. Two independent journal files are not
+one budget authority, and distributed accounting still requires a separate contract.
+
+ADR-0267 also composes a Run-bound Campaign-only account into default Workers before their first
+work. Those executors do not invoke a Supervisor. An explicitly Run-bound Supervisor journal must
+select `campaign-and-supervisor` and retain this same atomic pair; a Campaign-only journal cannot
+be substituted or upgraded to satisfy the dual-budget requirement.

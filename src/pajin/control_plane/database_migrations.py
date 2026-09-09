@@ -79,8 +79,11 @@ from pajin.control_plane.database_schema import (
     _V12_METADATA,
     _V13_METADATA,
     _V14_METADATA,
+    _V15_METADATA,
     ARTIFACT_AUTHORITY_SCHEMA_VERSION,
     ARTIFACT_AUTHORITY_TABLES,
+    CHECKPOINT_KEY_IDENTITY_SCHEMA_VERSION,
+    CHECKPOINT_KEY_IDENTITY_TABLES,
     COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
     CURRENT_CONTROL_PLANE_TABLES,
     CURRENT_SCHEMA_VERSION,
@@ -120,6 +123,7 @@ from pajin.control_plane.database_schema import (
     V12_CONTROL_PLANE_TABLES,
     V13_CONTROL_PLANE_TABLES,
     V14_CONTROL_PLANE_TABLES,
+    V15_CONTROL_PLANE_TABLES,
     Base,
     EventRecord,
     JobRecord,
@@ -178,6 +182,7 @@ _MIGRATIONS = {
         "signed-target-attestation-registry-anti-rollback-authority"
     ),
     MEASURED_REVIEW_SCHEMA_VERSION: "append-only-measured-human-review-history",
+    CHECKPOINT_KEY_IDENTITY_SCHEMA_VERSION: "permanent-checkpoint-key-identities",
 }
 
 
@@ -268,6 +273,13 @@ def _initialize_schema(connection: Connection) -> None:  # noqa: C901
             raise SchemaInitializationError("unknown migration history for schema-v14 table set")
         _validate_v14_schema(connection)
         _migrate_v14_schema(connection)
+        _validate_current_schema(connection)
+        return
+    if cp_tables == V15_CONTROL_PLANE_TABLES:
+        if _latest_schema_version(connection) != MEASURED_REVIEW_SCHEMA_VERSION:
+            raise SchemaInitializationError("unknown migration history for schema-v15 table set")
+        _validate_v15_schema(connection)
+        _migrate_v15_schema(connection)
         _validate_current_schema(connection)
         return
     if cp_tables == CURRENT_CONTROL_PLANE_TABLES:
@@ -656,6 +668,18 @@ def _migrate_v14_schema(connection: Connection) -> None:
         _install_append_only_trigger(connection, table_name)
         _install_complete_append_only_guard(connection, table_name)
     _record_migration(connection, MEASURED_REVIEW_SCHEMA_VERSION)
+    _migrate_v15_schema(connection)
+
+
+def _migrate_v15_schema(connection: Connection) -> None:
+    """Add empty key bindings; only verified runtime keys may populate them."""
+
+    _lock_v9_migration_writes(connection)
+    _create_tables(connection, CHECKPOINT_KEY_IDENTITY_TABLES)
+    for table_name in sorted(CHECKPOINT_KEY_IDENTITY_TABLES):
+        _install_append_only_trigger(connection, table_name)
+        _install_complete_append_only_guard(connection, table_name)
+    _record_migration(connection, CHECKPOINT_KEY_IDENTITY_SCHEMA_VERSION)
 
 
 def _validate_migrating_core_json_rows(connection: Connection) -> None:
@@ -1588,6 +1612,31 @@ def _validate_v14_schema(connection: Connection) -> None:
     actual = [(int(row.version), str(row.description)) for row in rows]
     if actual != expected or any(row.applied_at is None for row in rows):
         raise SchemaInitializationError("unknown or incomplete schema v14 migration history")
+    _validate_v10_authority_rows(connection)
+
+
+def _validate_v15_schema(connection: Connection) -> None:
+    _validate_tables(
+        connection,
+        V15_CONTROL_PLANE_TABLES,
+        metadata=_V15_METADATA,
+        append_only_guard_version=COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
+        require_submission_and_lease_guards=True,
+    )
+    rows = connection.execute(
+        select(
+            SchemaVersionRecord.version,
+            SchemaVersionRecord.description,
+            SchemaVersionRecord.applied_at,
+        ).order_by(SchemaVersionRecord.version)
+    ).all()
+    expected = [
+        (version, _MIGRATIONS[version])
+        for version in range(LEGACY_SCHEMA_VERSION, MEASURED_REVIEW_SCHEMA_VERSION + 1)
+    ]
+    actual = [(int(row.version), str(row.description)) for row in rows]
+    if actual != expected or any(row.applied_at is None for row in rows):
+        raise SchemaInitializationError("unknown or incomplete schema v15 migration history")
     _validate_v10_authority_rows(connection)
 
 

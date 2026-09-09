@@ -48,6 +48,7 @@ from pajin.control_plane.attestation import (
     load_portable_replay_attestation,
     portable_replay_attestation_bytes,
 )
+from pajin.control_plane.checkpoint_keys import CheckpointKeyringGuard
 from pajin.control_plane.claim_service import (
     _MAX_REPLAY_RATE_LIMIT_SNAPSHOT_BYTES as _MAX_REPLAY_RATE_LIMIT_SNAPSHOT_BYTES,
 )
@@ -197,6 +198,8 @@ from pajin.control_plane.replay_issuance import (
 )
 from pajin.control_plane.replay_reads import ReplayReadService
 from pajin.control_plane.security import CheckpointSigner, token_digest
+from pajin.control_plane.stop_observations import StopObservationService
+from pajin.control_plane.urgent_stops import UrgentStopService
 from pajin.control_plane.view_mapper import ControlPlaneViewMapper
 from pajin.domain.replay import ReplayCompilation, ReplayPurpose, ReplayRetestContext
 from pajin.domain.validation import AtomicClaimType, ReplayConfirmationLineage, ValidationDecision
@@ -586,6 +589,7 @@ class ControlPlaneService:
             raise ValueError("configure either an inline or signed target trust registry")
         self.repository = repository
         self.signer = signer
+        self._checkpoint_keyring = CheckpointKeyringGuard(repository, signer)
         self._replay_executor_profiles = {
             subject: frozenset(profiles)
             for subject, profiles in (replay_executor_profiles or {}).items()
@@ -714,6 +718,10 @@ class ControlPlaneService:
             self._claims,
             LifecycleServiceHooks(transaction=transaction_hooks),
             run_cancellation_authorizer=run_cancellation_authorizer,
+        )
+        self.stop_observations = StopObservationService(repository, transaction_hooks)
+        self.urgent_stops = UrgentStopService(
+            repository, self._lifecycle, transaction_hooks, run_cancellation_authorizer,
         )
         self._replay_issuance = ReplayIssuanceService(
             repository,
@@ -3209,6 +3217,7 @@ class ControlPlaneService:
                     "job": {"kind": job.kind, "maxAttempts": job.max_attempts},
                 }
             )
+            self._checkpoint_keyring.require_signing_key(session)
             signed = self.signer.sign(
                 checkpoint_id=checkpoint_id,
                 run_id=run.run_id,
@@ -3537,6 +3546,11 @@ class ControlPlaneService:
 
     def _verify_checkpoint(self, checkpoint: CheckpointRecord) -> None:
         self._lifecycle.verify_checkpoint(checkpoint)
+
+    def activate_checkpoint_keyring(self) -> None:
+        """Verify restart continuity before the server admits more work."""
+
+        self._checkpoint_keyring.activate()
 
     def activate_target_attestation_registry(
         self,

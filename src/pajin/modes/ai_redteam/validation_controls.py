@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from typing import cast
@@ -61,6 +62,7 @@ from pajin.modes.ai_redteam.replay_source import (
 from pajin.policy.capability import CapabilityLedger, CapabilityRecord
 from pajin.policy.engine import PolicyEngine
 from pajin.replay.compiler import replay_scenario_digest
+from pajin.runtime.budgeted_execution import budgeted_tool_call
 from pajin.runtime.control import BudgetController
 from pajin.runtime.store import RunIntegrityVerification, RunStore, verify_run_integrity
 from pajin.runtime.worker import WorkerBackend
@@ -459,15 +461,12 @@ class KISAValidationControlCoordinator:
                 )
                 budget.check_tool_call()
                 started_at = datetime.now(UTC)
-                outcome = await gateway.execute(
-                    campaign,
-                    grant,
-                    request,
-                    used_calls=0,
+                outcome = await budgeted_tool_call(
+                    budget,
+                    partial(gateway.execute, campaign, grant, request, used_calls=0),
                 )
                 if outcome.executed:
                     ledger.consume(grant.grant_id)
-                    budget.record_tool_call()
                 status, observed = _control_observation(request, outcome.result)
                 attempt = build_validation_control_attempt(
                     **{

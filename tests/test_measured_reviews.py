@@ -255,6 +255,7 @@ def test_v14_upgrade_preserves_existing_run_and_installs_history_guards(tmp_path
             actor="writer",
         )
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_checkpoint_key_identities")
             connection.exec_driver_sql("DROP TABLE cp_measured_review_revisions")
             connection.execute(
                 text("DELETE FROM cp_schema_version WHERE version >= :version"),

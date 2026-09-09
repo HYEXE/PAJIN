@@ -2,6 +2,7 @@
 
 import { createMeasuredProductPanels } from "./measured-products.js";
 import { createMeasuredReviews } from "./measured-reviews.js";
+import { createUrgentStops } from "./urgent-stops.js";
 
 import {
   ApiProtocolError,
@@ -298,6 +299,11 @@ const measuredReviews = createMeasuredReviews({
   authEpoch: () => session.authEpoch,
   announce,
 });
+const urgentStops = createUrgentStops({
+  document, request: apiRequest,
+  access: () => ({ connected: session.connected, operator: session.canOperate }),
+  authEpoch: () => session.authEpoch,
+});
 
 function setBusy(element, busy) {
   element.setAttribute("aria-busy", busy ? "true" : "false");
@@ -350,6 +356,7 @@ function setConnected(connected, roles = [], subject = null) {
   session.canSubmit = session.canOperate;
   measuredProductPanels.updateAccess();
   measuredReviews.updateAccess();
+  urgentStops.updateAccess();
   elements.connectionState.classList.toggle("connected", connected);
   elements.connectionLabel.textContent = connected
     ? roles.map((role) => role.replace("-", " ")).join(" · ")
@@ -859,6 +866,7 @@ function replaceCredential(token) {
   session.webMeasuredProductLoading = false;
   measuredProductPanels.clear();
   measuredReviews.clear();
+  urgentStops.clear();
   session.reviewQueueRequestId += 1;
   session.reviewQueueLoading = false;
   session.refreshTask = null;
@@ -1312,6 +1320,7 @@ function refreshCurrent({ quiet = false } = {}) {
         await Promise.all([
           loadRuns(),
           loadHumanReviewQueue(),
+          urgentStops.refresh({ quiet }),
           selectedRunId === null ? Promise.resolve() : loadDetail(selectedRunId),
         ]);
       } catch (error) {
@@ -1531,7 +1540,7 @@ elements.tokenForm.addEventListener("submit", async (event) => {
     setConnected(true, roles, principal.subject);
     announce(`Authenticated as ${principal.subject}; loading Runs and human attention…`);
     try {
-      await loadRuns();
+      await Promise.all([loadRuns(), urgentStops.refresh()]);
     } catch (error) {
       if (!isStaleRequest(error) && session.authEpoch === authEpoch && session.connected) {
         const message = error instanceof Error ? error.message : "Unable to load Runs.";

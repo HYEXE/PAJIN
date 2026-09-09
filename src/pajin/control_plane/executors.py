@@ -49,6 +49,7 @@ from pajin.control_plane.redteam_profiles import (
     validate_redteam_mcp_profile,
     validate_redteam_web_profile,
 )
+from pajin.control_plane.run_budgets import RunBudgetRegistry, run_budgeted_action
 from pajin.discovery.hypothesis import AttackHypothesisSet, SurfaceBoundPlan
 from pajin.domain.models import (
     CampaignManifest,
@@ -581,10 +582,12 @@ class CampaignJobExecutor:
         output_root: Path,
         worker: WorkerBackend | None = None,
         capability_deployment: CapabilityGraphDeploymentRuntime | None = None,
+        budget_registry: RunBudgetRegistry | None = None,
     ) -> None:
         self._output_root = output_root
         self._worker = worker or SimulatedWorkerBackend()
         self._capability_deployment = capability_deployment
+        self._budget_registry = budget_registry
 
     async def execute(
         self,
@@ -617,6 +620,10 @@ class CampaignJobExecutor:
             )
         job_input = CampaignJobInput.model_validate(raw_input)
         self._require_legacy_profile_risk_policy(job_input)
+        budget = (
+            self._budget_registry.bind(job, job_input.manifest, original_input=job_input)
+            if self._budget_registry is not None else None
+        )
         tools = ToolRegistry()
         tools.register(MockAgentProbe())
         tools.register(SleepCheckTool())
@@ -628,7 +635,9 @@ class CampaignJobExecutor:
             output_root=self._output_root,
         )
         try:
-            outcome = await runner.run(job_input.manifest, cancellation=cancellation)
+            outcome = await runner.run(
+                job_input.manifest, cancellation=cancellation, budget=budget,
+            )
         except asyncio.CancelledError:
             if cancellation is not None and cancellation.active:
                 seal_executor_quiescence(cancellation)
@@ -716,6 +725,10 @@ class CampaignJobExecutor:
                 definition,
                 approved=approved_profile,
             )
+            budget = (
+                self._budget_registry.bind(job, campaign, original_input=job_input)
+                if self._budget_registry is not None else None
+            )
             envelope = deployment.mission_envelope
             used_calls = sum(
                 permit.run_id == envelope.run_id
@@ -747,17 +760,14 @@ class CampaignJobExecutor:
                 clock=runtime.clock,
                 permit_ttl=timedelta(seconds=deployment.permit_ttl_seconds),
             )
-            execution = await gate.execute_once(
-                intent,
-                proposal,
-                campaign,
-                job_input.hypothesis_set,
-                job_input.plan,
-                job_input.task_digest,
-                job_input.action_definition,
-                definitions,
-                job_input.code_backed_capability,
-                authorities,
+            execution = await run_budgeted_action(
+                budget,
+                lambda: gate.execute_once(
+                    intent, proposal, campaign, job_input.hypothesis_set, job_input.plan,
+                    job_input.task_digest, job_input.action_definition, definitions,
+                    job_input.code_backed_capability, authorities,
+                ),
+                dispatched=lambda result: result.permit.dispatch.dispatched,
             )
         except asyncio.CancelledError:
             if cancellation is not None and cancellation.active:
@@ -866,6 +876,10 @@ class CampaignJobExecutor:
                 "capability-graph-v1 request preparation failed closed"
             ) from exc
         self._require_redteam_product_authority(runtime, job_input, prepared, campaign)
+        budget = (
+            self._budget_registry.bind(job, campaign, original_input=job_input)
+            if self._budget_registry is not None else None
+        )
         store = runtime.open_run_store(envelope.run_id)
         permits = self._capability_graph_permits(
             runtime,
@@ -894,14 +908,13 @@ class CampaignJobExecutor:
             clock=runtime.clock,
         )
         try:
-            dispatched = await dispatcher.dispatch_once(
-                envelope,
-                job_input.proposal,
-                job_input.decision,
-                prepared,
-                campaign=campaign,
-                grant=job_input.grant,
-                used_calls=used_calls,
+            dispatched = await run_budgeted_action(
+                budget,
+                lambda: dispatcher.dispatch_once(
+                    envelope, job_input.proposal, job_input.decision, prepared,
+                    campaign=campaign, grant=job_input.grant, used_calls=used_calls,
+                ),
+                dispatched=lambda result: result.dispatched,
             )
         except asyncio.CancelledError:
             self._seal_failed_dispatch(store)
@@ -1353,9 +1366,11 @@ class ToolLoopJobExecutor:
         *,
         output_root: Path,
         runner_factory: Callable[[CampaignManifest], PolicyToolLoopRunner] | None = None,
+        budget_registry: RunBudgetRegistry | None = None,
     ) -> None:
         self._output_root = output_root
         self._runner_factory = runner_factory or self._deterministic_runner
+        self._budget_registry = budget_registry
 
     async def execute(
         self,
@@ -1369,12 +1384,17 @@ class ToolLoopJobExecutor:
         if not isinstance(value, dict):
             raise PermanentExecutionError("tool-loop Job payload.input must be an object")
         job_input = ToolLoopJobInput.model_validate(value)
+        budget = (
+            self._budget_registry.bind(job, job_input.manifest, original_input=job_input)
+            if self._budget_registry is not None else None
+        )
         runner = self._runner_factory(job_input.manifest)
         try:
             outcome = await runner.run(
                 job_input.manifest,
                 prompt=job_input.prompt,
                 cancellation=cancellation,
+                budget=budget,
             )
         except asyncio.CancelledError:
             if cancellation is not None and cancellation.active:
@@ -1396,6 +1416,12 @@ class ToolLoopJobExecutor:
         if not isinstance(approval_id, str):
             raise PermanentExecutionError("continuation Job lacks approval ID")
         state = ToolLoopResumeState.model_validate(raw_state)
+        budget = (
+            self._budget_registry.bind(
+                job, state.job_input.manifest, original_input=state.job_input, resuming=True,
+            )
+            if self._budget_registry is not None else None
+        )
         approval = ConsumedApproval.model_validate(raw_approval)
         pending = state.tool_loop_checkpoint.pending_call
         if pending is None:
@@ -1425,6 +1451,7 @@ class ToolLoopJobExecutor:
                     checkpoint_path=checkpoint_path,
                     approvals=[tool_approval],
                     cancellation=cancellation,
+                    budget=budget,
                 )
             except asyncio.CancelledError:
                 if cancellation is not None and cancellation.active:

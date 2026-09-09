@@ -11,17 +11,29 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, Literal, Self, cast
+from typing import TYPE_CHECKING, Annotated, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from pajin.discovery.canonicalization import canonical_json_bytes
 from pajin.domain.models import StrictModel
+from pajin.runtime.budget_persistence import DurableBudgetLedger
+from pajin.runtime.budget_state import BUDGET_SCHEMA_SQL, BUDGET_TABLE
+from pajin.runtime.host_gate import host_work
 from pajin.runtime.store import RunStore, validate_run_artifact_path
 from pajin.supervision.checkpoint_scheduler import (
     SupervisorCheckpointSchedule,
     SupervisorCheckpointSchedulePublication,
 )
+from pajin.supervision.run_binding import (
+    RUN_BOUND_JOURNAL_VERSION,
+    SupervisorRunBinding,
+    require_run_binding,
+    stored_run_binding,
+)
+
+if TYPE_CHECKING:
+    from pajin.runtime.control import BudgetController
 
 SUPERVISOR_INVOCATION_INTENT_API_VERSION: Literal[
     "pajin.dev/supervisor-invocation-intent/v1alpha1"
@@ -36,7 +48,7 @@ SUPERVISOR_INVOCATION_JOURNAL_ENTRY_API_VERSION: Literal[
     "pajin.dev/supervisor-invocation-journal-entry/v1alpha1"
 ] = "pajin.dev/supervisor-invocation-journal-entry/v1alpha1"
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _APPLICATION_ID = 0x50414A53  # ASCII "PAJS"
 _BUSY_TIMEOUT_MS = 30_000
 _MAX_INTENT_BYTES = 512 * 1024
@@ -638,6 +650,21 @@ _SCHEMA_DIGEST = sha256(
     )
 ).hexdigest()
 
+_V1_SCHEMA_OBJECT_SQL = _SCHEMA_OBJECT_SQL
+_V1_SCHEMA_DIGEST = _SCHEMA_DIGEST
+_V1_TABLES = _TABLES
+_SCHEMA_OBJECT_SQL = {**_V1_SCHEMA_OBJECT_SQL, **BUDGET_SCHEMA_SQL}
+_TABLES = frozenset({*_V1_TABLES, BUDGET_TABLE})
+_SCHEMA_DIGEST = sha256(
+    canonical_json_bytes(
+        {
+            f"{kind}:{name}": _normalize_schema_sql(statement)
+            for (kind, name), statement in sorted(_SCHEMA_OBJECT_SQL.items())
+        },
+        label="Supervisor invocation journal schema",
+    )
+).hexdigest()
+
 
 class SupervisorInvocationJournal:
     """Crash-safe, one-host journal for durable Supervisor dispatch claiming."""
@@ -648,11 +675,91 @@ class SupervisorInvocationJournal:
         *,
         clock: Callable[[], datetime] | None = None,
         run_id_factory: Callable[[], str] | None = None,
+        run_binding: SupervisorRunBinding | None = None,
+        allow_create: bool = True,
     ) -> None:
         self.path = Path(os.path.abspath(path))
         self._clock = clock or (lambda: datetime.now(UTC))
         self._run_id_factory = run_id_factory or RunStore.new_run_id
-        _initialize(self.path)
+        self._run_binding = (
+            SupervisorRunBinding.model_validate(run_binding.model_dump(mode="python"))
+            if run_binding is not None else None
+        )
+        with host_work():
+            from pajin.runtime.host_recovery import prepare_store_enrollment
+
+            enrollment = prepare_store_enrollment(
+                self.path, kind="supervisor-sqlite", run_binding=self._run_binding,
+            )
+            _initialize(self.path, run_binding=self._run_binding, allow_create=allow_create)
+            if enrollment is not None:
+                enrollment.complete()
+        self._budget_ledger = DurableBudgetLedger(
+            transaction=self._budget_transaction,
+            may_initialize=_may_initialize_budget,
+            clock=self._now,
+        )
+
+    def _validate_connection(self, connection: sqlite3.Connection) -> None:
+        _validate_schema(connection)
+        try:
+            require_run_binding(connection, self._run_binding)
+        except ValueError as exc:
+            raise SupervisorInvocationJournalError("journal Run binding differs") from exc
+
+    def _require_budget_scope(self, campaign_digest: str, *, dual: bool) -> None:
+        if self._run_binding is not None and (
+            self._run_binding.campaign_digest != campaign_digest
+            or self._run_binding.budget_mode
+            != ("campaign-and-supervisor" if dual else "campaign-only")
+        ):
+            raise SupervisorInvocationJournalError("budget differs from the journal Run binding")
+
+    def bind_campaign_budget(self, *, campaign_digest: str, campaign: BudgetController) -> None:
+        """Bind first-work accounting in an explicitly Campaign-only CP Run journal."""
+        if self._run_binding is None:
+            raise SupervisorInvocationJournalError(
+                "Campaign-only accounting requires a Run binding"
+            )
+        self._require_budget_scope(campaign_digest, dual=False)
+        self._budget_ledger.bind_campaign(campaign_digest=campaign_digest, campaign=campaign)
+
+    @contextmanager
+    def _budget_transaction(self) -> Iterator[sqlite3.Connection]:
+        with _write_transaction(self.path) as connection:
+            self._validate_connection(connection)
+            yield connection
+
+    def bind_budgets(
+        self,
+        *,
+        campaign_digest: str,
+        policy_digest: str,
+        campaign: BudgetController,
+        dedicated: BudgetController,
+    ) -> None:
+        """Admit both complete ledgers before the first new invocation claim."""
+
+        self._require_budget_scope(campaign_digest, dual=True)
+        self._budget_ledger.bind_pair(
+            campaign_digest=campaign_digest,
+            policy_digest=policy_digest,
+            campaign=campaign,
+            dedicated=dedicated,
+        )
+
+    def checkpoint_entry(self, checkpoint_key: str) -> SupervisorInvocationJournalEntry | None:
+        """Inspect a scheduling identity without claiming or starting an invocation."""
+
+        if not isinstance(checkpoint_key, str) or len(checkpoint_key) != 64:
+            raise SupervisorInvocationJournalError("Supervisor checkpoint key is invalid")
+        with _readonly_connection(self.path) as connection:
+            self._validate_connection(connection)
+            row = connection.execute(
+                "SELECT * FROM supervisor_invocation_intents WHERE checkpoint_key = ?",
+                (checkpoint_key,),
+            ).fetchone()
+            return None if row is None else _entry_from_row(connection, row)
 
     def claim(
         self,
@@ -664,9 +771,10 @@ class SupervisorInvocationJournal:
 
         try:
             schedule, binding = _publication_binding(publication)
+            self._require_budget_scope(schedule.campaign_digest, dual=True)
             context = _canonical_request_context(request_context)
             with _write_transaction(self.path) as connection:
-                _validate_schema(connection)
+                self._validate_connection(connection)
                 existing = connection.execute(
                     "SELECT * FROM supervisor_invocation_intents WHERE checkpoint_key = ?",
                     (schedule.checkpoint_key,),
@@ -792,7 +900,7 @@ class SupervisorInvocationJournal:
         try:
             expected = _canonical_entry(entry)
             with _write_transaction(self.path) as connection:
-                _validate_schema(connection)
+                self._validate_connection(connection)
                 row = _load_intent(connection, expected.intent.intent_id)
                 current = _entry_from_row(connection, row)
                 if current.state is not SupervisorInvocationJournalState.INTENT_RECORDED:
@@ -893,7 +1001,7 @@ class SupervisorInvocationJournal:
             ):
                 raise ValueError("Supervisor invocation receipt path differs")
             with _write_transaction(self.path) as connection:
-                _validate_schema(connection)
+                self._validate_connection(connection)
                 row = _load_intent(connection, expected.intent.intent_id)
                 current = _entry_from_row(connection, row)
                 if current.intent != expected.intent:
@@ -1003,7 +1111,7 @@ class SupervisorInvocationJournal:
             raise SupervisorInvocationJournalError("Supervisor invocation intent ID is invalid")
         try:
             with _readonly_connection(self.path) as connection:
-                _validate_schema(connection)
+                self._validate_connection(connection)
                 return _entry_from_row(connection, _load_intent(connection, intent_id))
         except SupervisorInvocationJournalError:
             raise
@@ -1492,9 +1600,44 @@ def _digest(domain: str, value: object) -> str:
     ).hexdigest()
 
 
-def _initialize(path: Path) -> None:
+def _may_initialize_budget(connection: sqlite3.Connection, campaign_digest: str) -> bool:
+    for row in connection.execute("SELECT * FROM supervisor_invocation_intents"):
+        if _entry_from_row(connection, row).intent.campaign_digest == campaign_digest:
+            return False
+    return True
+
+
+def _migrate_v1_budget_schema(connection: sqlite3.Connection) -> None:
+    """Preserve verified v1 authority and add an initially empty budget history."""
+
+    _validate_schema(connection, legacy=True)
+    try:
+        for row in connection.execute("SELECT * FROM supervisor_invocation_intents"):
+            _entry_from_row(connection, row)
+    except (ValueError, TypeError) as exc:
+        raise SupervisorInvocationJournalError(
+            "Legacy Supervisor invocation journal integrity failed"
+        ) from exc
+    for statement in BUDGET_SCHEMA_SQL.values():
+        connection.execute(statement)
+    connection.execute("DROP TRIGGER supervisor_invocation_metadata_no_update")
+    connection.executemany(
+        "UPDATE supervisor_invocation_metadata SET value = ? WHERE key = ?",
+        ((str(_SCHEMA_VERSION), "schema_version"), (_SCHEMA_DIGEST, "schema_digest")),
+    )
+    connection.execute(_METADATA_NO_UPDATE_SQL)
+    connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+
+
+def _initialize(
+    path: Path, *, run_binding: SupervisorRunBinding | None = None, allow_create: bool = True,
+) -> None:
     _require_safe_path(path)
     _require_safe_sidecars(path)
+    if type(allow_create) is not bool:
+        raise SupervisorInvocationJournalError("journal creation setting must be a boolean")
+    if not allow_create and (not path.exists() or path.stat().st_size == 0):
+        raise SupervisorInvocationJournalError("required existing journal is missing")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if os.name == "posix":
         path.parent.chmod(0o700)
@@ -1503,7 +1646,8 @@ def _initialize(path: Path) -> None:
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(
-            path,
+            f"{path.as_uri()}?mode={'rwc' if allow_create else 'rw'}",
+            uri=True,
             isolation_level=None,
             timeout=_BUSY_TIMEOUT_MS / 1_000,
         )
@@ -1535,6 +1679,31 @@ def _initialize(path: Path) -> None:
             )
             connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
             connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
+        elif tables == _V1_TABLES:
+            _migrate_v1_budget_schema(connection)
+        _validate_schema(connection)
+        if run_binding is not None and stored_run_binding(connection) is None:
+            if not allow_create or any(
+                connection.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None
+                for table in (
+                    "supervisor_invocation_intents", "supervisor_invocation_events", BUDGET_TABLE,
+                )
+            ):
+                raise SupervisorInvocationJournalError(
+                    "existing unbound history cannot be enrolled as a fresh CP Run"
+                )
+            connection.execute("DROP TRIGGER supervisor_invocation_metadata_no_update")
+            connection.execute(
+                "UPDATE supervisor_invocation_metadata SET value = ? WHERE key = 'schema_version'",
+                (str(RUN_BOUND_JOURNAL_VERSION),),
+            )
+            connection.execute(
+                "INSERT INTO supervisor_invocation_metadata(key, value) VALUES ('run_binding', ?)",
+                (run_binding.canonical(),),
+            )
+            connection.execute(_METADATA_NO_UPDATE_SQL)
+            connection.execute(f"PRAGMA user_version = {RUN_BOUND_JOURNAL_VERSION}")
+        require_run_binding(connection, run_binding)
         _validate_schema(connection)
         connection.execute("COMMIT")
         if os.name == "posix":
@@ -1552,6 +1721,12 @@ def _initialize(path: Path) -> None:
 
 @contextmanager
 def _write_transaction(path: Path) -> Iterator[sqlite3.Connection]:
+    with host_work(), _write_transaction_opened(path) as connection:
+        yield connection
+
+
+@contextmanager
+def _write_transaction_opened(path: Path) -> Iterator[sqlite3.Connection]:
     _require_safe_path(path)
     _require_safe_sidecars(path)
     identity = _file_identity(path)
@@ -1577,6 +1752,12 @@ def _write_transaction(path: Path) -> Iterator[sqlite3.Connection]:
 
 @contextmanager
 def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    with host_work(), _readonly_connection_opened(path) as connection:
+        yield connection
+
+
+@contextmanager
+def _readonly_connection_opened(path: Path) -> Iterator[sqlite3.Connection]:
     _require_safe_path(path)
     _require_safe_sidecars(path)
     identity = _file_identity(path)
@@ -1601,10 +1782,10 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
 
 
 def _open_connection(path: Path, *, readonly: bool) -> sqlite3.Connection:
-    target: str | Path = f"{path.as_uri()}?mode=ro" if readonly else path
+    target = f"{path.as_uri()}?mode={'ro' if readonly else 'rw'}"
     connection = sqlite3.connect(
         target,
-        uri=readonly,
+        uri=True,
         isolation_level=None,
         timeout=_BUSY_TIMEOUT_MS / 1_000,
     )
@@ -1619,13 +1800,28 @@ def _open_connection(path: Path, *, readonly: bool) -> sqlite3.Connection:
     return connection
 
 
-def _validate_schema(connection: sqlite3.Connection) -> None:
-    if _application_tables(connection) != _TABLES:
+def _validate_schema(connection: sqlite3.Connection, *, legacy: bool = False) -> None:
+    tables = _V1_TABLES if legacy else _TABLES
+    schema_digest = _V1_SCHEMA_DIGEST if legacy else _SCHEMA_DIGEST
+    schema_version = 1 if legacy else _SCHEMA_VERSION
+    schema_objects = _V1_SCHEMA_OBJECT_SQL if legacy else _SCHEMA_OBJECT_SQL
+    if _application_tables(connection) != tables:
         raise SupervisorInvocationJournalError("Supervisor invocation journal table set differs")
     metadata_rows = connection.execute(
         "SELECT key, value FROM supervisor_invocation_metadata ORDER BY key"
     ).fetchall()
     metadata = {str(row["key"]): str(row["value"]) for row in metadata_rows}
+    expected_metadata = {"schema_digest": schema_digest, "schema_version": str(schema_version)}
+    if not legacy and "run_binding" in metadata:
+        try:
+            binding = stored_run_binding(connection)
+            assert binding is not None
+        except ValueError as exc:
+            raise SupervisorInvocationJournalError("journal Run binding is invalid") from exc
+        schema_version = RUN_BOUND_JOURNAL_VERSION
+        expected_metadata.update(
+            schema_version=str(schema_version), run_binding=binding.canonical(),
+        )
     user_version = connection.execute("PRAGMA user_version").fetchone()
     application_id = connection.execute("PRAGMA application_id").fetchone()
     journal_mode = connection.execute("PRAGMA journal_mode").fetchone()
@@ -1633,12 +1829,9 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
     trusted_schema = connection.execute("PRAGMA trusted_schema").fetchone()
     if (
         metadata
-        != {
-            "schema_digest": _SCHEMA_DIGEST,
-            "schema_version": str(_SCHEMA_VERSION),
-        }
+        != expected_metadata
         or user_version is None
-        or user_version[0] != _SCHEMA_VERSION
+        or user_version[0] != schema_version
         or application_id is None
         or application_id[0] != _APPLICATION_ID
         or journal_mode is None
@@ -1651,7 +1844,7 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         raise SupervisorInvocationJournalError(
             "Supervisor invocation journal connection or version differs"
         )
-    placeholders = ", ".join("?" for _ in _TABLES)
+    placeholders = ", ".join("?" for _ in tables)
     rows = connection.execute(
         f"""
         SELECT type, name, sql FROM sqlite_master
@@ -1659,14 +1852,12 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
           AND type IN ('table', 'index', 'trigger')
           AND (name IN ({placeholders}) OR tbl_name IN ({placeholders}))
         """,
-        (*sorted(_TABLES), *sorted(_TABLES)),
+        (*sorted(tables), *sorted(tables)),
     ).fetchall()
     actual = {
         (str(row["type"]), str(row["name"])): _normalize_schema_sql(str(row["sql"])) for row in rows
     }
-    expected = {
-        key: _normalize_schema_sql(statement) for key, statement in _SCHEMA_OBJECT_SQL.items()
-    }
+    expected = {key: _normalize_schema_sql(statement) for key, statement in schema_objects.items()}
     if actual != expected:
         raise SupervisorInvocationJournalError(
             "Supervisor invocation journal schema fingerprint differs"

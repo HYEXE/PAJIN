@@ -102,15 +102,17 @@ def check_configuration() -> None:
         MeasuredProductDeploymentError,
         load_measured_product_readers,
     )
+    from pajin.runtime.host_gate import runtime_activity
 
     _server_tls_settings_from_env()
     _limit_concurrency_from_env()
     settings = ControlPlaneSettings.from_env()
     try:
-        readers = load_measured_product_readers(
-            settings.measured_product_deployment_path,
-            settings.measured_product_deployment_sha256,
-        )
+        with runtime_activity("control-plane", configuration=settings):
+            readers = load_measured_product_readers(
+                settings.measured_product_deployment_path,
+                settings.measured_product_deployment_sha256,
+            )
     except MeasuredProductDeploymentError as exc:
         sys.stderr.write(f"{exc}\n")
         raise SystemExit(1) from None

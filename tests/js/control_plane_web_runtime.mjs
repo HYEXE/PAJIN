@@ -246,6 +246,11 @@ const selectors = [
   "#review-queue-empty",
   "#review-queue-list",
   "#review-queue-more",
+  "#urgent-stops-panel",
+  "#urgent-stops-refresh",
+  "#urgent-stops-more",
+  "#urgent-stops-status",
+  "#urgent-stops-list",
 ];
 const elements = new Map(selectors.map((selector) => [selector, new FakeElement()]));
 elements.get("#campaign-name").value = "web-console-test";
@@ -303,6 +308,9 @@ globalThis.fetch = async (url, options) => {
   ));
   if (index === -1 && normalizedUrl === "/v1/review-queue?limit=50") {
     return jsonResponse(reviewQueue([]));
+  }
+  if (index === -1 && normalizedUrl === "/v1/urgent-stops?limit=20") {
+    return jsonResponse({ items: [], nextCursor: null });
   }
   assert.notEqual(index, -1, `unexpected fetch: ${normalizedUrl}`);
   const [{ responder }] = fetchHandlers.splice(index, 1);
@@ -2144,6 +2152,38 @@ assert.equal(elements.get("#status-message").classList.contains("success"), fals
 assert.equal(elements.get("#run-form").attributes.get("aria-busy"), "false");
 assert.equal(elements.get("#submit-button").disabled, false);
 
+const urgentAlert = {
+  alertId: `event_${"a".repeat(32)}`,
+  application: {
+    apiVersion: "pajin.dev/urgent-stop-application/v1", state: "control-plane-cancelled",
+    applicationDigest: "b".repeat(64), appliedAt: "2026-09-08T00:00:00Z",
+    binding: { runId: `run_${"c".repeat(32)}` },
+    decision: { decisionState: "admitted-not-applied", observationType: "scope-boundary-violation",
+      executionAuthorized: false, permitGranted: false, capabilityGranted: false,
+      scopeExpansionAuthorized: false },
+  },
+  acknowledgment: null, fencedWorkers: 2, observedWorkers: 1, quiescedWorkers: 1, drainedWorkers: 1,
+  incompleteWorkers: 0,
+};
+enqueueFetch("/v1/urgent-stops?limit=20", () => jsonResponse({ items: [urgentAlert], nextCursor: null }));
+await elements.get("#urgent-stops-refresh").dispatch("click");
+assert.match(elements.get("#urgent-stops-status").textContent, /1 awaiting acknowledgment/);
+assert.match(elements.get("#urgent-stops-list").children[0].children[3].textContent, /1 reports pending/);
+const urgentAck = { alertId: urgentAlert.alertId, applicationDigest: urgentAlert.application.applicationDigest,
+  actor: "operator-subject", acknowledgedAt: "2026-09-08T00:01:00Z" };
+enqueueFetch(`/v1/urgent-stops/${urgentAlert.alertId}/acknowledgment`, (_url, options) => {
+  assert.equal(options.method, "POST");
+  assert.deepEqual(JSON.parse(options.body), { applicationDigest: urgentAlert.application.applicationDigest });
+  return jsonResponse(urgentAck);
+});
+await elements.get("#urgent-stops-list").querySelectorAll("button")[0].dispatch("click");
+assert.match(elements.get("#urgent-stops-status").textContent, /Run remains cancelled/);
+assert.equal(elements.get("#urgent-stops-refresh").focused, true);
+assert.equal(elements.get("#urgent-stops-list").querySelectorAll("button").length, 0);
+const staleUrgent = deferred();
+enqueueFetch("/v1/urgent-stops?limit=20", () => staleUrgent.promise);
+const pendingUrgent = elements.get("#urgent-stops-refresh").dispatch("click");
+await settle();
 elements.get("#workflow-reason").focus();
 for (const listener of globalListeners.get("pagehide") || []) {
   listener();
@@ -2154,5 +2194,10 @@ assert.equal(elements.get("#web-measured-product-result").hidden, true);
 assert.equal(elements.get("#web-measured-product-load-button").disabled, true);
 assert.equal(elements.get("#token-input").focused, false);
 assert.equal(elements.get("#workflow-reason").focused, true);
+staleUrgent.resolve(jsonResponse({ items: [urgentAlert], nextCursor: null }));
+await pendingUrgent;
+assert.equal(elements.get("#urgent-stops-list").children.length, 0);
+assert.equal(elements.get("#urgent-stops-refresh").disabled, true);
+assert.equal(elements.get("#urgent-stops-panel").attributes.get("aria-busy"), "false");
 assert.equal(fetchHandlers.length, 0, "all expected fetch handlers must be consumed");
 assert.ok(fetchCalls.length > 0);

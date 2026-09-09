@@ -1531,3 +1531,9 @@ footer {
     animation-iteration-count: 1 !important;
   }
 }
+
+.urgent-stops-list { display: grid; gap: 1rem; margin-block: 1rem; }
+.urgent-stops-panel { padding: 1.5rem; margin-bottom: 1.5rem; }
+.urgent-stops-panel > p, .urgent-stop-card p { line-height: 1.6; }
+.urgent-stop-card { border: 1px solid var(--line); border-radius: 0.75rem; padding: 1rem; overflow-wrap: anywhere; }
+.urgent-stop-card h3 { margin-top: 0; }

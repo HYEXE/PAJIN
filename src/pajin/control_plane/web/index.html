@@ -84,6 +84,17 @@
         </form>
       </section>
 
+      <section id="urgent-stops-panel" class="panel urgent-stops-panel" aria-labelledby="urgent-stops-heading">
+        <div class="section-heading">
+          <h2 id="urgent-stops-heading">Urgent stops</h2>
+          <button id="urgent-stops-refresh" class="button button-quiet" type="button" disabled>Refresh latest alerts</button>
+        </div>
+        <p>Review why a Run stopped and whether its Workers have reported back. Worker reports do not verify external resource cleanup. Acknowledging an alert keeps the Run cancelled.</p>
+        <p id="urgent-stops-status" role="status" aria-live="polite">Connect to view urgent stops.</p>
+        <div id="urgent-stops-list" class="urgent-stops-list"></div>
+        <button id="urgent-stops-more" class="button button-quiet" type="button" hidden disabled>Older alerts</button>
+      </section>
+
       <div class="workspace-grid">
         <section class="panel submit-panel" aria-labelledby="submit-heading">
           <div class="section-heading">

@@ -775,6 +775,7 @@ def _invocation_environment(
     policy_engine: PolicyEngine | None = None,
     draft_transform: Callable[[dict[str, object]], dict[str, object]] | None = None,
     draft_wire_transform: Callable[[str], str] | None = None,
+    run_binding=None,
 ):
     ledger = CapabilityLedger(max_depth=campaign.spec.budgets.max_spawn_depth)
     tool_id = f"provider.{provider.provider_id}.chat"
@@ -806,7 +807,9 @@ def _invocation_environment(
         draft_transform=draft_transform,
         draft_wire_transform=draft_wire_transform,
     )
-    journal = SupervisorInvocationJournal(tmp_path / "supervisor-invocations.sqlite3")
+    journal = SupervisorInvocationJournal(
+        tmp_path / "supervisor-invocations.sqlite3", run_binding=run_binding,
+    )
     authorities = SupervisorInvocationAuthorities(
         snapshot_input=snapshot_input,
         binding=binding,
@@ -891,6 +894,111 @@ def test_supervisor_invocation_is_durable_two_seal_and_compiles_once(
     serialized = first.publication.receipt.model_dump_json(by_alias=True)
     assert provider.secret_ref not in serialized
     assert TARGET_PROMPT not in serialized
+
+
+@pytest.mark.parametrize("uncertain_first_call", [False, True])
+def test_restarted_invoker_restores_budgets_before_a_different_checkpoint_dispatch(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    uncertain_first_call: bool,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    graph_store, writer, graph, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy(calls=1)
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(output_root=tmp_path / "schedules", budget_policy=policy),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, _, authorities, worker, first_budget, first_dedicated = _invocation_environment(
+        tmp_path,
+        campaign,
+        provider,
+        policy,
+        snapshot_input,
+        binding,
+        configuration,
+        collaboration,
+        graph_store,
+    )
+    if uncertain_first_call:
+        worker._snapshot_id = "foreign-snapshot"
+        with pytest.raises(SupervisorInvocationRuntimeError):
+            asyncio.run(invoker.invoke(scheduled, authorities))
+    else:
+        asyncio.run(invoker.invoke(scheduled, authorities))
+    assert worker.calls == 1
+    assert first_budget.model_calls == first_dedicated.model_calls == 1
+
+    next_projection = GraphProjection(
+        campaignId=campaign.metadata.name,
+        revision=2,
+        eventLogHeadDigest="c" * 64,
+        nodes=graph.projection.nodes,
+        edges=graph.projection.edges,
+    )
+    next_graph = graph_store.append(
+        GraphSnapshot(
+            previousSnapshotDigest=graph.snapshot_digest,
+            campaignId=campaign.metadata.name,
+            graphSchemaVersion=next_projection.graph_schema_version,
+            revision=2,
+            eventLogHeadDigest="c" * 64,
+            projectionId=next_projection.projection_id,
+            projectionDigest=next_projection.projection_digest,
+            nodeProjectionDigest=next_projection.node_projection_digest,
+            edgeProjectionDigest=next_projection.edge_projection_digest,
+            reason=GraphSnapshotReason.CHECKPOINT,
+            createdAt=NOW,
+            creatorId=graph.creator_id,
+            creatorDigest=graph.creator_digest,
+            projection=next_projection,
+        ),
+        writer=writer,
+    )
+    next_collaboration = create_collaboration_snapshot(
+        graph_snapshot_ref(next_graph),
+        graph_snapshot_store=graph_store,
+    )
+    next_runtime = _runtime(campaign, graph_store, next_collaboration)
+    next_input, next_binding, next_provider, next_configuration = next_runtime
+    # A replacement scheduler's index starts at one. The durable ledger must still
+    # reject a second model call, including when the first outcome is uncertain.
+    next_scheduled = _schedule(
+        SupervisorCheckpointScheduler(output_root=tmp_path / "next", budget_policy=policy),
+        next_runtime,
+        campaign,
+        next_collaboration,
+        graph_store,
+    )
+    restarted, _, next_authorities, next_worker, restored, restored_dedicated = (
+        _invocation_environment(
+            tmp_path,
+            campaign,
+            next_provider,
+            policy,
+            next_input,
+            next_binding,
+            next_configuration,
+            next_collaboration,
+            graph_store,
+        )
+    )
+    assert next_scheduled.schedule.checkpoint_key != scheduled.schedule.checkpoint_key
+    assert restored.model_calls == restored_dedicated.model_calls == 0
+
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(restarted.invoke(next_scheduled, next_authorities))
+
+    assert next_worker.calls == 0
+    assert restored.model_calls == restored_dedicated.model_calls == 1
+    assert restored.model_prompt_tokens == first_budget.model_prompt_tokens
+    assert restored.model_completion_tokens == first_budget.model_completion_tokens
+    assert restored.elapsed_seconds >= first_budget.elapsed_seconds - 0.1
 
 
 def test_supervisor_started_without_receipt_never_redispatches(

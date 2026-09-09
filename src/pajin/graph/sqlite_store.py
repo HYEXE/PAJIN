@@ -1003,6 +1003,11 @@ class SQLiteGraphStore:
             raise ValueError("SQLite Graph Store campaign ID is invalid")
         self.path = _absolute_path(path)
         self.campaign_id = campaign_id
+        from pajin.runtime.host_recovery import prepare_store_enrollment
+
+        enrollment = prepare_store_enrollment(
+            self.path, kind="graph-sqlite", campaign_id=campaign_id,
+        )
         if initialize:
             _initialize(self.path, campaign_id)
         else:
@@ -1022,6 +1027,8 @@ class SQLiteGraphStore:
             campaign_id=campaign_id,
         )
         self.approved_permit_store = self.permit_store
+        if enrollment is not None:
+            enrollment.complete()
 
     def create_backup(
         self,

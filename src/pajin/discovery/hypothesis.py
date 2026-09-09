@@ -7,6 +7,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from re import fullmatch
@@ -28,6 +29,7 @@ from pajin.domain.models import (
 )
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
+from pajin.runtime.budgeted_execution import budgeted_tool_call
 from pajin.runtime.control import BudgetController, BudgetExceeded, ExecutionCancellationContext
 from pajin.runtime.error_safety import audit_safe_exception_type
 from pajin.runtime.store import (
@@ -1319,15 +1321,12 @@ class DynamicHypothesisWaveRunner:
             state.budget.check_tool_call()
             if not ledger.can_consume(grant.grant_id):
                 raise CapabilityError("Hypothesis Specialist has no remaining authorized call")
-            outcome = await gateway.execute(
-                campaign,
-                grant,
-                step.request,
-                used_calls=0,
+            outcome = await budgeted_tool_call(
+                state.budget,
+                partial(gateway.execute, campaign, grant, step.request, used_calls=0),
             )
             if outcome.executed:
                 ledger.consume(grant.grant_id)
-                state.budget.record_tool_call()
             results.append(outcome.result.model_copy(deep=True))
         failed = [result for result in results if not result.success or result.error is not None]
         if failed:

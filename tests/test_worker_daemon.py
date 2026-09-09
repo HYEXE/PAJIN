@@ -1370,9 +1370,13 @@ async def test_cancelled_run_maps_to_typed_worker_context(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("durable_budget", [False, True])
 async def test_control_plane_fence_seals_engine_cleanup_and_quiescence(
-    tmp_path: Path,
+    tmp_path: Path, durable_budget: bool,
 ) -> None:
+    from pajin.control_plane.executors import CampaignJobInput
+    from pajin.control_plane.run_budgets import RunBudgetRegistry
+
     campaign = load_manifest(Path("examples/multi-agent-cancel.yaml"))
     claimed = ClaimedJob(
         job=_job(payload={"input": {"manifest": campaign.model_dump(mode="json", by_alias=True)}}),
@@ -1382,9 +1386,12 @@ async def test_control_plane_fence_seals_engine_cleanup_and_quiescence(
     control.lose_lease = True
     worker = BlockingCampaignWorker()
     control.heartbeat_gate = worker.started
+    budget_registry = RunBudgetRegistry(tmp_path / "budgets") if durable_budget else None
     daemon = WorkerDaemon(
         client=control,
-        executors=ExecutorRegistry([CampaignJobExecutor(output_root=tmp_path, worker=worker)]),
+        executors=ExecutorRegistry([CampaignJobExecutor(
+            output_root=tmp_path, worker=worker, budget_registry=budget_registry,
+        )]),
         config=WorkerDaemonConfig(
             worker_id="worker-test",
             kinds=["campaign"],
@@ -1408,6 +1415,12 @@ async def test_control_plane_fence_seals_engine_cleanup_and_quiescence(
     assert verify_run_integrity(run_path).seal_count == 2
     assert not control.completed
     assert not control.failed
+    if budget_registry is not None:
+        recovered = budget_registry.bind(
+            claimed.job.model_copy(update={"attempts": 2}), campaign,
+            original_input=CampaignJobInput(manifest=campaign),
+        )
+        assert recovered.tool_calls == 1
 
 
 @pytest.mark.asyncio

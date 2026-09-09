@@ -9,9 +9,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from pajin.control_plane.models import Principal, validate_bounded_json_object
+from pajin.runtime.safe_files import parse_strict_json_bytes
 
 _MIN_BEARER_TOKEN_BYTES = 32
 _MAX_BEARER_TOKEN_BYTES = 4 * 1024
+CHECKPOINT_VERIFICATION_KEYS_ENV = "PAJIN_CP_CHECKPOINT_VERIFICATION_KEYS"
 
 
 class AuthenticationError(RuntimeError):
@@ -111,12 +113,31 @@ class CheckpointSigner:
     """Sign canonical checkpoint envelopes with a rotatable HMAC keyring."""
 
     def __init__(self, *, active_key_id: str, keys: dict[str, bytes]) -> None:
+        if any(
+            not isinstance(key_id, str)
+            or not 1 <= len(key_id) <= 100
+            or any(not 0x21 <= ord(character) <= 0x7E for character in key_id)
+            for key_id in keys
+        ):
+            raise ValueError("checkpoint key IDs must contain 1 to 100 visible ASCII characters")
         if active_key_id not in keys:
             raise ValueError("active checkpoint signing key is absent from keyring")
-        if not keys or any(len(value) < 32 for value in keys.values()):
+        if not keys or any(type(value) is not bytes or len(value) < 32 for value in keys.values()):
             raise ValueError("checkpoint signing keys must contain at least 32 bytes")
         self._active_key_id = active_key_id
         self._keys = dict(keys)
+
+    def key_commitments(self) -> dict[str, str]:
+        """Return domain-separated identities, never checkpoint signing material."""
+
+        return {
+            key_id: hmac.new(
+                key,
+                b"pajin.dev/checkpoint-key-identity/v1\x00" + key_id.encode("ascii"),
+                hashlib.sha256,
+            ).hexdigest()
+            for key_id, key in self._keys.items()
+        }
 
     @staticmethod
     def canonical_json(value: Any) -> bytes:
@@ -202,3 +223,35 @@ class CheckpointSigner:
             "schemaVersion": schema_version,
             "sequence": sequence,
         }
+
+
+def checkpoint_keys_from_environment(
+    *, active_key_id: str, active_key: str, verification_keys: str | None
+) -> dict[str, bytes]:
+    """Parse optional previous keys without exposing secret configuration in errors."""
+
+    try:
+        keys = {active_key_id: active_key.encode("utf-8")}
+        if verification_keys is not None:
+            encoded = verification_keys.encode("utf-8")
+            if not 1 <= len(encoded) <= 64 * 1024:
+                raise ValueError("verification keyring is outside its size bound")
+            value = parse_strict_json_bytes(
+                encoded,
+                label="checkpoint verification keyring",
+                max_bytes=64 * 1024,
+                max_depth=2,
+                max_nodes=64,
+            )
+            if not isinstance(value, dict) or len(value) > 31 or active_key_id in value:
+                raise ValueError("verification keyring must contain only previous key IDs")
+            for key_id, key in value.items():
+                if not isinstance(key_id, str) or not isinstance(key, str):
+                    raise ValueError("verification keyring must map key IDs to strings")
+                keys[key_id] = key.encode("utf-8")
+        CheckpointSigner(active_key_id=active_key_id, keys=keys)
+        return keys
+    except ValueError:
+        raise RuntimeError(
+            "checkpoint key configuration is invalid; secret detail omitted"
+        ) from None

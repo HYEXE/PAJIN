@@ -42,6 +42,7 @@ from pajin.providers.models import (
     ProviderRegistration,
 )
 from pajin.providers.session import PolicyBoundProviderPort
+from pajin.runtime.budgeted_execution import budgeted_tool_call
 from pajin.runtime.control import (
     BudgetController,
     BudgetExceeded,
@@ -734,11 +735,13 @@ class PolicyToolLoopRunner:
         prompt: str,
         approvals: list[ToolLoopApproval] | None = None,
         cancellation: ExecutionCancellationContext | None = None,
+        budget: BudgetController | None = None,
     ) -> ToolLoopOutcome:
         if not prompt or len(prompt) > 32_768:
             raise ValueError("tool loop prompt must contain between 1 and 32768 characters")
         self._require_unbound_cancellation(cancellation)
         campaign = _authoritative_campaign_snapshot(campaign)
+        budget = self._campaign_budget(campaign, budget)
         runner_context_digest = self._runner_context_digest()
         store = RunStore.create(self._output_root, campaign.metadata.name)
         if cancellation is not None:
@@ -788,7 +791,6 @@ class PolicyToolLoopRunner:
             "tool_loop.started",
             {"loopId": state.loop_id, "campaign": campaign.metadata.name},
         )
-        budget = BudgetController(campaign.spec.budgets)
         execution = self._execute(
             campaign,
             state,
@@ -806,6 +808,7 @@ class PolicyToolLoopRunner:
         checkpoint_path: Path,
         approvals: list[ToolLoopApproval],
         cancellation: ExecutionCancellationContext | None = None,
+        budget: BudgetController | None = None,
     ) -> ToolLoopOutcome:
         self._require_unbound_cancellation(cancellation)
         campaign = _authoritative_campaign_snapshot(campaign)
@@ -841,6 +844,7 @@ class PolicyToolLoopRunner:
         if _canonical_digest(sealed_campaign) != checkpoint.campaign_digest:
             raise ValueError("checkpoint Campaign digest differs from sealed source Campaign")
         campaign = sealed_campaign
+        budget = self._resume_budget(campaign, checkpoint, budget)
         claim_key = _checkpoint_claim_key(checkpoint)
         claim_root = self._checkpoint_claim_root(campaign)
         claim_path = claim_root / f"{claim_key}.json"
@@ -903,17 +907,6 @@ class PolicyToolLoopRunner:
                 "checkpointClaimKey": claim_key,
             },
         )
-        budget = BudgetController(campaign.spec.budgets)
-        if state.budget:
-            budget.restore_usage(
-                agent_count=state.budget.get("agentCount", 0),
-                tool_calls=state.budget.get("toolCalls", 0),
-                model_calls=state.budget.get("modelCalls", 0),
-                model_prompt_tokens=state.budget.get("modelPromptTokens", 0),
-                model_completion_tokens=state.budget.get("modelCompletionTokens", 0),
-                cost_usd=state.budget.get("costUsd", 0),
-                elapsed_seconds=state.budget.get("elapsedSeconds", 0),
-            )
         execution = self._execute(
             campaign,
             state,
@@ -923,6 +916,51 @@ class PolicyToolLoopRunner:
             budget=budget,
         )
         return await execution
+
+    @staticmethod
+    def _campaign_budget(
+        campaign: CampaignManifest, budget: BudgetController | None,
+    ) -> BudgetController:
+        if budget is not None and (
+            type(budget) is not BudgetController or budget.budgets != campaign.spec.budgets
+        ):
+            raise ValueError("shared budget does not match the Campaign budget contract")
+        selected = budget if budget is not None else BudgetController(campaign.spec.budgets)
+        selected.check_duration()
+        return selected
+
+    @classmethod
+    def _resume_budget(
+        cls, campaign: CampaignManifest, checkpoint: ToolLoopCheckpoint,
+        budget: BudgetController | None,
+    ) -> BudgetController:
+        previous = BudgetController(campaign.spec.budgets)
+        if checkpoint.budget:
+            previous.restore_usage(
+                agent_count=checkpoint.budget.get("agentCount", 0),
+                tool_calls=checkpoint.budget.get("toolCalls", 0),
+                model_calls=checkpoint.budget.get("modelCalls", 0),
+                model_prompt_tokens=checkpoint.budget.get("modelPromptTokens", 0),
+                model_completion_tokens=checkpoint.budget.get("modelCompletionTokens", 0),
+                cost_usd=checkpoint.budget.get("costUsd", 0),
+                elapsed_seconds=checkpoint.budget.get("elapsedSeconds", 0),
+            )
+        if budget is None:
+            return previous
+        selected = cls._campaign_budget(campaign, budget)
+        for name in (
+            "agentCount", "toolCalls", "modelCalls", "modelPromptTokens",
+            "modelCompletionTokens", "costUsd", "elapsedSeconds",
+        ):
+            saved = checkpoint.budget.get(name)
+            current = selected.snapshot()[name]
+            if type(saved) not in {int, float} or type(current) not in {int, float}:
+                raise ValueError("shared budget requires complete checkpoint consumption")
+            assert isinstance(saved, (int, float)) and isinstance(current, (int, float))
+            tolerance = 0.000001 if name == "elapsedSeconds" else 0
+            if saved > current + tolerance:
+                raise ValueError("shared budget omits consumption from the checkpoint")
+        return selected
 
     def _runner_context_digest(self) -> str:
         bindings: list[dict[str, object]] = []
@@ -1291,7 +1329,9 @@ class PolicyToolLoopRunner:
                 ToolRequestTracePayload(callId=intent.call_id, request=request),
             )
         outcome = await await_with_campaign_deadline(
-            gateway.execute(campaign, grant, request, used_calls=0),
+            budgeted_tool_call(
+                budget, lambda: gateway.execute(campaign, grant, request, used_calls=0)
+            ),
             budget,
             cancellation,
         )
@@ -1314,7 +1354,6 @@ class PolicyToolLoopRunner:
             )
         if outcome.executed:
             ledger.consume(grant.grant_id)
-            budget.record_tool_call()
         store.append_event(
             "tool_loop.specialist_completed",
             {

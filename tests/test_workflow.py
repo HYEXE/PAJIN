@@ -36,10 +36,12 @@ from pajin.runtime.worker import (
     WorkerJob,
     WorkerResult,
 )
+from pajin.supervision.invocation_journal import SupervisorInvocationJournal
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.tools.mock import MockAgentProbe
 from pajin.workflow.local import LocalCampaignRunner, LocalToolExecutionError
+from pajin.workflow.profile_compatibility import compile_legacy_campaign_profile
 
 
 class UnknownToolRuntime(DeterministicAgentRuntime):
@@ -279,6 +281,16 @@ async def test_local_runner_seals_cleanup_receipt_on_cooperative_cancellation(
     registry = ToolRegistry()
     registry.register(MockAgentProbe())
     worker = BlockingWorker()
+    budget = BudgetController(sample_campaign.spec.budgets)
+    dedicated = BudgetController(sample_campaign.spec.budgets)
+    journal_path = tmp_path / "invocations.sqlite3"
+    campaign_digest = compile_legacy_campaign_profile(sample_campaign).input_digest
+    SupervisorInvocationJournal(journal_path).bind_budgets(
+        campaign_digest=campaign_digest,
+        policy_digest="b" * 64,
+        campaign=budget,
+        dedicated=dedicated,
+    )
     cancellation = ExecutionCancellationContext(
         job_id="job_" + "1" * 32,
         control_plane_run_id="run_" + "2" * 32,
@@ -290,8 +302,11 @@ async def test_local_runner_seals_cleanup_receipt_on_cooperative_cancellation(
         worker=worker,
         output_root=tmp_path,
     )
-    execution = asyncio.create_task(runner.run(sample_campaign, cancellation=cancellation))
+    execution = asyncio.create_task(
+        runner.run(sample_campaign, cancellation=cancellation, budget=budget)
+    )
     await asyncio.wait_for(worker.started.wait(), timeout=1)
+    assert budget.tool_calls == 1
 
     cancellation.cancel(CancellationKind.RUN_CANCELLED, "Control Plane fence observed")
     with pytest.raises(asyncio.CancelledError):
@@ -310,6 +325,17 @@ async def test_local_runner_seals_cleanup_receipt_on_cooperative_cancellation(
     assert '"event_type":"execution.cleanup-completed"' in events
     assert '"event_type":"campaign.cancelled"' in events
     assert verify_run_integrity(binding.path).valid
+    restored = BudgetController(sample_campaign.spec.budgets)
+    restored_dedicated = BudgetController(sample_campaign.spec.budgets)
+    SupervisorInvocationJournal(journal_path).bind_budgets(
+        campaign_digest=campaign_digest,
+        policy_digest="b" * 64,
+        campaign=restored,
+        dedicated=restored_dedicated,
+    )
+    assert restored.tool_calls == 1
+    assert restored.agent_count == budget.agent_count
+    assert restored_dedicated.tool_calls == 0
 
 
 @pytest.mark.asyncio
