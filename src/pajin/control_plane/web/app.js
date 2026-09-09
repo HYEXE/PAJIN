@@ -19,7 +19,7 @@ import {
   validateApproval,
   validateApprovalDecision,
   validateCancellation,
-  validateCanonicalGraphView,
+  validateCanonicalGraphPage,
   validateDiscoveryView,
   validateEvents,
   validateGraphDecisionAuditView,
@@ -90,6 +90,7 @@ const session = {
   discoveryLoading: false,
   graphRequestId: 0,
   graphLoading: false,
+  graphPage: null,
   hypothesisRankingRequestId: 0,
   hypothesisRankingLoading: false,
   decisionAuditRequestId: 0,
@@ -188,6 +189,9 @@ const elements = {
   graphProjectionValue: document.querySelector("#graph-projection-value"),
   graphNodeList: document.querySelector("#graph-node-list"),
   graphEdgeList: document.querySelector("#graph-edge-list"),
+  graphPrevious: document.querySelector("#graph-previous"),
+  graphNext: document.querySelector("#graph-next"),
+  graphPageStatus: document.querySelector("#graph-page-status"),
   hypothesisRankingPanel: document.querySelector("#hypothesis-ranking-panel"),
   hypothesisRankingForm: document.querySelector("#hypothesis-ranking-form"),
   hypothesisRankingCampaign: document.querySelector("#hypothesis-ranking-campaign"),
@@ -372,6 +376,7 @@ function setConnected(connected, roles = [], subject = null) {
   elements.graphCampaign.disabled = !session.canOperate;
   elements.graphSnapshotId.disabled = !session.canOperate;
   elements.graphLoadButton.disabled = !session.canOperate || session.graphLoading;
+  updateGraphPagination();
   elements.hypothesisRankingCampaign.disabled = !session.canOperate;
   elements.hypothesisRankingSnapshotId.disabled = !session.canOperate;
   elements.hypothesisRankingLoadButton.disabled = (
@@ -541,6 +546,9 @@ function renderDiscovery(view) {
 }
 
 function clearGraph({ clearInputs = false, message = null } = {}) {
+  session.graphPage = null;
+  elements.graphPageStatus.textContent = "";
+  updateGraphPagination();
   if (clearInputs) {
     elements.graphCampaign.value = "";
     elements.graphSnapshotId.value = "";
@@ -571,6 +579,17 @@ function renderGraph(view) {
   elements.graphEdgeList.replaceChildren(...createGraphEdgeNodes(document, view.edges));
   elements.graphEmpty.hidden = true;
   elements.graphResult.hidden = false;
+  const count = Math.max(1, Math.ceil(Math.max(view.nodeCount, view.edgeCount) / view.pageSize));
+  elements.graphPageStatus.textContent = `Page ${view.pageOffset / view.pageSize + 1} of ${count}`;
+  elements.graphNodeList.start = view.pageOffset + 1;
+  elements.graphEdgeList.start = view.pageOffset + 1;
+}
+
+function updateGraphPagination() {
+  const page = session.graphPage;
+  const unavailable = !session.canOperate || session.graphLoading || page === null;
+  elements.graphPrevious.disabled = unavailable || page.index === 0;
+  elements.graphNext.disabled = unavailable || page.view.nextCursor === null;
 }
 
 function clearHypothesisRanking({ clearInputs = false, message = null } = {}) {
@@ -1843,6 +1862,14 @@ elements.graphForm.addEventListener("submit", async (event) => {
     elements.graphSnapshotId.focus();
     return;
   }
+  await loadGraphPage({ campaign, snapshotId, cursors: [null] }, 0);
+});
+
+async function loadGraphPage(query, index, direction = null) {
+  if (!session.canOperate || session.graphLoading) return;
+  const { campaign, snapshotId } = query;
+  const previous = direction === null ? null : session.graphPage;
+  const cursor = query.cursors[index];
   const requestId = ++session.graphRequestId;
   const authEpoch = session.authEpoch;
   session.graphLoading = true;
@@ -1853,15 +1880,18 @@ elements.graphForm.addEventListener("submit", async (event) => {
   announce("Verifying the current Canonical Graph Snapshot...");
   try {
     const path = `/v1/graphs/campaigns/${encodeURIComponent(campaign)}`
-      + `/snapshots/${encodeURIComponent(snapshotId)}`;
-    const view = validateCanonicalGraphView(
+      + `/snapshots/${encodeURIComponent(snapshotId)}/pages?limit=100`
+      + (cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`);
+    const view = validateCanonicalGraphPage(
       await apiRequest(path),
       campaign,
       snapshotId,
+      { offset: index * 100, limit: 100, previous: previous?.view ?? null },
     );
     if (session.graphRequestId !== requestId || session.authEpoch !== authEpoch) {
       throw new StaleRequestError();
     }
+    session.graphPage = { ...query, index, view };
     renderGraph(view);
     announce(
       `Verified current Graph revision ${view.projection.revision}: `
@@ -1882,9 +1912,38 @@ elements.graphForm.addEventListener("submit", async (event) => {
       setBusy(elements.graphForm, false);
       setBusy(elements.graphPanel, false);
       elements.graphLoadButton.disabled = !session.canOperate;
+      updateGraphPagination();
+      if (direction !== null && session.graphPage !== null) {
+        const preferred = direction === "next" ? elements.graphNext : elements.graphPrevious;
+        const alternate = direction === "next" ? elements.graphPrevious : elements.graphNext;
+        (preferred.disabled ? alternate : preferred).focus();
+      }
     }
   }
+}
+
+elements.graphNext.addEventListener("click", async () => {
+  const page = session.graphPage;
+  if (page === null || page.view.nextCursor === null) return;
+  await loadGraphPage({
+    ...page, cursors: [...page.cursors.slice(0, page.index + 1), page.view.nextCursor],
+  }, page.index + 1, "next");
 });
+elements.graphPrevious.addEventListener("click", async () => {
+  const page = session.graphPage;
+  if (page === null || page.index === 0) return;
+  await loadGraphPage(page, page.index - 1, "previous");
+});
+for (const field of [elements.graphCampaign, elements.graphSnapshotId]) {
+  field.addEventListener("input", () => {
+    session.graphRequestId += 1;
+    session.graphLoading = false;
+    setBusy(elements.graphForm, false);
+    setBusy(elements.graphPanel, false);
+    elements.graphLoadButton.disabled = !session.canOperate;
+    clearGraph({ message: "Verify the entered Campaign and Snapshot to load its pages." });
+  });
+}
 
 elements.hypothesisRankingForm.addEventListener("submit", async (event) => {
   event.preventDefault();

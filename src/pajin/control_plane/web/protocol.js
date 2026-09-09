@@ -447,22 +447,60 @@ function validateGraphNode(value) {
   return node;
 }
 
-function validateGraphEndpoint(value, nodes) {
+function validateGraphEndpoint(value, nodes, paginated = false) {
   const endpoint = expectRecord(value, "Canonical Graph view");
   const node = nodes.get(endpoint.nodeId);
   if (!GRAPH_NODE_PATTERN.test(endpoint.nodeId)
     || !GRAPH_NODE_KINDS.has(endpoint.kind)
-    || node === undefined
-    || node.kind !== endpoint.kind) {
+    || (!paginated && node === undefined)
+    || (node !== undefined && node.kind !== endpoint.kind)) {
     protocolFailure("Canonical Graph view");
   }
   return endpoint;
 }
 
 export function validateCanonicalGraphView(value, campaignName, snapshotId) {
+  return validateGraphView(value, campaignName, snapshotId, false);
+}
+
+export function validateCanonicalGraphPage(
+  value, campaignName, snapshotId, { offset = 0, limit = 100, previous = null } = {},
+) {
+  const page = validateGraphView(value, campaignName, snapshotId, true);
+  const total = Math.max(page.nodeCount, page.edgeCount);
+  if (!Number.isSafeInteger(page.pageOffset) || page.pageOffset !== offset
+    || !Number.isSafeInteger(page.pageSize) || page.pageSize !== limit
+    || page.pageSize < 1 || page.pageSize > 500 || offset % limit !== 0
+    || offset < 0 || offset >= Math.max(1, total)
+    || page.nodes.length !== Math.min(limit, Math.max(0, page.nodeCount - offset))
+    || page.edges.length !== Math.min(limit, Math.max(0, page.edgeCount - offset))
+    || ((offset + limit < total)
+      ? typeof page.nextCursor !== "string" || !/^[A-Za-z0-9_-]{1,2048}$/.test(page.nextCursor)
+      : page.nextCursor !== null)) {
+    protocolFailure("Canonical Graph page");
+  }
+  if (previous && (
+    previous.snapshot.snapshotDigest !== page.snapshot.snapshotDigest
+    || previous.projection.projectionDigest !== page.projection.projectionDigest
+    || previous.projection.revision !== page.projection.revision
+    || previous.nodeCount !== page.nodeCount || previous.edgeCount !== page.edgeCount
+  )) {
+    protocolFailure("Canonical Graph page changed Snapshot");
+  }
+  for (const [items, key] of [[page.nodes, "nodeId"], [page.edges, "edgeId"]]) {
+    if (items.some((item, index) => index > 0 && items[index - 1][key] >= item[key])) {
+      protocolFailure("Canonical Graph page order");
+    }
+  }
+  return page;
+}
+
+function validateGraphView(value, campaignName, snapshotId, paginated) {
   const view = expectRecord(value, "Canonical Graph view");
-  if (view.apiVersion !== "pajin.control-plane/verified-canonical-graph-view/v1alpha1"
-    || view.kind !== "VerifiedCanonicalGraphView"
+  if (view.apiVersion !== (paginated
+    ? "pajin.control-plane/verified-canonical-graph-page/v1"
+    : "pajin.control-plane/verified-canonical-graph-view/v1alpha1")
+    || view.kind !== (paginated ? "VerifiedCanonicalGraphPage" : "VerifiedCanonicalGraphView")
     || view.campaignId !== campaignName
     || !/^[a-z0-9][a-z0-9-]{2,79}$/.test(view.campaignId)) {
     protocolFailure("Canonical Graph view");
@@ -493,11 +531,13 @@ export function validateCanonicalGraphView(value, campaignName, snapshotId) {
   if (!Array.isArray(view.nodes)
     || view.nodes.length > 500
     || !Array.isArray(view.edges)
-    || view.edges.length > 1_000
+    || view.edges.length > (paginated ? 500 : 1_000)
     || !Number.isSafeInteger(view.nodeCount)
-    || view.nodeCount !== view.nodes.length
+    || view.nodeCount < 0 || view.nodeCount > 100_000
+    || (!paginated && view.nodeCount !== view.nodes.length)
     || !Number.isSafeInteger(view.edgeCount)
-    || view.edgeCount !== view.edges.length) {
+    || view.edgeCount < 0 || view.edgeCount > 200_000
+    || (!paginated && view.edgeCount !== view.edges.length)) {
     protocolFailure("Canonical Graph view");
   }
   const nodes = new Map();
@@ -512,8 +552,8 @@ export function validateCanonicalGraphView(value, campaignName, snapshotId) {
   for (const edgeValue of view.edges) {
     const edge = expectRecord(edgeValue, "Canonical Graph view");
     const expectedKinds = GRAPH_RELATION_ENDPOINTS.get(edge.relation);
-    const source = validateGraphEndpoint(edge.source, nodes);
-    const target = validateGraphEndpoint(edge.target, nodes);
+    const source = validateGraphEndpoint(edge.source, nodes, paginated);
+    const target = validateGraphEndpoint(edge.target, nodes, paginated);
     if (!GRAPH_EDGE_PATTERN.test(edge.edgeId)
       || edgeIds.has(edge.edgeId)
       || expectedKinds === undefined

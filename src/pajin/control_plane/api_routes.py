@@ -48,6 +48,7 @@ from pajin.control_plane.discovery_views import (
     VerifiedDiscoverySurfaceWaveView,
     VerifiedDiscoveryViewReader,
 )
+from pajin.control_plane.graph_pages import GraphPageCursorError, VerifiedCanonicalGraphPage
 from pajin.control_plane.graph_views import (
     CanonicalGraphViewIntegrityError,
     CanonicalGraphViewNotFound,
@@ -500,6 +501,41 @@ def register_discovery_view_routes(
             ) from exc
 
 
+def register_graph_page_routes(
+    app: FastAPI,
+    *,
+    reader: VerifiedCanonicalGraphViewReader,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Register bounded pages without changing the original full-view contract."""
+
+    @app.get(
+        "/v1/graphs/campaigns/{campaign}/snapshots/{snapshot_id}/pages",
+        response_model=VerifiedCanonicalGraphPage,
+    )
+    def get_verified_canonical_graph_page(
+        campaign: Annotated[str, FastAPIPath(pattern=r"^[a-z0-9][a-z0-9-]{2,79}$")],
+        snapshot_id: Annotated[str, FastAPIPath(pattern=r"^graph-snapshot_[a-f0-9]{64}$")],
+        _principal: Annotated[
+            Principal, Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+    ) -> VerifiedCanonicalGraphPage:
+        try:
+            return reader.read_page(
+                campaign=campaign, snapshot_id=snapshot_id, limit=limit, cursor=cursor,
+            )
+        except CanonicalGraphViewUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except CanonicalGraphViewNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CanonicalGraphViewIntegrityError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except GraphPageCursorError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def register_graph_view_routes(
     app: FastAPI,
     *,
@@ -508,6 +544,7 @@ def register_graph_view_routes(
     dependencies: ControlPlaneDependencies,
 ) -> None:
     """Register Operator-only current Graph and Hypothesis review views."""
+    register_graph_page_routes(app, reader=reader, dependencies=dependencies)
 
     @app.get(
         "/v1/graphs/campaigns/{campaign}/snapshots/{snapshot_id}",

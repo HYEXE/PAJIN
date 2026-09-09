@@ -111,7 +111,7 @@
                   id="campaign-name"
                   name="campaign-name"
                   value="web-console-demo"
-                  pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
+                  pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,127}"
                   maxlength="128"
                   required
                 >
@@ -378,7 +378,7 @@
             <input
               id="discovery-campaign"
               name="discovery-campaign"
-              pattern="[a-z0-9][a-z0-9-]{2,79}"
+              pattern="[a-z0-9][a-z0-9\-]{2,79}"
               maxlength="80"
               autocomplete="off"
               spellcheck="false"
@@ -464,7 +464,7 @@
             <input
               id="graph-campaign"
               name="graph-campaign"
-              pattern="[a-z0-9][a-z0-9-]{2,79}"
+              pattern="[a-z0-9][a-z0-9\-]{2,79}"
               maxlength="80"
               autocomplete="off"
               spellcheck="false"
@@ -508,6 +508,17 @@
             <div><dt>Nodes</dt><dd id="graph-node-count-value">0</dd></div>
             <div><dt>Edges</dt><dd id="graph-edge-count-value">0</dd></div>
           </dl>
+          <nav class="event-heading" aria-label="Graph pages">
+            <button id="graph-previous" class="button button-quiet" type="button" disabled>
+              Previous page
+            </button>
+            <span id="graph-page-status" role="status" aria-live="polite"></span>
+            <button id="graph-next" class="button button-quiet" type="button" disabled>
+              Next page
+            </button>
+          </nav>
+          <p class="panel-intro">Each page shows up to 100 nodes and relationships from this
+            Snapshot. Relationship endpoints may be on another page.</p>
           <div class="graph-grid">
             <section aria-labelledby="graph-node-heading">
               <div class="event-heading">
@@ -550,7 +561,7 @@
             <input
               id="hypothesis-ranking-campaign"
               name="hypothesis-ranking-campaign"
-              pattern="[a-z0-9][a-z0-9-]{2,79}"
+              pattern="[a-z0-9][a-z0-9\-]{2,79}"
               maxlength="80"
               autocomplete="off"
               spellcheck="false"
@@ -631,7 +642,7 @@
             <input
               id="decision-audit-campaign"
               name="decision-audit-campaign"
-              pattern="[a-z0-9][a-z0-9-]{2,79}"
+              pattern="[a-z0-9][a-z0-9\-]{2,79}"
               maxlength="80"
               autocomplete="off"
               spellcheck="false"

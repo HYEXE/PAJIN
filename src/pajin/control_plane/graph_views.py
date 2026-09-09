@@ -7,7 +7,7 @@ import stat
 from datetime import datetime
 from pathlib import Path
 from re import fullmatch
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
@@ -37,6 +37,9 @@ from pajin.graph import (
     load_verified_current_graph_snapshot,
     load_verified_current_graph_snapshot_consistency,
 )
+
+if TYPE_CHECKING:
+    from pajin.control_plane.graph_pages import VerifiedCanonicalGraphPage
 
 _CAMPAIGN_PATTERN = r"^[a-z0-9][a-z0-9-]{2,79}$"
 _SNAPSHOT_ID_PATTERN = r"^graph-snapshot_[a-f0-9]{64}$"
@@ -295,6 +298,25 @@ class VerifiedCanonicalGraphViewReader:
         self._database = _validated_graph_database(database) if database is not None else None
 
     def read(self, *, campaign: str, snapshot_id: str) -> VerifiedCanonicalGraphView:
+        snapshot = self._read_snapshot(campaign=campaign, snapshot_id=snapshot_id)
+        if (
+            len(snapshot.projection.nodes) > _MAX_VIEW_NODES
+            or len(snapshot.projection.edges) > _MAX_VIEW_EDGES
+        ):
+            raise CanonicalGraphViewTooLarge("Canonical Graph Snapshot exceeds view limits")
+        return _build_view(snapshot)
+
+    def read_page(
+        self, *, campaign: str, snapshot_id: str, limit: int = 100, cursor: str | None = None,
+    ) -> VerifiedCanonicalGraphPage:
+        from pajin.control_plane.graph_pages import build_graph_page
+
+        return build_graph_page(
+            self._read_snapshot(campaign=campaign, snapshot_id=snapshot_id),
+            limit=limit, cursor=cursor,
+        )
+
+    def _read_snapshot(self, *, campaign: str, snapshot_id: str) -> GraphSnapshot:
         if self._database is None:
             raise CanonicalGraphViewUnavailable("Canonical Graph views are not configured")
         _require_identifier(campaign, _CAMPAIGN_PATTERN, label="Campaign")
@@ -318,12 +340,7 @@ class VerifiedCanonicalGraphViewReader:
             ) from exc
         if snapshot is None:
             raise CanonicalGraphViewNotFound("Canonical Graph Snapshot was not found")
-        if (
-            len(snapshot.projection.nodes) > _MAX_VIEW_NODES
-            or len(snapshot.projection.edges) > _MAX_VIEW_EDGES
-        ):
-            raise CanonicalGraphViewTooLarge("Canonical Graph Snapshot exceeds view limits")
-        return _build_view(snapshot)
+        return snapshot
 
 
 class VerifiedHypothesisAttentionRankingReader:
@@ -399,29 +416,32 @@ def _build_view(snapshot: GraphSnapshot) -> VerifiedCanonicalGraphView:
     projection = snapshot.projection
     return VerifiedCanonicalGraphView(
         campaignId=snapshot.campaign_id,
-        snapshot=CanonicalGraphSnapshotView(
-            snapshotId=snapshot.snapshot_id,
-            snapshotDigest=snapshot.snapshot_digest,
-            previousSnapshotDigest=snapshot.previous_snapshot_digest,
-            reason=snapshot.reason,
-            createdAt=snapshot.created_at,
-            creatorId=snapshot.creator_id,
-            creatorDigest=snapshot.creator_digest,
-        ),
-        projection=CanonicalGraphProjectionView(
-            graphSchemaVersion=snapshot.graph_schema_version,
-            revision=snapshot.revision,
-            eventLogHeadDigest=snapshot.event_log_head_digest,
-            projectionId=snapshot.projection_id,
-            projectionDigest=snapshot.projection_digest,
-            nodeProjectionDigest=snapshot.node_projection_digest,
-            edgeProjectionDigest=snapshot.edge_projection_digest,
-        ),
+        snapshot=_snapshot_view(snapshot),
+        projection=_projection_view(snapshot),
         nodeCount=len(projection.nodes),
         edgeCount=len(projection.edges),
         nodes=[_node_view(node) for node in projection.nodes],
         edges=[_edge_view(edge) for edge in projection.edges],
         authorityBoundary=CanonicalGraphViewAuthorityBoundary(),
+    )
+
+
+def _snapshot_view(snapshot: GraphSnapshot) -> CanonicalGraphSnapshotView:
+    return CanonicalGraphSnapshotView(
+        snapshotId=snapshot.snapshot_id, snapshotDigest=snapshot.snapshot_digest,
+        previousSnapshotDigest=snapshot.previous_snapshot_digest, reason=snapshot.reason,
+        createdAt=snapshot.created_at, creatorId=snapshot.creator_id,
+        creatorDigest=snapshot.creator_digest,
+    )
+
+
+def _projection_view(snapshot: GraphSnapshot) -> CanonicalGraphProjectionView:
+    return CanonicalGraphProjectionView(
+        graphSchemaVersion=snapshot.graph_schema_version, revision=snapshot.revision,
+        eventLogHeadDigest=snapshot.event_log_head_digest, projectionId=snapshot.projection_id,
+        projectionDigest=snapshot.projection_digest,
+        nodeProjectionDigest=snapshot.node_projection_digest,
+        edgeProjectionDigest=snapshot.edge_projection_digest,
     )
 
 

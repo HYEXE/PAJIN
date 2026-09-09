@@ -63,6 +63,24 @@ statements, expected observables, Observation summaries/value digests, Evidence 
 digests, request/target digests, full canonical node payloads, Events, Proposals, paths, Grants, and
 Permits are excluded.
 
+## Snapshot-bound pages
+
+The additive `GET /v1/graphs/campaigns/{campaign}/snapshots/{snapshot_id}/pages` route returns
+`pajin.control-plane/verified-canonical-graph-page/v1`. `limit` is an integer from 1 to 500
+(default 100); optional `cursor` is a canonical, unpadded URL-safe base64 JSON position bound to
+the Campaign, Snapshot ID/digest, Projection digest, page size, and aligned offset. It is a
+position, not a signed credential or read grant. Operator authentication is still required.
+
+`nodeCount` and `edgeCount` describe the complete projection, bounded by 100,000 and 200,000.
+`pageOffset` and `pageSize` select the same slice of each sorted array; one array may be empty
+on later pages. `nextCursor` is null at completion. Endpoint IDs/kinds may refer to nodes on other
+pages. No full payloads or additional authority are exposed. Every request repeats the complete
+store verification; this bounds response and browser memory, not server verification cost.
+
+Malformed/mixed cursors and invalid limits return `422`; advancing the Graph makes the old
+Snapshot return `409`. A cursor cannot resume historical state. The legacy full endpoint still
+returns `413` above its original limits. See [ADR-0271](../adr/0271-page-the-verified-current-graph-with-snapshot-bound-cursors.md).
+
 ## Web Console
 
 The same-origin `/ui` shell accepts one exact Campaign and current Snapshot ID from an Operator. It
@@ -70,7 +88,10 @@ renders canonical node cards and admitted relationship cards with current-Snapsh
 read-only, no-admission, and no-execution boundary labels. JavaScript validates identifier and
 digest shapes, revision/head consistency, node/edge cardinalities, unique IDs, endpoint membership,
 relation direction, authority identity, timestamps, bounds, and literal authority markers before
-replacing the DOM. Rendering uses `textContent` only.
+replacing the DOM. Rendering uses `textContent` only. The Console uses pages of 100 with keyboard
+accessible previous/next controls. Navigation verifies identity and counts against the preceding
+page, and replaces all rows. Input edits and authentication changes invalidate pending requests;
+failures clear content and navigation. No stale page is combined with another Snapshot.
 
 ## Failure behavior
 

@@ -178,6 +178,9 @@ const selectors = [
   "#graph-projection-value",
   "#graph-node-list",
   "#graph-edge-list",
+  "#graph-previous",
+  "#graph-next",
+  "#graph-page-status",
   "#hypothesis-ranking-panel",
   "#hypothesis-ranking-form",
   "#hypothesis-ranking-campaign",
@@ -1206,6 +1209,31 @@ assert.throws(
   protocol.ApiProtocolError,
 );
 const validCanonicalGraphView = canonicalGraphView();
+function graphPage(offset = 0) {
+  const view = canonicalGraphView();
+  return {
+    ...view, apiVersion: "pajin.control-plane/verified-canonical-graph-page/v1",
+    kind: "VerifiedCanonicalGraphPage", nodeCount: 203, pageOffset: offset, pageSize: 100,
+    nodes: Array.from({ length: Math.min(100, 203 - offset) }, (_, index) => ({
+      ...view.nodes[0], nodeId: `graph-node_${(offset + index + 1).toString(16).padStart(64, "0")}`,
+    })),
+    edges: offset === 0 ? view.edges : [],
+    nextCursor: offset < 200 ? `position_${offset + 100}` : null,
+  };
+}
+const pageArguments = ["runtime-campaign", `graph-snapshot_${"c".repeat(64)}`];
+assert.equal(protocol.validateCanonicalGraphPage(graphPage(), ...pageArguments).nodeCount, 203);
+for (const changed of [
+  { pageOffset: 100 }, { nextCursor: null }, { nodes: graphPage().nodes.slice(1) },
+  { nodes: [...graphPage().nodes].reverse() },
+]) {
+  assert.throws(() => protocol.validateCanonicalGraphPage(
+    { ...graphPage(), ...changed }, ...pageArguments,
+  ), protocol.ApiProtocolError);
+}
+assert.throws(() => protocol.validateCanonicalGraphPage({
+  ...graphPage(100), snapshot: { ...graphPage().snapshot, snapshotDigest: "f".repeat(64) },
+}, ...pageArguments, { offset: 100, previous: graphPage() }), protocol.ApiProtocolError);
 assert.equal(
   protocol.validateCanonicalGraphView(
     validCanonicalGraphView,
@@ -1534,8 +1562,12 @@ assert.equal(elements.get("#discovery-form").attributes.get("aria-busy"), "false
 elements.get("#graph-campaign").value = "runtime-campaign";
 elements.get("#graph-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
 enqueueFetch(
-  `/v1/graphs/campaigns/runtime-campaign/snapshots/graph-snapshot_${"c".repeat(64)}`,
-  () => jsonResponse(canonicalGraphView()),
+  `/v1/graphs/campaigns/runtime-campaign/snapshots/graph-snapshot_${"c".repeat(64)}/pages?limit=100`,
+  () => jsonResponse({
+    ...canonicalGraphView(),
+    apiVersion: "pajin.control-plane/verified-canonical-graph-page/v1",
+    kind: "VerifiedCanonicalGraphPage", pageOffset: 0, pageSize: 100, nextCursor: null,
+  }),
 );
 await elements.get("#graph-form").dispatch("submit");
 assert.equal(elements.get("#graph-result").hidden, false);
@@ -1545,6 +1577,32 @@ assert.equal(elements.get("#graph-edge-count-value").textContent, "2");
 assert.equal(elements.get("#graph-node-list").children.length, 3);
 assert.equal(elements.get("#graph-edge-list").children.length, 2);
 assert.equal(elements.get("#graph-form").attributes.get("aria-busy"), "false");
+const pageRoute = `/v1/graphs/campaigns/runtime-campaign/snapshots/graph-snapshot_${"c".repeat(64)}/pages?limit=100`;
+enqueueFetch(pageRoute, () => jsonResponse(graphPage()));
+await elements.get("#graph-form").dispatch("submit");
+assert.equal(elements.get("#graph-node-list").children.length, 100);
+assert.equal(elements.get("#graph-page-status").textContent, "Page 1 of 3");
+assert.equal(elements.get("#graph-previous").disabled, true);
+enqueueFetch(`${pageRoute}&cursor=position_100`, () => jsonResponse(graphPage(100)));
+await elements.get("#graph-next").dispatch("click");
+assert.equal(elements.get("#graph-node-list").children.length, 100);
+assert.equal(elements.get("#graph-page-status").textContent, "Page 2 of 3");
+enqueueFetch(`${pageRoute}&cursor=position_200`, () => jsonResponse(graphPage(200)));
+await elements.get("#graph-next").dispatch("click");
+assert.equal(elements.get("#graph-node-list").children.length, 3);
+assert.equal(elements.get("#graph-next").disabled, true);
+enqueueFetch(`${pageRoute}&cursor=position_100`, () => jsonResponse(graphPage(100)));
+await elements.get("#graph-previous").dispatch("click");
+assert.equal(elements.get("#graph-node-list").children.length, 100);
+const staleGraphPage = deferred();
+enqueueFetch(`${pageRoute}&cursor=position_200`, () => staleGraphPage.promise);
+const pendingGraphPage = elements.get("#graph-next").dispatch("click");
+await elements.get("#graph-campaign").dispatch("input");
+staleGraphPage.resolve(jsonResponse(graphPage(200)));
+await pendingGraphPage;
+assert.equal(elements.get("#graph-result").hidden, true);
+assert.equal(elements.get("#graph-node-list").children.length, 0);
+assert.equal(elements.get("#graph-next").disabled, true);
 
 elements.get("#hypothesis-ranking-campaign").value = "runtime-campaign";
 elements.get("#hypothesis-ranking-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
