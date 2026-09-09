@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from enum import StrEnum
+from functools import lru_cache
 from hashlib import sha256
 from typing import Annotated, Literal, Self
 
@@ -295,6 +296,13 @@ class SecurityDomainTaxonomy(StrictModel):
 def registered_security_domain_taxonomy() -> SecurityDomainTaxonomy:
     """Return the exact DOMAIN-001 taxonomy without selecting runtime behavior."""
 
+    return _registered_taxonomy_template().model_copy(deep=True)
+
+
+@lru_cache(maxsize=1)
+def _registered_taxonomy_template() -> SecurityDomainTaxonomy:
+    """Cache only code-owned metadata; callers receive detached copies."""
+
     return SecurityDomainTaxonomy(domains=_registered_security_domains())
 
 
@@ -303,7 +311,7 @@ def resolve_registered_security_domain(
 ) -> RegisteredSecurityDomain:
     """Resolve an exact classification without inferring Profile or Capability mappings."""
 
-    for classification in registered_security_domain_taxonomy().domains:
+    for classification in _registered_taxonomy_template().domains:
         if classification.reference() == reference:
             return classification.model_copy(deep=True)
     raise SecurityDomainTaxonomyError("Security Domain classification is not registered exactly")

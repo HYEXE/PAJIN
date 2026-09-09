@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Annotated, Literal, Self
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -416,6 +417,13 @@ class MultiDomainGraphSemanticsRegistry(StrictModel):
 def registered_multi_domain_graph_semantics() -> MultiDomainGraphSemanticsRegistry:
     """Return DOMAIN-002 semantics without Graph admission or execution authority."""
 
+    return _registered_graph_semantics_template().model_copy(deep=True)
+
+
+@lru_cache(maxsize=1)
+def _registered_graph_semantics_template() -> MultiDomainGraphSemanticsRegistry:
+    """Keep the fixed vocabulary private so returned models cannot poison later validation."""
+
     taxonomy = registered_security_domain_taxonomy()
     return MultiDomainGraphSemanticsRegistry(
         securityDomainTaxonomyId=taxonomy.taxonomy_id,
@@ -432,7 +440,7 @@ def resolve_registered_security_domain_graph_type_set(
 ) -> RegisteredSecurityDomainGraphTypeSet:
     """Resolve one exact semantic type-set without granting Graph or runtime authority."""
 
-    for type_set in registered_multi_domain_graph_semantics().domain_type_sets:
+    for type_set in _registered_graph_semantics_template().domain_type_sets:
         if type_set.reference() == reference:
             return type_set.model_copy(deep=True)
     raise MultiDomainGraphSemanticsError(
@@ -472,6 +480,11 @@ def _registered_domain_type_sets() -> tuple[RegisteredSecurityDomainGraphTypeSet
 
 
 def _domain_classification(domain: SecurityDomain) -> SecurityDomainClassificationRef:
+    return _domain_classification_template(domain).model_copy(deep=True)
+
+
+@lru_cache(maxsize=len(SecurityDomain))
+def _domain_classification_template(domain: SecurityDomain) -> SecurityDomainClassificationRef:
     taxonomy = registered_security_domain_taxonomy()
     return next(item.reference() for item in taxonomy.domains if item.domain is domain)
 

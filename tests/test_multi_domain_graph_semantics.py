@@ -58,6 +58,20 @@ def _node_ref(tag: str, kind: GraphNodeKind) -> GraphNodeRef:
     )
 
 
+def test_returned_graph_classification_cannot_poison_cached_reference() -> None:
+    registry = registered_multi_domain_graph_semantics()
+    expected = registry.model_dump(mode="json", by_alias=True)
+    reference = registry.domain_type_sets[0].domain_classification
+    object.__setattr__(reference, "classification_digest", "0" * 64)
+    fresh = registered_multi_domain_graph_semantics()
+    assert fresh.model_dump(mode="json", by_alias=True) == expected
+    assert fresh.domain_type_sets[0].domain_classification is not reference
+    with pytest.raises(ValidationError):
+        MultiDomainGraphSemanticsRegistry.model_validate(
+            registry.model_dump(mode="json", by_alias=True),
+        )
+
+
 def test_registry_reuses_exact_graph_v1_vocabulary_and_single_writer() -> None:
     registry = registered_multi_domain_graph_semantics()
     taxonomy = registered_security_domain_taxonomy()

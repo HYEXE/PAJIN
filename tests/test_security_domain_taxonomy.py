@@ -65,6 +65,26 @@ def test_registered_taxonomy_is_exact_content_addressed_classification_only() ->
     ) == taxonomy
 
 
+def test_returned_taxonomy_and_resolved_members_cannot_poison_cached_code_authority() -> None:
+    first = registered_security_domain_taxonomy()
+    expected = first.model_dump(mode="json", by_alias=True)
+    reference = first.domains[0].reference()
+    resolved = resolve_registered_security_domain(reference)
+    # Deliberately bypass Pydantic's frozen assignment guard, as a hostile in-process caller can.
+    object.__setattr__(first.domains[0], "execution_authorized", True)
+    object.__setattr__(first, "taxonomy_digest", "0" * 64)
+    object.__setattr__(resolved, "classification_digest", "0" * 64)
+    second = registered_security_domain_taxonomy()
+    assert second.model_dump(mode="json", by_alias=True) == expected
+    assert second is not first
+    assert second.domains[0] is not first.domains[0]
+    assert resolve_registered_security_domain(reference) == second.domains[0]
+    with pytest.raises(ValidationError):
+        SecurityDomainTaxonomy.model_validate(first.model_dump(mode="json", by_alias=True))
+    with pytest.raises(SecurityDomainTaxonomyError):
+        resolve_registered_security_domain(resolved.reference())
+
+
 def test_every_domain_carries_explicit_false_authority_markers() -> None:
     taxonomy = registered_security_domain_taxonomy()
 
