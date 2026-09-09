@@ -28,14 +28,20 @@ class _DeselectHook:
 
 
 class _Config:
-    def __init__(self, shard_index: int | None, shard_total: int | None) -> None:
+    def __init__(
+        self,
+        shard_index: int | None,
+        shard_total: int | None,
+        durations: str | None = None,
+    ) -> None:
         self._options = {
             "ci_shard_index": shard_index,
             "ci_shard_total": shard_total,
+            "ci_shard_durations": durations,
         }
         self.hook = _DeselectHook()
 
-    def getoption(self, name: str) -> int | None:
+    def getoption(self, name: str) -> int | str | None:
         return self._options[name]
 
 
@@ -159,9 +165,11 @@ def test_main_ci_workflow_separates_quality_from_twenty_four_test_shards() -> No
     quality_steps = _named_steps(quality)
     test_steps = _named_steps(tests)
     assert set(quality_steps) == expected_common_steps | {
-        "Lint", "Type check", "Report measured conformance requirements"
+        "Lint",
+        "Type check",
+        "Report measured conformance requirements",
     }
-    assert set(test_steps) == expected_common_steps | {"Test"}
+    assert set(test_steps) == expected_common_steps | {"Test", "Retain test durations"}
 
     for steps in (quality_steps, test_steps):
         assert steps["Check out repository"]["uses"] == (
@@ -182,10 +190,10 @@ def test_main_ci_workflow_separates_quality_from_twenty_four_test_shards() -> No
         assert steps["Install locked dependencies"]["run"] == "uv sync --locked --all-extras"
 
     assert quality_steps["Lint"]["run"] == (
-        "uv run --locked ruff check src tests containers scripts/measured_conformance.py"
+        "uv run --locked ruff check src tests containers scripts"
     )
     assert quality_steps["Type check"]["run"] == (
-        "uv run --locked mypy src scripts/measured_conformance.py"
+        "uv run --locked mypy src scripts/measured_conformance.py scripts/ci_sharding.py"
     )
     assert quality_steps["Check out repository"]["with"] == {"fetch-depth": "2"}
     report = quality_steps["Report measured conformance requirements"]
@@ -194,10 +202,21 @@ def test_main_ci_workflow_separates_quality_from_twenty_four_test_shards() -> No
             "${{ github.event.pull_request.base.sha || github.event.before }}"
         )
     }
-    assert 'python scripts/measured_conformance.py' in report["run"]
+    assert "python scripts/measured_conformance.py" in report["run"]
     assert '--base "$PAJIN_CONFORMANCE_BASE" --head "$GITHUB_SHA"' in report["run"]
     assert '--format summary >> "$GITHUB_STEP_SUMMARY"' in report["run"]
     assert test_steps["Test"]["run"] == (
-        "uv run --locked pytest --ci-shard-index ${{ matrix.shard }} "
-        "--ci-shard-total 24 --durations=25"
+        "uv run --locked pytest tests --ci-shard-index ${{ matrix.shard }} "
+        "--ci-shard-total 24 --ci-shard-durations .github/test-durations.json "
+        "--ci-duration-output .pajin/test-durations-${{ matrix.shard }}.json --durations=25"
     )
+    retained = test_steps["Retain test durations"]
+    assert retained["if"] == "always()"
+    assert retained["uses"] == ("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a")
+    assert retained["with"] == {
+        "name": "test-durations-${{ matrix.shard }}-attempt-${{ github.run_attempt }}",
+        "path": ".pajin/test-durations-${{ matrix.shard }}.json",
+        "include-hidden-files": "true",
+        "if-no-files-found": "warn",
+        "retention-days": "14",
+    }

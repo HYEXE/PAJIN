@@ -704,9 +704,43 @@ for environment settings, inventory preparation, and retained-evidence requireme
 
 The SHA-pinned [Linux CI workflow](.github/workflows/ci.yml) installs the locked dependency set on
 Ubuntu 24.04 with Python 3.12. It separates a 60-minute Quality job for Ruff and strict mypy from
-twenty-four `fail-fast: false` pytest matrix shards with 120-minute timeouts. A SHA-256 digest of
-each canonical full node ID deterministically assigns every collected test to exactly one shard; local
-pytest remains unsharded unless both CI shard options are supplied.
+twenty-four `fail-fast: false` pytest matrix shards with 120-minute timeouts. The reviewed
+[duration profile](.github/test-durations.json) supplies setup/call/teardown seconds per canonical
+full node ID. Tests are assigned longest first to the least-loaded shard, with deterministic ties.
+New tests receive the median positive measured duration of currently collected tests (one second
+when no such measurement exists). Every collected test is assigned exactly once; stale profile
+entries never add or remove tests. An explicitly selected invalid profile fails collection.
+Local pytest remains unsharded unless both CI shard options are supplied. Omitting the optional
+duration profile preserves the original SHA-256 assignment.
+
+After pytest finishes, CI attempts to retain one duration artifact per shard and attempt, including
+its Git identity, dirty-tree status, selected/reported counts, and exit status. Setup failures or
+hard termination can leave no file. Durations are scheduling hints, not successful-test or
+conformance evidence. Review a complete baseline and explicitly select any subsequent diagnostic
+reruns before refreshing the checked-in profile. Merge inputs must not overlap; no workflow
+automatically changes the repository. Keep slow end-to-end cases
+intact and run the nearby pure-model tests first during development.
+
+```sh
+.venv/bin/python -m pytest tests --ci-duration-output .pajin/test-durations.json
+.venv/bin/python scripts/ci_sharding.py .pajin/test-durations.json --output .github/test-durations.json
+```
+
+For sharded recordings, provide each selected shard's file to the merge command once. Retried or
+overlapping inputs are rejected. Specify `tests` (or a test path) explicitly when passing a profile
+path so pytest loads the repository's test options before interpreting that file argument.
+Measurements from another platform or concurrent local processes
+are initial estimates; use actual CI artifacts to refine them. Shared fixture setup can be charged
+to a different test or repeated on additional shards after placement changes. The initial profile
+retains the provenance of a four-process local baseline and focused reruns that replace its affected
+measurements; original failure statuses remain visible in that provenance. Runtime metadata caching is limited
+to detached copies of code-owned catalogs; see [ADR-0273](docs/adr/0273-cache-only-code-owned-classification-templates.md).
+
+The dependency floor is Pydantic 2.12 because optional legacy-wire fields use its
+[`exclude_if` serialization support](https://pydantic.dev/articles/pydantic-v2-12-release).
+The locked dependency version remains unchanged. Install the updated dependency constraints before
+using the new recovery or large-input wire formats.
+
 The separate [WEB-002D conformance workflow](.github/workflows/web-002d-conformance.yml) is off by
 default and runs only after its required confirmation input. It builds the four repository-owned
 images for `linux/amd64`, pulls the registered ZAP image by its amd64 registry digest, records

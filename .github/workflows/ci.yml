@@ -42,10 +42,10 @@ jobs:
         run: uv sync --locked --all-extras
 
       - name: Lint
-        run: uv run --locked ruff check src tests containers scripts/measured_conformance.py
+        run: uv run --locked ruff check src tests containers scripts
 
       - name: Type check
-        run: uv run --locked mypy src scripts/measured_conformance.py
+        run: uv run --locked mypy src scripts/measured_conformance.py scripts/ci_sharding.py
 
       - name: Report measured conformance requirements
         env:
@@ -110,5 +110,16 @@ jobs:
 
       - name: Test
         run: >-
-          uv run --locked pytest --ci-shard-index ${{ matrix.shard }}
-          --ci-shard-total 24 --durations=25
+          uv run --locked pytest tests --ci-shard-index ${{ matrix.shard }}
+          --ci-shard-total 24 --ci-shard-durations .github/test-durations.json
+          --ci-duration-output .pajin/test-durations-${{ matrix.shard }}.json --durations=25
+
+      - name: Retain test durations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-durations-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: .pajin/test-durations-${{ matrix.shard }}.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14

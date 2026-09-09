@@ -50,7 +50,11 @@ residue audit. Initial validation and any outstanding gate still require fresh c
 
 ## Completion evidence
 
-For a checkpoint requiring all three families, complete this sequence:
+For a checkpoint requiring all three families, satisfy every requirement below before marking
+the checkpoint complete. After approval and identification of the exact published commit,
+ordinary CI and the independent Docker workflows may execute concurrently. This changes only
+scheduling: every required check must still pass for that same commit. A source fix requires
+fresh evidence for the changed commit; a result from the previous commit cannot cover it.
 
 1. Review the final source, tests, contracts, and Git state. Obtain any required commit/push and
    external-execution approval, then identify the exact published commit.
@@ -64,6 +68,12 @@ For a checkpoint requiring all three families, complete this sequence:
 5. Record the exact commit, workflow/run URL, terminal conclusion, runtime/image identity evidence,
    covered test, and residue result in the current checkpoint. If a required boundary changes,
    recompute the requirements for the new commit.
+
+When GitHub reruns a failed job, retain the successful jobs from earlier attempts of that same
+run and commit. Read all attempts and use the latest attempt for each required job name; require
+one successful quality job and all 24 distinct successful shard names. A latest-attempt-only
+job listing can omit the earlier successes. Preserve the initial failure and its diagnosis;
+rerunning a job does not replace investigating the cause.
 
 | Family | Workflow | Covered path |
 | --- | --- | --- |
