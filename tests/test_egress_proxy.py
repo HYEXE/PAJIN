@@ -179,6 +179,38 @@ def test_proxy_enforces_reserved_request_count(proxy_module: ModuleType) -> None
         proxy_module.reserve_request()
 
 
+def test_proxy_requires_explicit_large_request_limit_and_binds_complete_json(
+    proxy_module: ModuleType, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = json.dumps({"messages": [{"content": "한" * 400_000}]}, ensure_ascii=False).encode()
+    with pytest.raises(ValueError, match="byte limit"):
+        proxy_module.content_length([("Content-Length", str(len(raw)))])
+    policy = {**proxy_module.POLICY, "max_request_bytes": 16 * 1024 * 1024}
+    encoded = base64.b64encode(json.dumps(policy).encode()).decode()
+    monkeypatch.setenv("PAJIN_EGRESS_POLICY_B64", encoded)
+    proxy_module.POLICY = proxy_module.load_policy()
+    assert proxy_module.content_length([("Content-Length", str(len(raw)))]) == len(raw)
+    assert proxy_module.canonical_json_sha256(raw) is None
+    expected = json.dumps(json.loads(raw), sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":")).encode()
+    assert proxy_module.canonical_json_sha256(
+        raw, max_bytes=policy["max_request_bytes"],
+    ) == sha256(expected).hexdigest()
+    with pytest.raises(ValueError, match="byte limit"):
+        proxy_module.content_length([("Content-Length", str(16 * 1024 * 1024 + 1))])
+
+
+@pytest.mark.parametrize("limit", [True, 0, 16 * 1024 * 1024 + 1, "2000000"])
+def test_proxy_rejects_invalid_large_request_policy(
+    proxy_module: ModuleType, monkeypatch: pytest.MonkeyPatch, limit: object,
+) -> None:
+    policy = {**proxy_module.POLICY, "max_request_bytes": limit}
+    encoded = base64.b64encode(json.dumps(policy).encode()).decode()
+    monkeypatch.setenv("PAJIN_EGRESS_POLICY_B64", encoded)
+    with pytest.raises(RuntimeError, match="max_request_bytes"):
+        proxy_module.load_policy()
+
+
 class _MemoryWriter:
     def __init__(self) -> None:
         self.data = bytearray()
@@ -199,6 +231,33 @@ class _MemoryWriter:
 
     def is_closing(self) -> bool:
         return self.closed
+
+
+@pytest.mark.parametrize(("request_size", "response_size", "succeeds"),
+                         [(20, 4, True), (20, 9, False), (25, 4, False)])
+def test_connect_request_extension_preserves_response_ceiling(
+    proxy_module: ModuleType, request_size: int, response_size: int, succeeds: bool,
+) -> None:
+    async def exercise():
+        request_reader = asyncio.StreamReader()
+        response_reader = asyncio.StreamReader()
+        request_reader.feed_data(b"q" * request_size)
+        response_reader.feed_data(b"r" * response_size)
+        response_reader.feed_eof()
+        client = _MemoryWriter()
+        upstream = _MemoryWriter()
+        operation = proxy_module.relay_tunnel(request_reader, response_reader, client, upstream,
+                                              byte_limit=8, request_byte_limit=24)
+        if succeeds:
+            await operation
+            assert upstream.data == b"q" * request_size
+            assert client.data == b"r" * response_size
+        else:
+            with pytest.raises(ValueError, match="byte limit"):
+                await operation
+        assert client.closed and upstream.closed
+
+    asyncio.run(exercise())
 
 
 def _canonical_digest(value: object) -> str:

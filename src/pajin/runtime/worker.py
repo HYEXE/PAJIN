@@ -34,6 +34,8 @@ _HTTP_METHOD_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Z]+$")
 _MAX_WORKER_TRANSCRIPT_CHARS = 10_000_000
 _MAX_WORKER_STDIN_BYTES = 1_000_000
 _MAX_WORKER_WIRE_INPUT_BYTES = 1_100_000
+LARGE_PROVIDER_ACTION = "openai-chat-completion-v2"
+MAX_LARGE_PROVIDER_INPUT_BYTES = 16 * 1024 * 1024
 _MAX_EGRESS_PROXY_RESPONSE_BYTES = 8 * 1024 * 1024
 _MAX_EGRESS_OBSERVER_CONTEXT_BYTES = 64 * 1024
 
@@ -83,6 +85,17 @@ class EgressPolicy(BaseModel):
         le=_MAX_EGRESS_PROXY_RESPONSE_BYTES,
     )
     max_requests: int = Field(default=1, ge=1, le=100)
+    max_request_bytes: int | None = Field(
+        default=None, ge=1, le=MAX_LARGE_PROVIDER_INPUT_BYTES,
+        exclude_if=lambda value: value is None,
+    )
+
+    @field_validator("max_request_bytes", mode="before")
+    @classmethod
+    def require_request_byte_limit(cls, value: object) -> object:
+        if value is not None and type(value) is not int:
+            raise ValueError("egress request byte limit must be an integer")
+        return value
 
     @field_validator("allowed_methods", mode="before")
     @classmethod
@@ -159,7 +172,7 @@ class WorkerJob(BaseModel):
     )
     image: str = Field(min_length=1, max_length=300)
     command: list[str] = Field(min_length=1, max_length=100)
-    stdin: str = Field(default="", max_length=_MAX_WORKER_STDIN_BYTES)
+    stdin: str = Field(default="", max_length=MAX_LARGE_PROVIDER_INPUT_BYTES)
     network: NetworkMode = NetworkMode.NONE
     egress_policy: EgressPolicy | None = None
     limits: WorkerLimits = Field(default_factory=WorkerLimits)
@@ -186,12 +199,18 @@ class WorkerJob(BaseModel):
             encoded = value.encode("utf-8")
         except UnicodeEncodeError as exc:
             raise ValueError("worker stdin must be valid UTF-8 text") from exc
-        if len(encoded) > _MAX_WORKER_STDIN_BYTES:
+        if len(encoded) > MAX_LARGE_PROVIDER_INPUT_BYTES:
             raise ValueError("worker stdin exceeded its UTF-8 byte limit")
         return value
 
     @model_validator(mode="after")
     def validate_network_contract(self) -> WorkerJob:
+        if len(self.stdin.encode("utf-8")) > self.stdin_byte_limit:
+            raise ValueError("worker stdin exceeded its UTF-8 byte limit")
+        if (self.egress_policy is not None
+                and self.egress_policy.max_request_bytes is not None
+                and self.egress_policy.max_request_bytes > self.stdin_byte_limit):
+            raise ValueError("egress request limit exceeds the Worker action transport")
         if self.network is NetworkMode.NONE and self.egress_policy is not None:
             raise ValueError("egress policy is not allowed for network-none jobs")
         if self.network is NetworkMode.EGRESS_PROXY and self.egress_policy is None:
@@ -200,6 +219,16 @@ class WorkerJob(BaseModel):
         if len(bindings) != len(set(bindings)):
             raise ValueError("worker secret bindings must be unique")
         return self
+
+    @property
+    def stdin_byte_limit(self) -> int:
+        return (MAX_LARGE_PROVIDER_INPUT_BYTES if self.command == [LARGE_PROVIDER_ACTION]
+                else _MAX_WORKER_STDIN_BYTES)
+
+    @property
+    def request_byte_limit_override(self) -> int | None:
+        return (MAX_LARGE_PROVIDER_INPUT_BYTES if self.command == [LARGE_PROVIDER_ACTION]
+                else None)
 
 
 class WorkerResult(BaseModel):
@@ -1497,7 +1526,7 @@ class DockerWorkerBackend:
         payload = parse_strict_json_bytes(
             encoded_stdin,
             label="secret-bearing Worker stdin",
-            max_bytes=_MAX_WORKER_STDIN_BYTES,
+            max_bytes=job.stdin_byte_limit,
         )
         if not isinstance(payload, dict):
             raise ValueError("secret-bearing Worker stdin must be a JSON object")
@@ -1515,7 +1544,9 @@ class DockerWorkerBackend:
             allow_nan=False,
             sort_keys=True,
         ).encode("utf-8")
-        if len(wire) > _MAX_WORKER_WIRE_INPUT_BYTES:
+        wire_limit = (MAX_LARGE_PROVIDER_INPUT_BYTES + 100_000
+                      if job.command == [LARGE_PROVIDER_ACTION] else _MAX_WORKER_WIRE_INPUT_BYTES)
+        if len(wire) > wire_limit:
             raise ValueError("secret-bearing Worker envelope exceeded its byte limit")
         return wire
 

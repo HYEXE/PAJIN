@@ -8,6 +8,8 @@ from pydantic import ValidationError
 
 from pajin.runtime.secrets import SecretMaterial
 from pajin.runtime.worker import (
+    LARGE_PROVIDER_ACTION,
+    MAX_LARGE_PROVIDER_INPUT_BYTES,
     DockerEgressLifecycleObservation,
     DockerEgressLifecycleObservationError,
     DockerWorkerBackend,
@@ -334,6 +336,30 @@ def test_worker_job_bounds_stdin_by_utf8_bytes(stdin: str) -> None:
             image="pajin-worker:dev",
             command=["mock-agent-probe"],
             stdin=stdin,
+        )
+
+
+def test_large_input_is_scoped_to_the_versioned_provider_action() -> None:
+    stdin = json.dumps({"request": "한" * 400_000}, ensure_ascii=False)
+    commands = (["openai-chat-completion"], ["mock-agent-probe"], [LARGE_PROVIDER_ACTION, "extra"])
+    for command in commands:
+        with pytest.raises(ValidationError, match="UTF-8 byte limit"):
+            WorkerJob(image="pajin-worker:dev", command=command, stdin=stdin)
+    job = WorkerJob(image="pajin-worker:dev", command=[LARGE_PROVIDER_ACTION], stdin=stdin)
+    assert job.stdin_byte_limit == MAX_LARGE_PROVIDER_INPUT_BYTES
+    assert "max_request_bytes" not in EgressPolicy(allow=["https://example.com/**"]).model_dump()
+    with pytest.raises(ValidationError, match="transport"):
+        WorkerJob(
+            image="pajin-worker:dev", command=["mock-agent-probe"],
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(
+                allow=["https://example.com/**"], max_request_bytes=2_000_000,
+            ),
+        )
+    with pytest.raises(ValidationError, match="UTF-8 byte limit"):
+        WorkerJob(
+            image="pajin-worker:dev", command=[LARGE_PROVIDER_ACTION],
+            stdin="한" * (MAX_LARGE_PROVIDER_INPUT_BYTES // 3 + 1),
         )
 
 

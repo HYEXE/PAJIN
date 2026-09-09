@@ -1402,7 +1402,8 @@ def _rebuild_provider_worker_job(
                     allowed_methods={"POST"},
                     allow_private_networks=registration.allow_private_networks,
                     max_requests=request_cost,
-                            ),
+                    max_request_bytes=prepared.request_byte_limit_override,
+                ),
             },
             deep=True,
         ).model_dump(mode="python")

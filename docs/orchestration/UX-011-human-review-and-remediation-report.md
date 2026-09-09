@@ -60,7 +60,8 @@ starts a new listing; the list does not claim a snapshot across concurrent new r
 
 This ledger uses the existing trusted host and database boundary. It does not claim independent
 measurement signatures or whole-host rollback detection. Single-host recovery and key lifecycle
-work remain separate from this human-review ledger. The migration preserves existing rows; older binaries
+work are governed by [OPS-001](OPS-001-single-host-recovery-and-urgent-stop.md), including its
+explicit enrollment and supported-host limits. The migration preserves existing rows; older binaries
 must fail closed on the new schema. Rollback must use an explicitly retained pre-migration backup,
 not deletion of review history or an implicit downgrade.
 
@@ -160,5 +161,6 @@ selection. A retest requires the deployment to select its separately executed re
   and failed-lookup clearing checks. No unexpected console or page errors occurred.
 
 These are local implementation checks. PostgreSQL SQL signatures and constraints are checked by
-the migration suite; no live PostgreSQL instance was exercised. The current whole-project verification and remaining deployment gates
+the migration suite; no live PostgreSQL instance was exercised. Recovery and larger-input behavior are implemented
+under OPS-001 and SUP-004A; the current whole-project verification and remaining deployment gates
 are recorded in the root HANDOFF rather than inferred from these earlier focused results.

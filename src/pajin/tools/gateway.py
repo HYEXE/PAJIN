@@ -642,6 +642,7 @@ class ToolGateway:
                         else EgressPolicy.model_fields["max_response_bytes"].default
                     ),
                     max_requests=request_cost,
+                    max_request_bytes=job.request_byte_limit_override,
                 ),
             },
             deep=True,

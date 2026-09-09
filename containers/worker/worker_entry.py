@@ -38,6 +38,7 @@ MAX_PROVIDER_SSE_LINE_BYTES = 65_536
 MAX_PROVIDER_TOOL_CALLS = 8
 MAX_PROVIDER_CHUNKS = 10_000
 MAX_WORKER_INPUT_BYTES = 1_100_000
+MAX_LARGE_PROVIDER_INPUT_BYTES = 16 * 1024 * 1024
 MAX_MCP_RESPONSE_BYTES = 1_000_000
 MAX_MCP_STDERR_BYTES = 128_000
 MAX_NETWORK_SERVICE_BANNER_BYTES = 1_024
@@ -89,7 +90,7 @@ def _required_string(payload: dict[str, Any], key: str, *, label: str | None = N
     return value
 
 
-def _read_worker_input(stream: TextIO) -> dict[str, Any]:
+def _read_worker_input(stream: TextIO, *, large_provider: bool = False) -> dict[str, Any]:
     parts: list[str] = []
     total_bytes = 0
     while chunk := stream.read(_WORKER_INPUT_CHUNK_CHARS):
@@ -99,7 +100,9 @@ def _read_worker_input(stream: TextIO) -> dict[str, Any]:
             total_bytes += len(chunk.encode("utf-8"))
         except UnicodeError as exc:
             raise ValueError("worker input is not valid UTF-8 text") from exc
-        if total_bytes > MAX_WORKER_INPUT_BYTES:
+        limit = (MAX_LARGE_PROVIDER_INPUT_BYTES + 100_000 if large_provider
+                 else MAX_WORKER_INPUT_BYTES)
+        if total_bytes > limit:
             raise ValueError("worker input exceeded byte limit")
         parts.append(chunk)
     return _strict_json_object("".join(parts), label="worker input")
@@ -186,7 +189,6 @@ class _ObservingHTTPSHandler(HTTPSHandler):
             _ObservingHTTPSConnection,
             request,
             context=self._context,
-            check_hostname=self._check_hostname,
         )
 
 
@@ -1645,6 +1647,7 @@ def _provider_credential(secrets: dict[str, str]) -> str:
 
 def _provider_dispatch_payload(
     payload: dict[str, Any],
+    *, large_request: bool = False,
 ) -> tuple[str, str, dict[str, Any], bool]:
     provider_id = _required_string(payload, "providerId", label="provider ID")
     if fullmatch(r"[a-z0-9][a-z0-9-]{1,30}", provider_id) is None:
@@ -1664,8 +1667,10 @@ def _provider_dispatch_payload(
     stream = provider_request.get("stream", False)
     if not isinstance(stream, bool):
         raise TypeError("provider stream must be boolean")
-    encoded = json.dumps(provider_request, separators=(",", ":")).encode("utf-8")
-    if len(encoded) > MAX_WORKER_INPUT_BYTES:
+    encoded = json.dumps(
+        provider_request, separators=(",", ":"), ensure_ascii=not large_request, allow_nan=False,
+    ).encode("utf-8")
+    if len(encoded) > (MAX_LARGE_PROVIDER_INPUT_BYTES if large_request else MAX_WORKER_INPUT_BYTES):
         raise ValueError("provider request exceeded byte limit")
     return provider_id, target, provider_request, stream
 
@@ -1676,8 +1681,11 @@ def _provider_http_request(
     *,
     stream: bool,
     credential: str,
+    large_request: bool = False,
 ) -> Request:
-    encoded = json.dumps(provider_request, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(
+        provider_request, separators=(",", ":"), ensure_ascii=not large_request, allow_nan=False,
+    ).encode("utf-8")
     return Request(
         target,
         data=encoded,
@@ -1694,14 +1702,18 @@ def _provider_http_request(
 def openai_chat_completion(
     payload: dict[str, Any],
     secrets: dict[str, str],
+    *, large_request: bool = False,
 ) -> dict[str, Any]:
     credential = _provider_credential(secrets)
-    provider_id, target, provider_request, stream = _provider_dispatch_payload(payload)
+    provider_id, target, provider_request, stream = _provider_dispatch_payload(
+        payload, large_request=large_request,
+    )
     request = _provider_http_request(
         target,
         provider_request,
         stream=stream,
         credential=credential,
+        large_request=large_request,
     )
     try:
         with _open_http(request, timeout=30) as response:
@@ -2191,6 +2203,7 @@ _UNPRIVILEGED_ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "mcp-discover": mcp_discover,
 }
 _PROVIDER_ACTION = "openai-chat-completion"
+_LARGE_PROVIDER_ACTION = "openai-chat-completion-v2"
 
 
 def _dispatch_action(
@@ -2198,17 +2211,19 @@ def _dispatch_action(
     payload: dict[str, Any],
     secrets: dict[str, str],
 ) -> dict[str, Any]:
-    if action == _PROVIDER_ACTION:
+    if action in {_PROVIDER_ACTION, _LARGE_PROVIDER_ACTION}:
         if set(secrets) != {"provider-api-key"}:
             raise ValueError("provider action requires exactly one API key binding")
-        return openai_chat_completion(payload, secrets)
+        return openai_chat_completion(
+            payload, secrets, large_request=action == _LARGE_PROVIDER_ACTION,
+        )
     if secrets:
         raise ValueError("worker action does not accept secret bindings")
     return _UNPRIVILEGED_ACTIONS[action](payload)
 
 
 def _supported_action(action: str) -> bool:
-    return action == _PROVIDER_ACTION or action in _UNPRIVILEGED_ACTIONS
+    return action in {_PROVIDER_ACTION, _LARGE_PROVIDER_ACTION} or action in _UNPRIVILEGED_ACTIONS
 
 
 def main() -> int:
@@ -2220,7 +2235,9 @@ def main() -> int:
         print("unsupported worker action", file=sys.stderr)
         return 64
     try:
-        payload, secrets = _unwrap_worker_envelope(_read_worker_input(sys.stdin))
+        payload, secrets = _unwrap_worker_envelope(_read_worker_input(
+            sys.stdin, large_provider=action == _LARGE_PROVIDER_ACTION,
+        ))
         result = _dispatch_action(action, payload, secrets)
     except (
         KeyError,

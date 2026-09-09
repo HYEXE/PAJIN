@@ -336,6 +336,27 @@ def test_http_worker_installs_a_redirect_refusing_handler() -> None:
     assert redirected is None
 
 
+def test_https_worker_passes_verified_context_without_removed_private_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = _worker_entry()
+    handler = worker._ObservingHTTPSHandler()
+    captured = {}
+
+    def do_open(connection, request, **options):
+        captured.update(connection=connection, request=request, options=options)
+        return "opened"
+
+    monkeypatch.setattr(handler, "do_open", do_open)
+    request = Request("https://example.com/")
+    assert handler.https_open(request) == "opened"
+    assert captured["connection"] is worker._ObservingHTTPSConnection
+    assert captured["request"] is request
+    assert captured["options"] == {"context": handler._context}
+    assert handler._context.check_hostname is True
+    assert handler._context.verify_mode.name == "CERT_REQUIRED"
+
+
 def test_http_worker_installs_verified_https_peer_observation() -> None:
     worker = _worker_entry()
 

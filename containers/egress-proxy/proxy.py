@@ -19,6 +19,7 @@ from urllib.parse import SplitResult, quote, unquote, unquote_to_bytes, urlsplit
 
 MAX_HEADER_BYTES = 65_536
 MAX_REQUEST_BODY_BYTES = 1_000_000
+MAX_LARGE_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_POLICY_BYTES = 256 * 1024
 MAX_JSON_RECEIPT_BYTES = 1 * 1024 * 1024
@@ -134,6 +135,7 @@ def load_policy() -> dict[str, Any]:
         "max_exchange_seconds",
         "max_response_bytes",
         "max_requests",
+        "max_request_bytes",
     }
     if not set(policy).issubset(supported_fields):
         raise RuntimeError("egress policy contains unsupported fields")
@@ -160,6 +162,10 @@ def load_policy() -> dict[str, Any]:
     if not 1_024 <= max_response_bytes <= MAX_RESPONSE_BYTES:
         raise RuntimeError(f"max_response_bytes must be between 1024 and {MAX_RESPONSE_BYTES}")
     max_exchange_seconds = _policy_exchange_seconds(policy.get("max_exchange_seconds"))
+    max_request_bytes = policy.get("max_request_bytes", MAX_REQUEST_BODY_BYTES)
+    if (type(max_request_bytes) is not int
+            or not 1 <= max_request_bytes <= MAX_LARGE_REQUEST_BODY_BYTES):
+        raise RuntimeError("max_request_bytes must be a bounded positive integer")
 
     for rule in [*allow, *deny]:
         parse_url(rule, pattern=True)
@@ -171,6 +177,7 @@ def load_policy() -> dict[str, Any]:
         "max_exchange_seconds": max_exchange_seconds,
         "max_response_bytes": max_response_bytes,
         "max_requests": max_requests,
+        "max_request_bytes": max_request_bytes,
     }
 
 
@@ -506,13 +513,13 @@ def content_length(headers: list[tuple[str, str]]) -> int:
     if not value.isascii() or not value.isdecimal():
         raise ValueError("Content-Length must be a non-negative decimal integer")
     length = int(value)
-    if length > MAX_REQUEST_BODY_BYTES:
+    if length > POLICY.get("max_request_bytes", MAX_REQUEST_BODY_BYTES):
         raise ValueError("request body exceeded byte limit")
     return length
 
 
-def canonical_json_sha256(raw: bytes) -> str | None:
-    value = _strict_json_object(raw, max_bytes=MAX_JSON_RECEIPT_BYTES)
+def canonical_json_sha256(raw: bytes, *, max_bytes: int = MAX_JSON_RECEIPT_BYTES) -> str | None:
+    value = _strict_json_object(raw, max_bytes=max_bytes)
     if value is None:
         return None
     canonical = json.dumps(
@@ -592,11 +599,15 @@ async def relay_tunnel(
     upstream_writer: asyncio.StreamWriter,
     *,
     byte_limit: int,
+    request_byte_limit: int | None = None,
 ) -> None:
     """Relay both tunnel directions and never detach the surviving peer."""
 
     tasks = (
-        asyncio.create_task(relay(reader, upstream_writer, byte_limit=byte_limit)),
+        asyncio.create_task(relay(
+            reader, upstream_writer,
+            byte_limit=request_byte_limit if request_byte_limit is not None else byte_limit,
+        )),
         asyncio.create_task(relay(upstream_reader, writer, byte_limit=byte_limit)),
     )
     try:
@@ -679,6 +690,10 @@ async def handle_connect(
                 writer,
                 upstream_writer,
                 byte_limit=byte_limit,
+                request_byte_limit=(
+                    int(POLICY["max_request_bytes"]) + 256 * 1024
+                    if int(POLICY.get("max_request_bytes", 0)) > MAX_REQUEST_BODY_BYTES else None
+                ),
             ),
             timeout=exchange_timeout(CONNECT_TUNNEL_TIMEOUT_SECONDS),
         )
@@ -769,7 +784,9 @@ async def handle_http(
         await close_writer(upstream_writer)
 
     receipt = response_json_receipt(response) if method in {"GET", "POST"} else None
-    request_digest = canonical_json_sha256(request_body) if method == "POST" else None
+    request_digest = canonical_json_sha256(
+        request_body, max_bytes=int(POLICY.get("max_request_bytes", MAX_REQUEST_BODY_BYTES)),
+    ) if method == "POST" else None
     if receipt is not None and (method == "GET" or request_digest is not None):
         status, response_body_digest, response_json_digest = receipt
         fields: dict[str, object] = {

@@ -11,6 +11,7 @@ from pajin.providers.models import (
     ProviderRegistration,
 )
 from pajin.runtime.worker import (
+    LARGE_PROVIDER_ACTION,
     NetworkMode,
     WorkerJob,
     WorkerResult,
@@ -93,17 +94,19 @@ class OpenAICompatibleChatTool(Tool):
             provider_request["response_format"] = chat.response_format.model_dump(
                 mode="json", by_alias=True, exclude_none=True
             )
+        payload = {
+            "providerId": self._registration.provider_id,
+            "target": target,
+            "request": provider_request,
+        }
+        stdin = json.dumps(payload, separators=(",", ":"))
+        large_request = len(stdin.encode("utf-8")) > 1_000_000
+        if large_request:
+            stdin = json.dumps(payload, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
         return WorkerJob(
             image="pajin-worker:dev",
-            command=["openai-chat-completion"],
-            stdin=json.dumps(
-                {
-                    "providerId": self._registration.provider_id,
-                    "target": target,
-                    "request": provider_request,
-                },
-                separators=(",", ":"),
-            ),
+            command=[LARGE_PROVIDER_ACTION if large_request else "openai-chat-completion"],
+            stdin=stdin,
             network=NetworkMode.NONE,
             secret_requests=[
                 WorkerSecretRequest(

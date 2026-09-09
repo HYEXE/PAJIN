@@ -470,7 +470,7 @@ def test_supervisor_checkpoint_rejects_cost_bound_before_publication(
     assert not output_root.exists()
 
 
-def test_supervisor_checkpoint_rejects_valid_sup002_input_above_provider_message_limit(
+def test_supervisor_checkpoint_chunks_valid_input_above_provider_message_limit(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
 ) -> None:
@@ -483,14 +483,22 @@ def test_supervisor_checkpoint_rejects_valid_sup002_input_above_provider_message
     )
     runtime = _runtime(campaign, store, collaboration)
     output_root = tmp_path / "provider-message-limit"
+    policy = _policy(tokens=1_000_000)
     scheduler = SupervisorCheckpointScheduler(
         output_root=output_root,
-        budget_policy=_policy(tokens=1_000_000),
+        budget_policy=policy,
     )
 
-    with pytest.raises(SupervisorCheckpointScheduleError):
-        _schedule(scheduler, runtime, campaign, collaboration, store)
-    assert not output_root.exists()
+    publication = _schedule(scheduler, runtime, campaign, collaboration, store)
+    verified = verify_supervisor_checkpoint_schedule_publication(
+        publication, *runtime[:2], campaign, runtime[2],
+        model_revision="shadow-model-revision-2026-08-04", configuration=runtime[3],
+        budget_policy=policy,
+        collaboration_snapshot=collaboration, graph_snapshot_store=store,
+    )
+    assert verified.request_binding.api_version.endswith("/v1alpha2")
+    assert len(verified.request_binding.messages) > 2
+    assert verified.request_binding.input_transport is not None
 
 
 def test_supervisor_schedule_verifier_rejects_root_and_run_substitution(
@@ -776,6 +784,7 @@ def _invocation_environment(
     draft_transform: Callable[[dict[str, object]], dict[str, object]] | None = None,
     draft_wire_transform: Callable[[str], str] | None = None,
     run_binding=None,
+    worker_backend=None,
 ):
     ledger = CapabilityLedger(max_depth=campaign.spec.budgets.max_spawn_depth)
     tool_id = f"provider.{provider.provider_id}.chat"
@@ -801,7 +810,7 @@ def _invocation_environment(
     tools.register(OpenAICompatibleChatTool(provider))
     secrets = SecretBroker()
     secrets.register(provider.secret_ref, "supervisor-provider-secret")
-    worker = SupervisorDraftWorker(
+    worker = worker_backend or SupervisorDraftWorker(
         snapshot_id=snapshot_input.source_snapshot_id,
         snapshot_digest=snapshot_input.source_snapshot_digest,
         draft_transform=draft_transform,
