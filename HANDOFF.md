@@ -2,23 +2,24 @@
 
 ## 현재 체크포인트
 
-2026-09-09 기준, 사용자 요청의 8개 순차 개선 중 1~7단계 구현·해당 검증을 완료했다.
-8단계는 운영 문서를 현재 범위로 정리하고 전체 로컬 실행의 실패를 해소했으며,
-새 커밋의 일반 CI·Web/Network/AI Docker conformance가 남아 있다. 전체 goal은
-3~8단계 commit·push·원격 검증을 승인받아 진행 중이며, 완료로 처리하지 않았다.
-완료된 일을 반복하지 말고 아래 남은 첫 작업부터 이어 간다.
+2026-09-09 기준, 사용자 요청의 8개 순차 개선을 구현하고 해당 범위를 검증했다.
+`e7c824362b8c69116db24c8b8f5e3917431eab1e`의 일반 CI와 Web/Network/AI Docker conformance가
+모두 첫 시도에 통과했다. 이 문서는 그 검증 결과와 남아 있는 제품 제약을 기록한다.
+완료된 구현을 반복하지 말고 재개 시 실제 Git과 아래 검증 커밋을 대조한다.
 
 ## Git과 승인 범위
 
 - 브랜치는 `main`이다. 제품·테스트·CI 변경의 마지막 커밋은
   `9b93929e6ed8d7c1d39f248fcb160dfced44aa59`다. 현재 체크포인트는 이 코드와 운영 문서로 구성된다.
-  문서 커밋을 포함한 실제 HEAD·upstream·원격 main은 `git rev-parse HEAD '@{upstream}'`와
+  제품 검증 체크포인트는 `e7c8243`이며, 원격 검증 당시 local HEAD·upstream·실제 원격 SHA가
+  일치하고 작업 트리는 깨끗했다. 후속 문서 커밋을 포함한 실제 HEAD·upstream·원격 main은
+  `git rev-parse HEAD '@{upstream}'`와
   `git ls-remote --heads origin main`으로 재확인한다.
 - 최초 검토 기준은 `47d279b90b2c7cdedd2ea7eac9a39b872ec3132d`다. 승인된 1·2단계만
   `a60395b`(reader·Console), `3b9aaa0`(재검증 정책)로 commit·push했다.
 - 3~7단계 코드·테스트·계약·ADR-0261~0273·CI duration profile을 아래 일곱 커밋으로 보존했다.
-  원격 검증은 이 운영 문서 체크포인트를 포함해 push한 동일 커밋을 대상으로 한다.
-  승인 직전 원격 main은 `3b9aaa0`임을 재확인했다. merge·배포·이력 수정은 수행하지 않았다.
+  운영 문서 체크포인트 `e7c8243`까지 여덟 커밋을 승인받아 push했고 동일 커밋을 원격 검증했다.
+  merge·배포·이력 수정은 수행하지 않았다.
 - 사용자가 3~8단계 변경의 commit·push와 동일 커밋의 일반 CI·Web/Network/AI Docker 검증을
   명시적으로 승인했다. merge·배포·이력 수정은 이 승인 범위에 포함하지 않는다.
 
@@ -98,27 +99,37 @@ EFFECT-001의 24개 실행·384개 응답은 두 실제 모델·두 정책·두 
 - 현재 코드의 새 프로세스 report 재검증도 통과했다. `.pajin/effectiveness-step8-public.json`은
   원래 공개 집계와 byte-identical이다. 원문·canary·모델 파일은 commit 대상이 아니다.
 
-## 과거 exact-commit 원격 검증
+## 동일 커밋의 원격 검증
 
-다음은 모두 `3b9aaa0`에 대한 검증이며 현재 미커밋 변경을 포함하지 않는다.
+다음은 모두 `e7c824362b8c69116db24c8b8f5e3917431eab1e`, attempt 1의 성공 결과다.
 
 | 검증 | 확인한 결과 |
 | --- | --- |
-| [CI 34083402404](https://github.com/HYEXE/PAJIN/actions/runs/34083402404) | attempt 2에서 Quality·24 shard 성공. 설치 fetch에 실패했던 shard 21만 재실행 |
-| [Web 34086828263](https://github.com/HYEXE/PAJIN/actions/runs/34086828263) | source·Replay·Controls·fresh reader·exact clean commit·zero residue 성공 |
-| [Network 34086842371](https://github.com/HYEXE/PAJIN/actions/runs/34086842371) | 6 source·6 Replay·fresh reader·exact clean commit·zero residue 성공 |
-| [AI 34086857461](https://github.com/HYEXE/PAJIN/actions/runs/34086857461) | source·2 Replay·3 Controls·fresh reader·exact clean commit·zero residue 성공 |
+| [CI 34299070623](https://github.com/HYEXE/PAJIN/actions/runs/34299070623) | Quality·24 shard 모두 성공. 8,095 passed·76 opt-in skipped |
+| [Web 34299157203](https://github.com/HYEXE/PAJIN/actions/runs/34299157203) | source·Replay·Controls·fresh reader·exact clean commit·zero residue, 1 passed / 132.16초 |
+| [Network 34299158701](https://github.com/HYEXE/PAJIN/actions/runs/34299158701) | 6 source·6 Replay·fresh reader·exact clean commit·zero residue, 1 passed / 335.00초 |
+| [AI 34299160492](https://github.com/HYEXE/PAJIN/actions/runs/34299160492) | source·2 Replay·3 Controls·fresh reader·exact clean commit·zero residue, 1 passed / 86.56초 |
 
-## 남은 첫 작업
+- CI의 첫 job 시작부터 마지막 job 종료까지 477초(7분 57초)였다. shard job은 249~477초,
+  pytest 자체는 233.80~460.73초였다. 단일 실행의 관측이며 다른 커밋과의 통제된 A/B 결과나 SLA가 아니다.
+- 시간 artifact 24개를 실제로 내려받아 source SHA·clean tree·exit 0·selected/reported 수를 확인했다.
+  8,171개가 checked-in profile의 현재 node ID와 정확히 일치하며 중복·누락은 없다.
+- 세 Docker job은 Ubuntu 24.04의 `linux/amd64` 이미지로 실행했다. 각 workflow의
+  `Record exact image identities`에서 Web 5개·Network 3개·AI 3개의 실제 ID를 확인했다.
+  Web의 ZAP RepoDigest도 등록된 `71db37cd5b75663b35758d10aaec05bf6fbac23f5020e3046c70e628a5f84efa`와 일치한다.
+  각 clean-commit·실제 conformance·unconditional residue step이 모두 성공했다.
+- 로그와 집계는 `.pajin/remote-verification/`에 보존했다. `ci-tests.json`, `docker-evidence.json`,
+  `artifact-verification.json`과 원격 run URL로 확인한다. 임시 인덱스 검증용 소스 복사본은 정리했다.
 
-1. 승인된 **3~8단계 체크포인트의 commit·push 상태**를 Git과 대조한다. 미완료인 문서 체크포인트를
-   함께 보존한 뒤 실제 local HEAD·upstream·원격 main의 일치와 깨끗한 작업 트리를 확인한다.
-2. 같은 새 커밋에 대해 일반 CI와 Web/Network/AI conformance를
-   [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md) 절차대로 실행한다.
-   실제 head SHA·Quality·24 shard·source/replay/controls·cleanup·zero residue를 모두 확인한다.
-   로컬 Docker daemon은 마지막 조회에서 부재했고 새 Docker 검증은 미실행이다.
-3. 현재 배포 범위 밖인 live PostgreSQL·자동 배포 이전·분산 fence는 완료로 계산하지 않는다.
-   최종 검증이 끝나면 PLAN·HANDOFF의 pending 상태와 goal 완료 여부를 갱신한다.
+## 재개 시 첫 확인과 후속 작업
+
+1. 현재 HEAD·upstream·원격 main·작업 트리를 확인하고 현재 HEAD의 일반 CI를 조회한다.
+   `e7c8243` 이후 변경이 운영 Markdown뿐이면 [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에
+   따라 추가 Docker 실행은 선택되지 않는다. 제품·테스트·설정이 바뀌면 해당 새 커밋을 재검증한다.
+2. `KNOWN_ISSUES.md`의 현재 의존성 경고를 먼저 검토한다. 기존 lockfile의 httpx2/httpcore2 2.7.0에
+   해당하는 Dependabot 경고 6건을 확인했으며 이번 순차 개선에는 의존성 교체를 추가하지 않았다.
+3. 실제 detector 개선에는 새 미사용 평가군이 필요하다. live PostgreSQL·자동 배포 이전·분산 fence와
+   미구현 domain provider는 별도 범위이며 이번 검증으로 완료되었다고 계산하지 않는다.
 
 ## 유지할 경계
 

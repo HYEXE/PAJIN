@@ -5,14 +5,25 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
 
 ## 현재 통합 검증
 
-- `3b9aaa0`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증은 통과했다.
-  EFFECT-001 이후 새 구현까지 검증한 결과는 아니다. 공통 Worker·proxy·의존성이 바뀌었으므로
-  [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에 따라 새 커밋에서 세 경계를 재검증한다.
-- 현재 로컬 Docker daemon이 없어 새 이미지의 conformance는 미실행이다. 과거 성공이나
-  Worker/프록시의 로컬 HTTPS 통합 테스트로 Docker 격리·cleanup·residue 검증을 대신하지 않는다.
+- `e7c8243`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 통과했다.
+  8,095 passed·76 opt-in skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.
+  이후 변경은 [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에 따라 재검증한다.
+- 로컬 Docker daemon은 마지막 조회에서 부재했다. 새 이미지의 Ubuntu 검증은 원격에서 완료했으며
+  로컬 재실행 가능 여부와 구분한다. HTTPS 단위 경로만으로 Docker 격리·cleanup을 대신하지 않는다.
 - 새 CP v15/v16·복구·중단 경로는 SQLite로 검증했다. PostgreSQL SQL·제약 검사는 존재하지만
   실제 PostgreSQL migration·경합·재시작 검증은 남아 있다.
 - 전체 로컬 pytest의 최종 결과와 환경별 재실행은 `HANDOFF.md`에 기록한다.
+
+## 의존성 후속 보완
+
+- 2026-09-09 원격 dependency graph 갱신 후 열린 Dependabot 경고 6건(high 3·medium 3)을 확인했다.
+  현재 `uv.lock`은 `httpx2==2.7.0`, `httpcore2==2.7.0`이며 경고의 영향 버전에 해당한다.
+- `httpx2`의 압축 응답 메모리 증폭은 [GHSA-8xx6-hgc6-gc2m](https://github.com/advisories/GHSA-8xx6-hgc6-gc2m),
+  두 패키지의 SOCKS 경유 WebSocket TLS 문제는 [GHSA-7mj9-2mp8-4m2p](https://github.com/advisories/GHSA-7mj9-2mp8-4m2p)에
+  기록되어 있다. 나머지는 요청 헤더 조합·multipart 헤더·SSE buffering 경고다.
+  모든 경고를 포함하는 수정 버전의 하한은 httpx2 2.12.0, httpcore2 2.10.0이다.
+- 이 잠금 버전은 이번 변경 전부터 존재했다. 영향받는 제품 경로의 도달 가능성 평가는 아직 하지 않았다.
+  의존성 호환성과 Provider/HTTP 회귀를 검증하는 별도 갱신이 필요하며 CI 통과를 이 경고의 해소로 보지 않는다.
 
 ## 실제 탐지 효과와 측정 범위
 
