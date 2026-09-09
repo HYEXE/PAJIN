@@ -1,6 +1,7 @@
 "use strict";
 
 import { createMeasuredProductPanels } from "./measured-products.js";
+import { createMeasuredReviews } from "./measured-reviews.js";
 
 import {
   ApiProtocolError,
@@ -289,6 +290,14 @@ const measuredProductPanels = createMeasuredProductPanels({
   authEpoch: () => session.authEpoch,
   announce,
 });
+const measuredReviews = createMeasuredReviews({
+  document, request: apiRequest,
+  requestReport: (path) => apiRequest(path, {}, "markdown"),
+  access: () => ({ connected: session.connected, operator: session.canOperate,
+    approver: session.canApprove, subject: session.subject }),
+  authEpoch: () => session.authEpoch,
+  announce,
+});
 
 function setBusy(element, busy) {
   element.setAttribute("aria-busy", busy ? "true" : "false");
@@ -340,6 +349,7 @@ function setConnected(connected, roles = [], subject = null) {
   session.canApprove = connected && session.roles.has("approver");
   session.canSubmit = session.canOperate;
   measuredProductPanels.updateAccess();
+  measuredReviews.updateAccess();
   elements.connectionState.classList.toggle("connected", connected);
   elements.connectionLabel.textContent = connected
     ? roles.map((role) => role.replace("-", " ")).join(" · ")
@@ -848,6 +858,7 @@ function replaceCredential(token) {
   session.webMeasuredProductRequestId += 1;
   session.webMeasuredProductLoading = false;
   measuredProductPanels.clear();
+  measuredReviews.clear();
   session.reviewQueueRequestId += 1;
   session.reviewQueueLoading = false;
   session.refreshTask = null;
@@ -887,7 +898,7 @@ function isStaleRequest(error) {
   return error instanceof StaleRequestError;
 }
 
-async function apiRequest(path, options = {}) {
+async function apiRequest(path, options = {}, expectedType = "json") {
   if (!session.token) {
     throw new Error("Connect before calling the Control Plane API.");
   }
@@ -922,6 +933,8 @@ async function apiRequest(path, options = {}) {
     let payload = null;
     if (isJsonMediaType(contentType) && response.status !== 204 && response.status !== 205) {
       payload = parseJsonPayload(await response.text(), response.status);
+    } else if (response.ok && expectedType === "markdown" && contentType.startsWith("text/markdown")) {
+      payload = await response.text();
     }
     if (!requestIsCurrent(epoch, token)) {
       throw new StaleRequestError();
@@ -929,7 +942,10 @@ async function apiRequest(path, options = {}) {
     if (!response.ok) {
       throw new Error(errorDetail(payload, response.status));
     }
-    if (response.status === 204 || response.status === 205 || !isJsonMediaType(contentType)) {
+    if (expectedType === "markdown" && typeof payload === "string" && contentType.startsWith("text/markdown")) {
+      return payload;
+    }
+    if (expectedType !== "json" || response.status === 204 || response.status === 205 || !isJsonMediaType(contentType)) {
       throw new ApiProtocolError(
         `Control Plane returned an empty or non-JSON success response (HTTP ${response.status}).`,
       );

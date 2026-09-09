@@ -951,6 +951,93 @@
           </article>
         </div>
       </section>
+      <section id="measured-review-panel" class="panel measured-review-panel" aria-labelledby="measured-review-heading" aria-busy="false">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">14 / HUMAN REVIEW</p>
+            <h2 id="measured-review-heading">Evidence, remediation and retest</h2>
+          </div>
+          <button id="measured-review-refresh" class="button button-quiet" type="button" disabled>Refresh saved reviews</button>
+        </div>
+        <p class="panel-intro">Inspect a verified benchmark summary, document its impact and a remediation plan, then ask a separate Approver to review it. Production impact remains unverified.</p>
+        <p id="measured-review-status" role="status" aria-live="polite">Connect to load evidence and saved reviews.</p>
+        <div class="field-row">
+          <div class="field field-grow">
+            <label for="measured-review-domain">Configured evidence source</label>
+            <select id="measured-review-domain" disabled>
+              <option value="web">Web benchmark</option>
+              <option value="network">Network benchmark</option>
+              <option value="ai">AI benchmark</option>
+            </select>
+          </div>
+          <button id="measured-review-load-source" class="button button-primary field-action" type="button" disabled>Verify current evidence</button>
+        </div>
+        <div id="measured-review-source" class="review-evidence" hidden></div>
+        <form id="measured-review-open-form" autocomplete="off">
+          <div class="field-row">
+            <div class="field field-grow">
+              <label for="measured-review-title">New review title</label>
+              <input id="measured-review-title" required maxlength="180" disabled>
+            </div>
+            <button class="button button-primary field-action" type="submit" disabled>Open human review</button>
+          </div>
+        </form>
+        <div class="review-navigation">
+          <h3>Saved reviews</h3>
+          <ul id="measured-review-list" class="review-list"></ul>
+          <button id="measured-review-more" class="button button-quiet" type="button" disabled hidden>Next reviews</button>
+          <form id="measured-review-lookup-form" autocomplete="off">
+            <div class="field-row">
+              <div class="field field-grow">
+                <label for="measured-review-lookup-id">Open by review ID</label>
+                <input id="measured-review-lookup-id" required pattern="review_[a-f0-9]{32}" maxlength="39" spellcheck="false" disabled>
+              </div>
+              <button class="button button-quiet field-action" type="submit" disabled>Load review</button>
+            </div>
+          </form>
+        </div>
+        <div id="measured-review-workspace" hidden>
+          <article id="measured-review-detail" class="review-detail"></article>
+          <div class="review-actions">
+            <button id="measured-review-download" class="button button-primary" type="button" disabled>Download review report</button>
+            <button id="measured-review-history-load" class="button button-quiet" type="button" disabled>Load full revision history</button>
+          </div>
+          <details><summary>Retained review history</summary><div id="measured-review-history"></div></details>
+          <details class="review-editor">
+            <summary>Write or revise assessment · Operator</summary>
+            <p>Editing creates a new revision and requires fresh review. Severity is your judgment of the bounded benchmark evidence; choosing safe does not establish safety elsewhere.</p>
+            <form id="measured-review-assessment-form" autocomplete="off">
+              <div class="field"><label for="review-impact">Impact</label><textarea id="review-impact" name="impact" required maxlength="5000" rows="3" disabled></textarea></div>
+              <div class="field"><label for="review-severity">Human-assigned severity</label><select id="review-severity" name="severity" required disabled><option value="">Choose a severity</option><option value="safe">Safe</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select></div>
+              <div class="field"><label for="review-severity-rationale">Severity rationale</label><textarea id="review-severity-rationale" name="severityRationale" required maxlength="5000" rows="3" disabled></textarea></div>
+              <div class="field"><label for="review-limitations">Known limitations and uncertainty</label><textarea id="review-limitations" name="limitations" required maxlength="5000" rows="3" disabled></textarea></div>
+              <div id="measured-review-steps" class="review-steps"></div>
+              <button id="measured-review-add-step" class="button button-quiet" type="button" disabled>Add remediation step</button>
+              <div class="field"><label for="review-retest-plan">Retest plan and expected observations</label><textarea id="review-retest-plan" name="retestPlan" required maxlength="5000" rows="3" disabled></textarea></div>
+              <button class="button button-primary" type="submit" disabled>Submit assessment for review</button>
+            </form>
+          </details>
+          <details class="review-editor">
+            <summary>Review the current revision · Approver</summary>
+            <p id="measured-review-decision-help">A distinct Approver reviews the current revision.</p>
+            <form id="measured-review-decision-form" autocomplete="off">
+              <div class="field"><label for="review-decision">Decision</label><select id="review-decision" name="decision" required disabled><option value="">Choose a decision</option><option value="accept">Accept this assessment</option><option value="request-changes">Request changes</option></select></div>
+              <div class="field"><label for="review-decision-reason">Review reasoning</label><textarea id="review-decision-reason" name="reason" required maxlength="5000" rows="3" disabled></textarea></div>
+              <button class="button button-primary" type="submit" disabled>Record human review decision</button>
+            </form>
+          </details>
+          <details class="review-editor">
+            <summary>Attach a separately executed retest · Operator</summary>
+            <p>After remediation and an approved independent retest, configure its source in the deployment and use Verify current evidence. Attach a distinct result with the same benchmark case contract to an accepted review. This form does not execute a test or independently establish execution-after-remediation timing.</p>
+            <form id="measured-review-retest-form" autocomplete="off">
+              <div class="field"><label for="review-change-reference">Remediation or change reference</label><input id="review-change-reference" name="changeReference" required maxlength="1000" disabled></div>
+              <div class="field"><label for="review-retest-conclusion">Human retest conclusion</label><select id="review-retest-conclusion" name="conclusion" required disabled><option value="">Choose a conclusion</option><option value="reviewer-assessed-resolved">Assessed as resolved within this evidence</option><option value="persists">Issue persists</option><option value="inconclusive">Inconclusive</option></select></div>
+              <div class="field"><label for="review-retest-rationale">Retest rationale and remaining uncertainty</label><textarea id="review-retest-rationale" name="rationale" required maxlength="5000" rows="3" disabled></textarea></div>
+              <button class="button button-primary" type="submit" disabled>Attach retest for fresh review</button>
+            </form>
+          </details>
+        </div>
+      </section>
     </main>
 
     <footer>

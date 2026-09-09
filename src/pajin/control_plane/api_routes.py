@@ -220,6 +220,10 @@ def register_health_and_ui_routes(
     def web_console_measured_product_contracts() -> Response:
         return console_asset_response("measured-product-contracts.js")
 
+    @app.get("/ui/assets/measured-reviews.js", include_in_schema=False)
+    def web_console_measured_reviews() -> Response:
+        return console_asset_response("measured-reviews.js")
+
 
 def register_session_and_run_routes(
     app: FastAPI,
@@ -230,6 +234,7 @@ def register_session_and_run_routes(
     """Register operator/auditor session, Run, event, and Job read routes."""
 
     require_roles = dependencies.require_roles
+
 
     @app.get("/v1/session", response_model=Principal)
     def get_session(
@@ -1114,6 +1119,7 @@ def register_replay_worker_routes(
 ) -> None:
     """Register routes available only to a configured Replay Worker subject."""
 
+
     @app.post(
         "/v1/worker/replay/jobs/claim",
         response_model=ReplayExecutionClaimView | None,
@@ -1215,6 +1221,7 @@ def register_generic_worker_job_routes(
     dependencies: ControlPlaneDependencies,
 ) -> None:
     """Register lease-fenced mutation routes for the generic Worker."""
+
 
     @app.post(
         "/v1/worker/jobs/{job_id}/heartbeat",
@@ -1324,6 +1331,10 @@ def register_control_plane_routes(
 ) -> None:
     """Register all route groups in the established public route order."""
 
+    from pajin.control_plane.measured_reviews.evidence import MeasuredReviewEvidenceReader
+    from pajin.control_plane.measured_reviews.routes import register_measured_review_routes
+    from pajin.control_plane.measured_reviews.service import MeasuredReviewService
+
     register_health_and_ui_routes(app, repository=repository)
     register_session_and_run_routes(
         app,
@@ -1375,6 +1386,14 @@ def register_control_plane_routes(
     register_ai_measured_product_route(
         app,
         reader=ai_measured_product_reader,
+        dependencies=dependencies,
+    )
+    register_measured_review_routes(
+        app,
+        service=MeasuredReviewService(repository, MeasuredReviewEvidenceReader(
+            web=web_measured_product_reader, network=network_measured_product_reader,
+            ai=ai_measured_product_reader,
+        )),
         dependencies=dependencies,
     )
     register_public_replay_routes(

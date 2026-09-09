@@ -41,6 +41,7 @@ class FakeElement {
     this.checked = false;
     this.children = [];
     this.attributes = new Map();
+    this.dataset = {};
     this.listeners = new Map();
     this.classList = new FakeClassList();
     this.focused = false;
@@ -74,6 +75,17 @@ class FakeElement {
     this.attributes.set(name, String(value));
   }
 
+  querySelectorAll(selector) {
+    const tags = selector.split(",").map((tag) => tag.trim().toUpperCase());
+    return this.children.flatMap((child) => [
+      ...(tags.includes(child.tagName) ? [child] : []), ...child.querySelectorAll(selector),
+    ]);
+  }
+
+  reset() {
+    this.querySelectorAll("input, select, textarea").forEach((input) => { input.value = ""; });
+  }
+
   focus() {
     if (focusedElement !== null) {
       focusedElement.focused = false;
@@ -84,6 +96,10 @@ class FakeElement {
 }
 
 const selectors = [
+  ...["panel", "status", "detail", "list", "source", "open-form", "assessment-form",
+    "decision-form", "retest-form", "domain", "load-source", "refresh", "more", "lookup-form",
+    "lookup-id", "title", "steps", "add-step", "workspace", "history", "history-load", "download",
+    "decision-help"].map((name) => `#measured-review-${name}`),
   "#network-measured-panel", "#network-measured-load", "#network-measured-status", "#network-measured-result",
   "#ai-measured-panel", "#ai-measured-load", "#ai-measured-status", "#ai-measured-result",
   "#token-form",

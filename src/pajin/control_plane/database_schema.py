@@ -38,7 +38,8 @@ REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION = 11
 REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION = 12
 REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION = 13
 TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION = 14
-CURRENT_SCHEMA_VERSION = TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION
+MEASURED_REVIEW_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_VERSION = MEASURED_REVIEW_SCHEMA_VERSION
 MAX_JOB_LEASE_LIFETIME_SECONDS = 24 * 60 * 60
 _MIGRATION_BACKFILL_BATCH_SIZE = 500
 _JSON_AUTHORITY_BATCH_SIZE = 8
@@ -2281,3 +2282,76 @@ class TargetAttestationRegistryVersionRecord(Base):
     not_before: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+V14_CONTROL_PLANE_TABLES = CURRENT_CONTROL_PLANE_TABLES
+
+
+def _build_v14_metadata() -> MetaData:
+    """Freeze schema v14 before the human-review history is added."""
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V14_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V14_METADATA = _build_v14_metadata()
+MEASURED_REVIEW_TABLES = frozenset({"cp_measured_review_revisions"})
+CURRENT_CONTROL_PLANE_TABLES = frozenset({*V14_CONTROL_PLANE_TABLES, *MEASURED_REVIEW_TABLES})
+
+
+class MeasuredReviewRevisionRecord(Base):
+    """Append-only human judgments, separate from source and execution authority."""
+
+    __tablename__ = "cp_measured_review_revisions"
+    __table_args__ = (
+        CheckConstraint(
+            "length(review_id) = 39 AND substr(review_id, 1, 7) = 'review_' AND "
+            + _lower_hex_check("substr(review_id, 8, 32)", 32),
+            name="ck_cp_measured_review_identity",
+        ),
+        CheckConstraint("revision > 0 AND revision <= 200", name="ck_cp_measured_review_revision"),
+        CheckConstraint(
+            "source_domain IN ('web', 'network', 'ai')", name="ck_cp_measured_review_domain"
+        ),
+        CheckConstraint(
+            "actor_role IN ('operator', 'approver')", name="ck_cp_measured_review_role"
+        ),
+        CheckConstraint(
+            "length(actor) > 0 AND length(actor) <= 200", name="ck_cp_measured_review_actor"
+        ),
+        CheckConstraint(
+            "length(request_key) > 0 AND length(request_key) <= 128",
+            name="ck_cp_measured_review_request_key",
+        ),
+        CheckConstraint(
+            _lower_hex_check("request_digest", 64), name="ck_cp_measured_review_request_digest"
+        ),
+        CheckConstraint(
+            _lower_hex_check("record_digest", 64), name="ck_cp_measured_review_record_digest"
+        ),
+        CheckConstraint(
+            "(revision = 1 AND previous_digest IS NULL) OR "
+            "(revision > 1 AND previous_digest IS NOT NULL AND "
+            + _lower_hex_check("previous_digest", 64)
+            + ")",
+            name="ck_cp_measured_review_predecessor",
+        ),
+        UniqueConstraint("actor", "request_key", name="uq_cp_measured_review_request"),
+        UniqueConstraint("record_digest", name="uq_cp_measured_review_record_digest"),
+        Index("ix_cp_measured_review_domain_created", "source_domain", "recorded_at"),
+    )
+
+    review_id: Mapped[str] = mapped_column(String(39), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_domain: Mapped[str] = mapped_column(String(16), nullable=False)
+    previous_digest: Mapped[str | None] = mapped_column(String(64))
+    actor: Mapped[str] = mapped_column(String(200), nullable=False)
+    actor_role: Mapped[str] = mapped_column(String(16), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    request_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    record_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)

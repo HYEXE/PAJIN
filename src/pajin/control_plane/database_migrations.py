@@ -78,6 +78,7 @@ from pajin.control_plane.database_schema import (
     _V11_METADATA,
     _V12_METADATA,
     _V13_METADATA,
+    _V14_METADATA,
     ARTIFACT_AUTHORITY_SCHEMA_VERSION,
     ARTIFACT_AUTHORITY_TABLES,
     COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
@@ -86,6 +87,8 @@ from pajin.control_plane.database_schema import (
     DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION,
     LEGACY_CONTROL_PLANE_TABLES,
     LEGACY_SCHEMA_VERSION,
+    MEASURED_REVIEW_SCHEMA_VERSION,
+    MEASURED_REVIEW_TABLES,
     REPLAY_AUTHORITY_SCHEMA_VERSION,
     REPLAY_AUTHORITY_TABLES,
     REPLAY_CLAIM_PROJECTION_AUTHORITY_TABLES,
@@ -116,6 +119,7 @@ from pajin.control_plane.database_schema import (
     V11_CONTROL_PLANE_TABLES,
     V12_CONTROL_PLANE_TABLES,
     V13_CONTROL_PLANE_TABLES,
+    V14_CONTROL_PLANE_TABLES,
     Base,
     EventRecord,
     JobRecord,
@@ -173,6 +177,7 @@ _MIGRATIONS = {
     TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION: (
         "signed-target-attestation-registry-anti-rollback-authority"
     ),
+    MEASURED_REVIEW_SCHEMA_VERSION: "append-only-measured-human-review-history",
 }
 
 
@@ -256,6 +261,13 @@ def _initialize_schema(connection: Connection) -> None:  # noqa: C901
             raise SchemaInitializationError("unknown migration history for schema-v13 table set")
         _validate_v13_schema(connection)
         _migrate_v13_schema(connection)
+        _validate_current_schema(connection)
+        return
+    if cp_tables == V14_CONTROL_PLANE_TABLES:
+        if _latest_schema_version(connection) != TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION:
+            raise SchemaInitializationError("unknown migration history for schema-v14 table set")
+        _validate_v14_schema(connection)
+        _migrate_v14_schema(connection)
         _validate_current_schema(connection)
         return
     if cp_tables == CURRENT_CONTROL_PLANE_TABLES:
@@ -632,6 +644,18 @@ def _migrate_v13_schema(connection: Connection) -> None:
         TargetAttestationRegistryVersionRecord.__tablename__,
     )
     _record_migration(connection, TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION)
+    _migrate_v14_schema(connection)
+
+
+def _migrate_v14_schema(connection: Connection) -> None:
+    """Add human-review history without changing existing execution or source rows."""
+
+    _lock_v9_migration_writes(connection)
+    _create_tables(connection, MEASURED_REVIEW_TABLES)
+    for table_name in sorted(MEASURED_REVIEW_TABLES):
+        _install_append_only_trigger(connection, table_name)
+        _install_complete_append_only_guard(connection, table_name)
+    _record_migration(connection, MEASURED_REVIEW_SCHEMA_VERSION)
 
 
 def _validate_migrating_core_json_rows(connection: Connection) -> None:
@@ -1539,6 +1563,31 @@ def _validate_v13_schema(connection: Connection) -> None:
         raise SchemaInitializationError(
             f"unknown or incomplete schema v13 migration history: {actual!r}"
         )
+    _validate_v10_authority_rows(connection)
+
+
+def _validate_v14_schema(connection: Connection) -> None:
+    _validate_tables(
+        connection,
+        V14_CONTROL_PLANE_TABLES,
+        metadata=_V14_METADATA,
+        append_only_guard_version=COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
+        require_submission_and_lease_guards=True,
+    )
+    rows = connection.execute(
+        select(
+            SchemaVersionRecord.version,
+            SchemaVersionRecord.description,
+            SchemaVersionRecord.applied_at,
+        ).order_by(SchemaVersionRecord.version)
+    ).all()
+    expected = [
+        (version, _MIGRATIONS[version])
+        for version in range(LEGACY_SCHEMA_VERSION, TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION + 1)
+    ]
+    actual = [(int(row.version), str(row.description)) for row in rows]
+    if actual != expected or any(row.applied_at is None for row in rows):
+        raise SchemaInitializationError("unknown or incomplete schema v14 migration history")
     _validate_v10_authority_rows(connection)
 
 
