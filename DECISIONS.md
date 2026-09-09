@@ -5,6 +5,19 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0273: Cache Only Code-Owned Classification Templates](docs/adr/0273-cache-only-code-owned-classification-templates.md) — 채택
+- [ADR-0272: Bind Complete Supervisor Input Chunks and Version Large Provider Transport](docs/adr/0272-bind-complete-supervisor-input-chunks-and-version-large-provider-transport.md) — 채택
+- [ADR-0271: Page the Verified Current Graph with Snapshot-Bound Cursors](docs/adr/0271-page-the-verified-current-graph-with-snapshot-bound-cursors.md) — 채택
+- [ADR-0270: Enroll Recovery Members before First Use](docs/adr/0270-enroll-recovery-members-before-first-use.md) — 채택
+- [ADR-0269: Retain Closed Recovery Sets under a Live Host Gate](docs/adr/0269-retain-closed-recovery-sets-under-a-live-host-gate.md) — 채택
+- [ADR-0268: Exclude Checkpoint Operations from Enrolled Host Activity](docs/adr/0268-exclude-checkpoint-operations-from-enrolled-host-activity.md) — 채택
+- [ADR-0267: Bind Default Worker Budgets Before First Control Plane Run Work](docs/adr/0267-bind-default-worker-budgets-before-first-control-plane-run-work.md) — 채택
+- [ADR-0266: Compare Pinned Runtime Inventory Before Stateful Startup](docs/adr/0266-compare-pinned-runtime-inventory-before-stateful-startup.md) — 채택
+- [ADR-0265: Bind Urgent Cancellation and Worker Observations to the Control Plane Journal](docs/adr/0265-bind-urgent-cancellation-and-worker-observations-to-the-control-plane-journal.md) — 채택
+- [ADR-0264: Preserve Conservative Budgets in the Supervisor Journal](docs/adr/0264-preserve-conservative-budgets-in-the-supervisor-journal.md) — 채택
+- [ADR-0263: Pin Checkpoint Key Identities Before Serving after Restart](docs/adr/0263-pin-checkpoint-key-identities-before-serving-after-restart.md) — 채택
+- [ADR-0262: Record Human Assessments Separately from Measured Authority](docs/adr/0262-record-human-assessments-separately-from-measured-authority.md) — 채택
+- [ADR-0261: Separate Local LLM Effectiveness from Synthetic Conformance](docs/adr/0261-separate-local-llm-effectiveness-from-synthetic-conformance.md) — 채택
 - [ADR-0260: Compose Measured Readers from Pinned Deployment Inventory](docs/adr/0260-compose-measured-readers-from-pinned-deployment-inventory.md) — 채택
 - [ADR-0259: Select Governed Measured AI System-Prompt Disclosure after Phase 24](docs/adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md)
 - [ADR-0258: Select Governed Measured Network Service Identification after Phase 23](docs/adr/0258-select-governed-measured-network-service-identification-after-phase-23.md)
