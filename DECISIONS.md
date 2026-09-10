@@ -5,6 +5,9 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0276: Execute One Approved Offline ELF Header Read](docs/adr/0276-execute-one-approved-offline-elf-header-read.md) — 채택
+- [ADR-0275: Bind Graph Page Cache to Complete Current Database Bytes](docs/adr/0275-bind-graph-page-cache-to-complete-current-database-bytes.md) — 채택
+- [ADR-0274: Compare Disclosure Suspicion with a Fresh Private Evaluation](docs/adr/0274-compare-disclosure-suspicion-with-a-fresh-private-evaluation.md) — 채택
 - [ADR-0273: Cache Only Code-Owned Classification Templates](docs/adr/0273-cache-only-code-owned-classification-templates.md) — 채택
 - [ADR-0272: Bind Complete Supervisor Input Chunks and Version Large Provider Transport](docs/adr/0272-bind-complete-supervisor-input-chunks-and-version-large-provider-transport.md) — 채택
 - [ADR-0271: Page the Verified Current Graph with Snapshot-Bound Cursors](docs/adr/0271-page-the-verified-current-graph-with-snapshot-bound-cursors.md) — 채택

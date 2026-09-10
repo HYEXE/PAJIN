@@ -2,138 +2,237 @@
 
 ## 현재 체크포인트
 
-2026-09-09 기준, 사용자 요청의 8개 순차 개선을 구현하고 해당 범위를 검증했다.
-`e7c824362b8c69116db24c8b8f5e3917431eab1e`의 일반 CI와 Web/Network/AI Docker conformance가
-모두 첫 시도에 통과했다. 이 문서는 그 검증 결과와 남아 있는 제품 제약을 기록한다.
-완료된 구현을 반복하지 말고 재개 시 실제 Git과 아래 검증 커밋을 대조한다.
+2026-09-09 새 goal의 5개 과제를 `PLAN.md` 순서로 진행한다. 이전 8개 개선은 완료됐고 반복하지 않는다.
+SEC-001은 로컬 수정·집중 검증을 완료했다. 원격 해소와 동일 새 커밋 conformance는 대기 중이다.
+EFFECT-002는 새 384개 응답의 비교·fresh-process 검증을 완료했다. 고정된 비교 기준을 통과했으며
+남은 FP 31/FN 2·조건별 편차·시간·토큰·비용을 문서화했다. ③의 독립 PostgreSQL·Worker·crash·DB 복원 검증을 완료했다. 운영 구성 선택에 따른 종속 범위는 남아 있다.
+④의 Graph 반복 조회 개선과 ⑤의 승인된 offline ELF64 헤더 실행·재실행·보고를 로컬에서 검증했다.
+마지막 변경을 포함한 최종 소스의 전체 회귀와 실제 DB/Docker 로컬 검증을 완료했다. 원격 경고/동일 커밋 conformance,
+운영 구성 선택과 종속 검증이 남아 있어 전체 goal은 미완료다.
+2026-09-10 사용자가 준비된 여섯 commit·push·동일 커밋의 원격 workflow 실행을 승인했다.
+승인된 원격 반영·검증을 진행한다. 운영 DB·호스트 선택은 별도 미결이며 종속된 검증은 남아 있다.
 
 ## Git과 승인 범위
 
-- 브랜치는 `main`이다. 제품·테스트·CI 변경의 마지막 커밋은
-  `9b93929e6ed8d7c1d39f248fcb160dfced44aa59`다. 현재 체크포인트는 이 코드와 운영 문서로 구성된다.
-  제품 검증 체크포인트는 `e7c8243`이며, 원격 검증 당시 local HEAD·upstream·실제 원격 SHA가
-  일치하고 작업 트리는 깨끗했다. 후속 문서 커밋을 포함한 실제 HEAD·upstream·원격 main은
-  `git rev-parse HEAD '@{upstream}'`와
-  `git ls-remote --heads origin main`으로 재확인한다.
-- 최초 검토 기준은 `47d279b90b2c7cdedd2ea7eac9a39b872ec3132d`다. 승인된 1·2단계만
-  `a60395b`(reader·Console), `3b9aaa0`(재검증 정책)로 commit·push했다.
-- 3~7단계 코드·테스트·계약·ADR-0261~0273·CI duration profile을 아래 일곱 커밋으로 보존했다.
-  운영 문서 체크포인트 `e7c8243`까지 여덟 커밋을 승인받아 push했고 동일 커밋을 원격 검증했다.
-  merge·배포·이력 수정은 수행하지 않았다.
-- 사용자가 3~8단계 변경의 commit·push와 동일 커밋의 일반 CI·Web/Network/AI Docker 검증을
-  명시적으로 승인했다. merge·배포·이력 수정은 이 승인 범위에 포함하지 않는다.
+- 시작 시 `main`의 HEAD·upstream·실제 원격 main은 모두
+  `b359c3c782f9afa39f31a6d0aba9a9a8ace1dbd7`이었다. 깨끗한 worktree 하나만 존재했고
+  staged/unstaged/untracked 변경과 merge/rebase/cherry-pick/revert/bisect는 없었다.
+- 하위 `AGENTS.md`는 없다. `main`에서 작업하며 새 브랜치·서브에이전트는 만들지 않았다.
+- 이번 58개 변경의 여섯 commit·`origin/main` push·일반 CI와 Web/Network/AI Docker workflow 실행을
+  새로 승인받았다. 배포나 운영 구성 선택 승인은 아니다. 제품·회귀·계약 53개 파일은 아래 다섯
+  커밋에 보존했고 나머지 운영 상태·색인 5개 파일을 여섯 번째 커밋으로 묶는다.
+  제품 변경의 마지막 커밋은 `16a401313a25dfaaaf7e3043415cdc4a3f18e7d1`이며 원격 반영은 아직 전이다.
+  실제 최종 HEAD·staging 상태는 `git status --short`와 `git log`로 확인한다.
 
-## 구현 범위와 주요 위치
+## SEC-001 구현과 실제 결과
 
-| 단계 | 현재 동작 | 코드·계약 |
-| --- | --- | --- |
-| 1~2 | 기본 서버의 pinned reader·시작 진단·Network/AI Console, 변경별 conformance 요구 | `control_plane/measured_product_settings.py`, `scripts/measured_conformance.py`, UX-010·MEASURED-CONFORMANCE |
-| 3 | 실제 로컬 LLM의 분리된 평가군·독립 canary 정답·지표·정책 경유 실행·봉인 reader | `benchmark/effectiveness/`, EFFECT-001·ADR-0261 |
-| 4 | 공개 근거 → 사람 평가 → 별도 승인 → 재검증 연결·재승인 → Markdown 보고 | `control_plane/measured_reviews/`, `control_plane/web/measured-reviews.js`, CP v15·UX-011·ADR-0262 |
-| 5 | 키 연속성·보수적 예산·첫 사용 inventory·활동 배제·암호화 복구·긴급 취소/관측/알림 | `runtime/host_*.py`, `runtime/inventory*.py`, `control_plane/run_budgets.py`, `control_plane/urgent_stop*.py`, CP v16·OPS-001·ADR-0263~0270 |
-| 6 | Snapshot cursor Graph 페이지·Console와 4 MiB Supervisor 입력 분할/검증·큰 Provider 전송 | `control_plane/graph_pages.py`, `supervision/input_transport.py`, Worker/proxy·UX-002B·SUP-004A·ADR-0271/0272 |
-| 7 | private code-owned taxonomy/Graph template 캐시·분리된 반환값, 실측 시간 배치·기록 | `domain/security_domain.py`, `graph/domain_semantics.py`, `scripts/ci_sharding.py`, `.github/test-durations.json`, ADR-0273 |
-| 8 | 현재 로드맵·제약·인수인계를 계약 링크로 정리, 설치 조건·인증 목록·CI 명령 정합성 보완 | 루트 상태 문서·README·CI·Pydantic 최소 2.12 조건, 잠금 버전 자체는 유지 |
+- `pyproject.toml`에 `httpx2>=2.12,<3` runtime 하한을 추가했다. HTTPX2의 exact 의존으로
+  HTTPcore2도 2.12.0이다. `uv.lock`과 Control Plane의 `requirements.lock`을 함께 갱신했다.
+  genai-prices/PydanticAI/OpenAI/httpx/httpcore는 기존 버전을 유지한다.
+- 실제 의존 경로는 PAJIN → pydantic-ai-slim → genai-prices → httpx2 → httpcore2다.
+  명시적 가격 갱신기의 HTTPX2 GET과 기본 bundled snapshot 사용을 소스·설치 환경에서 확인했다.
+  직접 PAJIN HTTP 전송과 다른 경로다. 자세한 도달 조건·5개 공식 advisory·6개 경고는
+  [SEC-001](docs/orchestration/SEC-001-http-client-dependency-security.md)에 기록한다.
+- 새 테스트 `test_dependency_security.py`와 `test_dependency_socks_tls.py`는 압축 해제·오류 시
+  stream close·요청 framing·multipart CR/LF·SSE 반복 스캔·실제 SOCKS TLS를 검증한다.
+  SOCKS extra는 개발 환경에만 추가했다. 실제 소켓에서 sync/async·정상 인증서·불신 인증서를 대조한다.
+- 동일 19개 보안/정상 대조 사례: 이전 2.7.0은 **17 failed, 2 passed**, 현재 2.12.0은 **19 passed**.
+  기존 SOCKS wss 전송의 평문 GET도 관찰했다. 수정 후 실제 TLS handshake와 CA 거부를 확인했다.
+  이전 패키지는 `.pajin/sec001-old-http`에만 격리했고 프로젝트 가상환경을 되돌리지 않았다.
+- 주요 기존 회귀 포함 실행은 **199 passed / 15.32초**다. 테스트 이식성·소켓 읽기 보완 후 영향 범위의
+  보안/packaging/deployment 재검증은 **55 passed / 10.23초**, 문서 검사는 **4 passed**다.
+  중복 결과를 합산하지 않는다.
+- `.venv/bin/uv lock --check --offline --cache-dir .pajin/uv-cache` 통과.
+  `.venv/bin/uv sync --cache-dir .pajin/uv-cache --locked --all-extras`와 설치 의존성 check 통과.
+- wheel/sdist를 `.pajin/sec001-dist`에 생성했다. 별도 `.pajin/sec001-install`에 Control Plane의
+  hash-locked binary 의존성 38개와 wheel을 설치하고 39개 package 정합성을 확인했다.
+  `python -I`로 wheel 경로 import·두 수정 버전·기본 bundled 가격 계산·실제 API import를 확인했다.
+  기존 packaging smoke도 wheel/sdist·의존성 없는 설치·metadata 하한을 검사한다.
+- Ruff 전체 통과. Linux strict mypy는 **428 source files 통과**. `git diff --check` 통과.
+- sandbox의 DNS·캐시 접근·loopback bind 제한은 원인을 확인한 뒤 허용된 패키지/로컬 소켓 실행으로
+  재검증했다. skip·TLS 해제·assertion 약화는 하지 않았다. 테스트의 소켓·thread는 종료됐다.
 
-현재 코드의 커밋은 EFFECT-001 `b68d6bb`, UX-011 `644825b`, OPS-001 `bdfe3f6`,
-Graph 페이지 `5041e7c`, Supervisor 입력 `2114d7b`, metadata 캐시 `9622b38`, CI 배치 `9b93929`다.
+재현 명령(프로젝트 루트):
 
-위 코드 경로는 별도 표시가 없으면 `src/pajin/` 기준이다. 상세 경계는
-[문서 색인](docs/README.md)과 [결정 색인](DECISIONS.md)에서 찾는다.
+```sh
+.venv/bin/python -m pytest -q tests/test_dependency_security.py tests/test_dependency_socks_tls.py tests/test_provider.py tests/test_provider_agents.py tests/test_provider_session.py tests/test_pydantic_ai_adapter.py tests/test_http_tool.py tests/test_worker_http.py tests/test_packaging_entrypoints.py tests/test_deployment.py
+.venv/bin/ruff check --output-format concise src tests containers scripts
+.venv/bin/mypy --platform linux src scripts/measured_conformance.py scripts/ci_sharding.py
+.venv/bin/python scripts/measured_conformance.py --base HEAD --include-working-tree
+git diff --check
+```
 
-## 현재 변경의 로컬 검증
+로그: `.pajin/sec001-before.log`, `sec001-old-boundary.log`, `sec001-verified.log`,
+`sec001-final.log`, `sec001-socks-tls.log`, `sec001-mypy.log`, `sec001-build.log`,
+`sec001-conformance-required.json`. 마지막 보완을 포함한 전체 pytest 결과는 아래 통합 검증에 있다.
 
-- 커밋 직전 각 인덱스 트리를 별도 디렉터리로 꺼내 필요한 범위만 포함한 상태를 검증했다.
-  EFFECT-001 27개, UX-011 266개와 packaging 재검증 17개, OPS-001 301개와 영향 모듈 재검증 64개,
-  Graph 29개, 입력 전송 269개, metadata 164개, CI 31개가 통과했다. 중복 사례를 합산하지 않는다.
-  packaging의 초기 실패는 검증 도구가 주입한 PYTHONPATH 상속 때문이었으며 환경만 수정했다.
-  복구 후보에 섞였던 입력 전송 변경은 해당 입력 전송 커밋으로 분리하고 관련 실패를 재검증했다.
-  각 인덱스의 Ruff·Linux strict mypy도 통과했다. 최종 src와 두 CI script는 428 source files 통과다.
-  기록은 `.pajin/commit-review/`의 `*-candidate-*.log`에 보존한다.
-- 전체 수집 8,170개를 네 hash shard로 실행했다. 초기 결과는 8,083 passed, 76 opt-in skipped,
-  9 failed, 2 setup errors다. 최장 shard는 1,061.76초였다. 로그는 `.pajin/step7-full-0.log`부터
-  `step7-full-3.log`, 원래 duration profile도 같은 basename의 `.json`으로 보존했다.
-- 실패 11건 중 하나는 새 POST 경로 7개의 기존 인증 목록 누락이었다. exact 목록을 추가했으며
-  모든 경로의 HTTPBearer 요구 검사는 유지했다. 하나는 sandbox의 임시 TLS bind 제한이었다.
-  나머지는 실제 UTC 기준의 짧은 권한·예산 창이 만료되어 거부된 사례였다.
-- 포트 바인딩을 허용하고 관련 여덟 모듈을 한 pytest 프로세스로 실행해 **71 passed, 2 opt-in skipped**
-  (185.27초)를 확인했다. 원래 실패·오류 11개 node ID가 이 성공한 재검증에 모두 포함된다.
-  TTL·예산 검사나 assertion을 약화하지 않았다. 재검증 로그는 `.pajin/step8-regression.log`다.
-- duration reader가 긴 adversarial parameter ID를 거부하던 오류를 수정하고 왕복 회귀를 추가했다.
-  두 기존 입력 거부 테스트에는 짧은 사례 ID를 부여했으며 입력·검사는 유지했다.
-  **43 passed** (2.91초), `.pajin/step8-duration-fix.log`. 현재 전체 수집은 **8,171개**다.
-- 성공한 재검증과 추가 테스트를 합치면 현재 사례의 검증 범위는 8,095 passed와 76 opt-in skipped에
-  대응한다. 이것을 하나의 새 전체 pytest 명령이 처음부터 모두 통과했다고 표현하지 않는다.
-- 변경 전후 metadata canonical bytes 동일성과 강제 nested mutation 격리·외부 변조 거부를 검증했다.
-  같은 Forensics Replay 사례의 기록된 이전 cProfile 592.67초에 대해 현재는 **43.17초**다.
-  digest 호출은 41,234,564회에서 28회로 줄었다. 새 로그와 profile은
-  `.pajin/forensics-final-profile.log`, `.pajin/forensics-final.prof`다. CI 속도 개선 수치는 아니다.
-- 초기 full profile과 명시적 후속 측정에서 현재 node ID만 선택해 `.github/test-durations.json`을 만들었다.
-  원래 실패 상태를 포함한 source provenance를 보존한다. 8,171개가 24 shard에 중복·누락 없이 배정된다.
-  실제 pytest의 shard 0 수집도 예상 335개와 일치했다. `.pajin/step8-shard-verification.json` 참조.
-  같은 로컬 측정으로 계산한 최대 shard는 hash 289.638초, 실측 배치 161.655초다.
-  공유 fixture 재생성·runner 차이를 포함한 실제 CI 완료 시간 예측으로 사용하지 않는다.
-- `.venv/bin/ruff check --output-format concise src tests containers scripts` 통과.
-  `.venv/bin/mypy --platform linux src scripts/measured_conformance.py scripts/ci_sharding.py`도
-  428 source files 통과했다(`.pajin/step8-mypy.log`). 문서·CI·인증 목록 최종 점검은
-  **32 passed** (10.13초, `.pajin/step8-final-focused.log`), `git diff --check`도 통과했다.
-- packaging의 wheel·sdist·깨끗한 설치, API/권한, Node Console 회귀는 전체 실행에 포함됐다.
-  5단계 관련 회귀 418개, 6단계 관련 회귀 517개와 실제 HTTPS 전송·불신 인증서 거부 2개도 통과했다.
-  `.pajin/recovery-enrollment-regression.log`, `.pajin/step6-regression.log`,
-  `.pajin/supervisor-input-live.log`에서 해당 범위를 확인한다.
-- 실제 API-backed 사람 검토·재승인·보고서, 긴급 알림과 Graph Console을 브라우저로 확인했다.
-  Graph는 실제 SQLite 504 node·6페이지, 데스크톱/모바일·키보드·잠금·오류 흐름을 검증했다.
-  임시 브라우저·서버·Worker 프로세스는 검증 종료 때 정리했다.
+## 원격 및 이전 기준
 
-## 실제 모델 평가의 보존 상태
+- 2026-09-10 최종 읽기 조회에서도 원격 main은 시작 HEAD와 같고 Dependabot 6건(high 3·medium 3)은
+  열려 있었다. 경고별 공식 수정 하한도 재확인했다. 로컬 패키지 제거와 원격
+  경고 해소는 다르며 push/graph 재평가 전 해소로 보고하지 않는다.
+- 변경 경로 정책은 Web/Network/AI workflow 세 개를 모두 요구한다. 사용자 실행 승인은 받았지만
+  실제 결과는 아직 `not-executed`다. 경로 판정 도구의 `dispatchAuthorized: false`는 자동 실행 권한을
+  부여하지 않는다는 뜻이다. 로컬 Docker 결과도 exact-clean Ubuntu gate를 대신하지 않는다.
+- 이전 제품 검증 커밋 `e7c824362b8c69116db24c8b8f5e3917431eab1e`의 CI 34299070623과
+  Web 34299157203·Network 34299158701·AI 34299160492는 성공 기록이다. 이전 최종 문서 커밋은
+  b359c3c이며 사용자 제공 CI 34300565021은 8,095 passed·76 opt-in skipped 기록이다.
+  새 코드·의존성 검증의 결과로 사용하지 않는다. 이전 원격 증거는 `.pajin/remote-verification/`에 있다.
 
-EFFECT-001의 24개 실행·384개 응답은 두 실제 모델·두 정책·두 temperature·세 seed의
-고정 진단 평가군이다. TP/TN/FP/FN은 28/166/100/90이며 일반 모델 안전성으로 일반화하지 않는다.
-수치·반복 편차·시간·비용 범위는 [EFFECT-001](docs/benchmark/EFFECT-001-local-llm-effectiveness.md)이 권위다.
+## EFFECT-002 완료 체크포인트
 
-- 계획 참조 `.pajin/effectiveness-v1-plan.json`, 결과 참조 `.pajin/effectiveness-v1-result.json`.
-- private Run root `.pajin/effectiveness`, 원래 공개 집계 `.pajin/effectiveness-v1-public.json`.
-- terminal Run `run_20260907T082018Z_872bdd7c`, root
-  `6eb7aff77b50dc3a28aa68d8ba95f0684cd65b4e91b6e356964befe8b0d2cd21`.
-- 평가 당시 소스 9개는 `.pajin/effectiveness-v1-frozen-source/`에 보존했다.
-- 현재 코드의 새 프로세스 report 재검증도 통과했다. `.pajin/effectiveness-step8-public.json`은
-  원래 공개 집계와 byte-identical이다. 원문·canary·모델 파일은 commit 대상이 아니다.
+- EFFECT-001의 기존 384개 응답은 개발 자료로만 사용한다. TP/TN/FP/FN은 28/166/100/90이다.
+  `.pajin/effectiveness-v1-plan.json`, `.pajin/effectiveness-v1-result.json`,
+  `.pajin/effectiveness-v1-public.json`, `.pajin/effectiveness-v1-frozen-source/`와 private Run tree가 있다.
+- 기존 오탐 100개 중 92개는 공개 marker echo 사례였고, 미탐 90개 중 76개는 literal nonce,
+  14개는 공백으로 분리된 nonce 노출이었다. 기존 자료를 개발에 사용했으며 새 평가 점수와 혼합하지 않는다.
+- `tools/disclosure.py`의 opt-in 의심 탐지기는 응답·공개 사용자 입력만 받는다. 비공개 정답을 받지 않으며
+  Finding 권위는 false다. 기존 marker와 oracle은 변경하지 않았다. 비교 계획·별도 reader·paired 결과는
+  `benchmark/effectiveness_comparison/`, 계약은 [EFFECT-002](docs/benchmark/EFFECT-002-disclosure-detector-comparison.md),
+  결정은 ADR-0274에 있다. 새 corpus는 중복·기존 사례 중첩·입력 내 canary를 거부한다.
+- 새/기존 benchmark 집중 검증 **67 passed / 5.74초**, packaging/문서 **21 passed / 10.51초**,
+  Ruff 전체와 Linux strict mypy **435 files**가 통과했다. EFFECT-001 fresh-process 보고서는 기존 공개
+  결과와 byte-identical이었다. 이는 새 품질 결과를 대신하지 않는다.
+- 허용된 로컬 Docker 실행을 시작했다. Linux arm64의 전용 Worker/proxy 이미지를 빌드했고,
+  두 모델 파일의 크기·SHA-256을 실제로 다시 확인했다. 원문·canary·모델은 private `.pajin/`에만 있다.
+- 새 plan 참조는 `.pajin/effectiveness-v2-plan.json`, root는 `.pajin/effectiveness-v2`이며
+  plan Run은 `run_20260909T053459Z_695ed040`, root digest는
+  `668e323427b23d5262c94baea60d513a93c25a3393baf49004637b8b5fc088dd`다.
+  고정된 16개 Python source는 `.pajin/effectiveness-v2-frozen-source/`에 보존했다.
+- 개발용 smoke는 두 모델의 총 4개 요청·봉인 검증을 통과했다. 미사용 평가를 시작했으므로 탐지기·정답·
+  설정·제외 규칙을 변경하거나 같은 corpus를 새 canary로 재사용하지 않는다.
+- 실제 실행과 fresh-process `report`가 exit 0으로 끝났다. 결과 참조는
+  `.pajin/effectiveness-v2-result.json`, 검증 보고서는 `.pajin/effectiveness-v2-public.json`이다.
+  result Run `run_20260909T064558Z_d48e9e41`, root
+  `a16cd1ebca64aba5ad8bf73fb7eecac0968c8ae98ba5efa5e1ba72b598e3d461`이다.
+- 384개 응답·0 failed/unscored. 기존 TP/TN/FP/FN 60/199/56/69, 개선 127/224/31/2다.
+  정밀도 51.72%→80.38%, 재현율 46.51%→98.45%, F1 48.98%→88.50%로 사전 기준을 통과했다.
+  기존 EFFECT-001 점수를 새 baseline과 혼합하지 않는다. 개발/평가 원문과 canary는 공개하지 않는다.
+- 실제 시간 3,940.32초, provider 토큰 56,935개, local marginal token USD 0이며 기타 비용은 미측정이다.
+  반복 편차·CPU·wall·조건별 악화·남은 오류는 EFFECT-002에 기록했다. 평가 후 Python 고정 소스를 바꾸지 않았다.
+- 2026-09-10 실제 소유 label 기반 Docker inventory에서 target/Worker container·network 잔여가 없었다.
+  실행 프로세스는 종료됐으며 `.pajin/effect002-run.log`, `.pajin/effect002-report.log`에 결과가 있다.
 
-## 동일 커밋의 원격 검증
+## OPS-002 로컬 검증 체크포인트
 
-다음은 모두 `e7c824362b8c69116db24c8b8f5e3917431eab1e`, attempt 1의 성공 결과다.
+- `scripts/operational_postgres.py`는 외부 DB URL을 받지 않고 새 TLS·임시 계정·loopback 포트·
+  고정 PostgreSQL 17.11 컨테이너와 볼륨만 생성한다. 소유 ID/label 확인 후 해당 자원만 종료·정리한다.
+  명시적 `tests/operational_postgres_probe.py`를 추가했으며 skip은 추가하지 않았다.
+- 실제 PostgreSQL 회귀에서 기존 v9 fixture의 최신 테이블/최종 버전 전제와 새 v15 fixture의
+  잔여 PG 함수를 발견해 실제 과거 스키마로 바로잡았다. 제품 migration/인증 검증을 약화하지 않았다.
+- Graph/APP 통합 뒤 `.pajin/ops002-live-07/report.json`: **complete=true**, 71 passed / 94.03초.
+  전체 109.26초 동안 소스 지문을 유지했다. PostgreSQL Linux arm64 17.11, Python macOS arm64 3.12.13이다.
+- 실제 Docker Worker의 실행·긴급 중단·봉인·알림과 컨테이너 소멸을 각각 확인했다. 네트워크 없는
+  bounded sleep action이며 외부 대상의 rollback 검증이 아니다. Worker cleanup 권위는 false를 유지한다.
+- DB 강제 종료 후 실제 crash recovery와 fresh-process 전체 행 지문·검증키·미완료 Permit의 보수적
+  consumed_calls 보존을 확인했다. 독립 archive/state pin을 대조해 별도 빈 DB에 복원하고 재검증했다.
+  모든 소유 container/volume label의 부재를 확인했고 임시 프로세스는 끝났다.
+- 중간 도구 실패: 버전 조회 DB 이름 누락, asyncio 표식 누락, Docker 임시 포트 재할당,
+  Docker archive copy 실패. 원인을 분리하거나 좁은 비루트 streaming 복원 검증 후 수정했다.
+  이전 실패 Run을 성공으로 덮어쓰지 않았다. 최종 결과와 경계는
+  [OPS-002](docs/orchestration/OPS-002-isolated-postgres-operations.md)에 기록했다.
+- SQLite checkpoint/runner 31 passed; 마지막 runner/문서 9 passed. 중복 수는 합산하지 않는다.
+- 운영 Linux 단일 호스트의 PostgreSQL/SQLite 선택을 사용자에게 물었으며 응답 대기다.
+  이번 PG 단독 dump를 OPS-001의 SQLite CP/Graph/journal/RunStore 전체 복구로 취급하지 않는다.
+  PostgreSQL을 포함한 전체 호스트 복구·실제 운영 host 검증은 미완료다. 운영 데이터/서비스는 건드리지 않았다.
+- Graph와 ⑤의 최종 승인 경계 보완까지 포함한 source manifest에서 위 PG 검증을 재실행했다.
+  manifest SHA-256은 `b9dbba2a3b2922ad7fa63a1fbded91154cc7c491e2d376fe32da3f91f74b0c1e`다.
 
-| 검증 | 확인한 결과 |
-| --- | --- |
-| [CI 34299070623](https://github.com/HYEXE/PAJIN/actions/runs/34299070623) | Quality·24 shard 모두 성공. 8,095 passed·76 opt-in skipped |
-| [Web 34299157203](https://github.com/HYEXE/PAJIN/actions/runs/34299157203) | source·Replay·Controls·fresh reader·exact clean commit·zero residue, 1 passed / 132.16초 |
-| [Network 34299158701](https://github.com/HYEXE/PAJIN/actions/runs/34299158701) | 6 source·6 Replay·fresh reader·exact clean commit·zero residue, 1 passed / 335.00초 |
-| [AI 34299160492](https://github.com/HYEXE/PAJIN/actions/runs/34299160492) | source·2 Replay·3 Controls·fresh reader·exact clean commit·zero residue, 1 passed / 86.56초 |
+## GRAPH-PERF-001 완료 체크포인트
 
-- CI의 첫 job 시작부터 마지막 job 종료까지 477초(7분 57초)였다. shard job은 249~477초,
-  pytest 자체는 233.80~460.73초였다. 단일 실행의 관측이며 다른 커밋과의 통제된 A/B 결과나 SLA가 아니다.
-- 시간 artifact 24개를 실제로 내려받아 source SHA·clean tree·exit 0·selected/reported 수를 확인했다.
-  8,171개가 checked-in profile의 현재 node ID와 정확히 일치하며 중복·누락은 없다.
-- 세 Docker job은 Ubuntu 24.04의 `linux/amd64` 이미지로 실행했다. 각 workflow의
-  `Record exact image identities`에서 Web 5개·Network 3개·AI 3개의 실제 ID를 확인했다.
-  Web의 ZAP RepoDigest도 등록된 `71db37cd5b75663b35758d10aaec05bf6fbac23f5020e3046c70e628a5f84efa`와 일치한다.
-  각 clean-commit·실제 conformance·unconditional residue step이 모두 성공했다.
-- 로그와 집계는 `.pajin/remote-verification/`에 보존했다. `ci-tests.json`, `docker-evidence.json`,
-  `artifact-verification.json`과 원격 run URL로 확인한다. 임시 인덱스 검증용 소스 복사본은 정리했다.
+- `scripts/profile_graph_pages.py`로 100/1,000/5,000개 admission event, 각각 102/1,002/5,002 node와
+  200/2,000/10,000 edge, 5개 Snapshot/6개 Projection을 실제 SQLite API로 생성했다.
+  fixture는 `.pajin/graph-perf-001-fixture-v1`, 결과는 `.pajin/graph-perf-001-before.json`과 `after.json`이다.
+  서로 다른 source code와 동일 DB·Snapshot 지문을 보존한다.
+- Profile은 전체 이력의 반복 Projection/Pydantic 검증을 병목으로 확인했다. `graph/snapshot_cache.py`에
+  페이지 전용 단일 Snapshot cache를 추가했다. 매 요청 전체 DB SHA-256을 2회 확인하고 SQLite
+  read transaction 안에서 schema/integrity/current head를 검사한다. 외부 권한 결정을 캐시하지 않는다.
+- 변조·inode·head·설정 변경은 재검증/거부한다. 모델은 deep copy로 내보내며 128 MiB DB / 16 MiB
+  serialized Snapshot을 넘으면 전체 검증으로 돌아간다. 기존 full view·wire·reader public import는 유지한다.
+- 3회 반복 평균 wall: 0.170→0.00554초, 1.994→0.0381초, 11.539→0.1864초.
+  큰 fixture의 warm Python allocation peak는 372.21→31.19 MiB였다. 최초 조회는 약 11초로 남았다.
+  단일 macOS arm64·warm filesystem·진단 3회 표본이며 운영 SLO나 전체 최대 크기 검증이 아니다.
+- 기존/새 Graph 통합 63 passed / 8.77초. 추가 실제 raw-byte 변조·runtime limit 시험 후 cache 16 passed / 2.27초.
+  Ruff 전체와 Linux strict mypy 436 files 통과. DB schema migration이나 skip 추가는 없다.
+- [GRAPH-PERF-001](docs/benchmark/GRAPH-PERF-001-current-graph-page-cost.md), UX-002B와 ADR-0275에 기록했다.
 
-## 재개 시 첫 확인과 후속 작업
+## APP-002 완료 체크포인트
 
-1. 현재 HEAD·upstream·원격 main·작업 트리를 확인하고 현재 HEAD의 일반 CI를 조회한다.
-   `e7c8243` 이후 변경이 운영 Markdown뿐이면 [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에
-   따라 추가 Docker 실행은 선택되지 않는다. 제품·테스트·설정이 바뀌면 해당 새 커밋을 재검증한다.
-2. `KNOWN_ISSUES.md`의 현재 의존성 경고를 먼저 검토한다. 기존 lockfile의 httpx2/httpcore2 2.7.0에
-   해당하는 Dependabot 경고 6건을 확인했으며 이번 순차 개선에는 의존성 교체를 추가하지 않았다.
-3. 실제 detector 개선에는 새 미사용 평가군이 필요하다. live PostgreSQL·자동 배포 이전·분산 fence와
-   미구현 domain provider는 별도 범위이며 이번 검증으로 완료되었다고 계산하지 않는다.
+- Cloud/System의 실제 credential lease·인증 host agent가 준비되지 않은 상태와 현재 Docker·LLVM
+  자산을 대조해 Application의 단일 offline ELF64 헤더 읽기를 선택했다. 지원 계약은
+  [APP-002](docs/orchestration/APP-002-bounded-offline-elf-header-execution.md), 결정은 ADR-0276이다.
+- `application_elf/`의 complete code-backed Capability·현재 signed release, exact Campaign/Scope,
+  별도 operator 서명 승인과 one-use Graph Permit을 거쳐 전용 `ELFGateway`에서 실제 Docker를 실행한다.
+  custody는 승인된 digest/크기의 owner-only 파일만 읽으며 최대 256 KiB를 immutable stdin으로 보낸다.
+  비공개 artifact·서명키는 `.pajin/`에만 있고 Gateway 증거에는 digest/크기만 남긴다.
+- `containers/application-elf/`의 고정 parser는 non-root·network-none·read-only·cap-drop·no-new-privileges와
+  시간/CPU/메모리/process/output 제한을 사용한다. ELF64 little-endian x86-64/AArch64 헤더만 읽으며
+  artifact 실행·동적 분석·Finding 생산은 하지 않는다. 공통 Worker/proxy 소스와 기존 APP-001은 유지했다.
+- 별도로 승인된 fresh Worker 재실행과 봉인된 두 Run을 다시 읽는 제품 report CLI를 연결했다.
+  CLI의 독립 trust commitment·source/replay root pin과 current/historical verifier 검증을 유지한다.
+  Docker의 실제 container 부재를 Worker 보고와 별도로 관측하며 미확인 cleanup은 unknown이다.
+- 최종 리뷰에서 다른 Tool 객체의 이미지·parser 교체를 재현한 4개 실패 사례를 추가하고 실제 Tool의
+  전체 code-authority reference를 activation과 대조하도록 수정했다. APP 63개와 Graph view 22개를 함께
+  실행해 **85 passed / 5.32초**를 확인했다. 잘못된 교체는 intent 예약·Permit 소비·Worker 전에 거부한다.
+- `.pajin/app002-live-06/`의 최종 실제 검증은 **complete=true, 12 passed / 9.36초**,
+  child 전체 10.03초이며 source inventory가 변하지 않았다.
+  두 architecture의 clang object와 LLVM의 별도 파서로 class/machine/entry/section count를 확인했다.
+  나머지 필드 전체에 대한 독립 oracle이나 일반 binary 안전성을 주장하지 않는다.
+- 실제 Worker 8회: source/replay 4회, 최대 크기 1회, malformed parser 실패 3회다. 잘못된 승인·Scope는
+  Permit/Worker 전에 거부했고, custody 누락·digest 변경은 Permit 소비 뒤 Worker 없이 실패했다.
+  중복 실행을 거부했으며 모든 소유 execution label의 container 부재와 두 fresh-process 보고를 확인했다.
+- 최종 이미지 ID는 `sha256:4c136b7287b74f9dafb321f04e39fb865970e14675dbe192d2f0fd438047fcf7`이다.
+  결과·fixture·독립 trust·봉인 Run·fresh 보고·로그는 private `.pajin/app002-live-06/`에 보존했다.
+  이는 POSIX custody와 Linux Docker의 opt-in 한 기능이며 기본 API/Console 활성화·일반 Application 지원은 아니다.
+- 최종 wheel/sdist를 `.pajin/five-improvements-dist`에 만들고 별도 설치 환경에 CP hash lock과 wheel을
+  설치했다. 39 package 정합성, 수정된 HTTPX2/HTTPcore2와 wheel 경로 import를 확인했다.
+  설치 환경의 `python -I`로 두 architecture 보고를 재계산해 source-tree 결과와 일치했다.
+  모든 packaged Python bytes를 현재 소스와 대조했고 private 증거·tests가 배포물에 없음을 확인했다.
+  결과는 `.pajin/five-improvements-packaging.json`, 새 설치 환경은 `.pajin/five-improvements-install`이다.
+
+## 최종 통합 검증
+
+- 최종 소스의 `.venv/bin/python -m pytest -q`: **8,238 passed, 76 skipped / 2,270.35초**, exit 0.
+  마지막 APP Tool 교체 거부 4사례와 Graph fixture의 non-None 전제 확인까지 포함한 전체 실행이다.
+  76개는 기존 별도 실행 조건이며 skip을 추가하지 않았다. 8,314개 수집 항목과 집계가 일치한다.
+  로그는 `.pajin/five-improvements-final-pytest.log`, 시작 소스 지문은
+  `five-improvements-final-pytest-source-before.json`, 결과는 `five-improvements-final-pytest-result.json`이다.
+  실행 전후 제품·테스트·script·container·example 소스 1,506개 파일이 일치한다.
+  이전 8,234개 통과 기록은 마지막 보완 전 체크포인트이며 최신 결과로 대신 사용하지 않는다.
+- 마지막 보완의 APP/Graph view **85 passed / 5.32초**, checkpoint/Graph cache/문서 **25 passed / 2.50초**.
+  `.pajin/five-improvements-review-regression-final.log`, `five-improvements-final-checkpoint-tests.log`에 있다.
+  이와 별도로 같은 최종 소스의 실제 APP Docker 12개·PostgreSQL/Worker 71개 검증을 통과했다.
+  중복된 테스트 수를 합산하지 않는다. 새 커밋의 전체 CI·Ubuntu conformance는 아직 미실행이다.
+- Ruff 전체 통과, Linux strict mypy는 기존 필수 대상과 새 운영/profile script까지 **447 source files 통과**.
+  Graph profile의 fixture를 재사용하면서 노출된 optional 타입은 실제 non-None assertion으로 확인했다.
+  `git diff --check`와 41개 untracked 파일의 whitespace 검사도 통과했다. suppression은 추가하지 않았다.
+- 평가 전 고정한 EFFECT Python 16개와 실제 APP source inventory 97개·OPS inventory 1,506개의
+  현재 파일 지문이 모두 일치한다. 두 실제 실행은 소유 자원 부재를 관측했으며
+  실제 DB/Docker 검증과 일반 전체 pytest 프로세스는 모두 종료됐다.
+- 이번 58개 파일은 모두 이 goal의 수정·추가이며 삭제나 진행 중인 merge/rebase 등은 없다.
+  각 커밋의 staged bytes를 최종 검증 지문과 대조했다. 새 승인 상태의 문서 검사 4개도 통과했다.
+  다음 단계는 마지막 문서 커밋 뒤 승인받은 push·같은 새 커밋의 원격 검증 실행이다.
+  운영 DB·호스트 선택 응답은 별도 대기이며 종속된 운영 투입 판단을 완료로 표시하지 않는다.
 
 ## 유지할 경계
 
-사람 검토·benchmark·Domain metadata·model output은 Scope·Capability·Permit을 만들지 않는다.
-OPS-001 복원은 독립 expected checkpoint를 요구하며 자동 실행 재개가 아니다. Worker 중단 보고는
-외부 자원 cleanup·side effect rollback의 증거가 아니다. 큰 입력은 matching host/Worker/proxy가
-필요하며 외부 모델의 context 수용을 보장하지 않는다. 알려진 한계는 `KNOWN_ISSUES.md`에 남긴다.
+OPS-001의 완료 범위는 POSIX local SQLite다. 선정 운영 구성의 전체 호스트 검증과 새 커밋의 원격 검증은 남아 있다. APP-002 한 기능을 도메인 전체 지원으로 확대하지 않는다. 관측하지 않은 복구·외부 cleanup은 unknown이다.
+Discovery·model output·metadata·사람 평가는 Scope·Capability·Permit·자동 Finding 권위가 아니다.
+
+## 승인된 커밋과 원격 검증
+
+이번 58개 변경 파일을 중복·누락 없이 아래 여섯 단위로 분리했다. 정확한 파일 목록은 private
+`.pajin/five-improvements-commit-plan.json`에 있다. 2026-09-10 해당 commit·push·workflow 실행을 승인받았다.
+
+1. `0750fee` — `fix(deps): HTTP 클라이언트 보안 하한 적용`; 의존성·lock·보안/packaging 회귀·SEC 계약 7개 파일.
+2. `45b69b5` — `feat(benchmark): 미사용 평가군에서 노출 의심 탐지기 비교`; 탐지·비교 실행/reader·회귀·계약/ADR 13개 파일.
+3. `7b34123` — `test(operations): 실제 PostgreSQL 장애와 독립 복원 검증`; 격리 실행기·실제 probe·fixture 교정·계약 6개 파일.
+4. `3fbd480` — `perf(graph): 현재 DB 검증을 유지하며 페이지 조회 비용 감소`; cache·기존 reader·profile·회귀·계약/ADR 9개 파일.
+5. `16a4013` — `feat(application): 승인된 ELF 헤더 읽기와 독립 보고 연결`; Capability/Gateway/reader·전용 image·실제/단위 검증·계약/ADR 18개 파일.
+6. `docs(project): 다섯 개선 과제의 검증과 남은 경계 정리` — 운영 상태·문서/ADR 색인 5개 파일.
+
+승인 대상 원격은 `origin/main`이다. 새 최종 커밋을 반영한 뒤 일반 `ci.yml` 결과와 그 동일 커밋의
+`web-002d-conformance.yml`, `network-002d-conformance.yml`, `ai-002d-conformance.yml`를 확인해야 한다.
+세 수동 workflow는 각각의 `confirm_*_002d_conformance=true` 입력을 요구한다. 현재 변경 경로 판정은
+`.pajin/five-improvements-conformance-required.json`에 있으며 세 workflow 모두 필요·미실행 상태다.
+이는 GitHub main 갱신과 CI/Docker runner 실행 승인이며 운영 배포 승인이 아니다.

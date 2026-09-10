@@ -8,22 +8,25 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
 - `e7c8243`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 통과했다.
   8,095 passed·76 opt-in skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.
   이후 변경은 [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에 따라 재검증한다.
-- 로컬 Docker daemon은 마지막 조회에서 부재했다. 새 이미지의 Ubuntu 검증은 원격에서 완료했으며
-  로컬 재실행 가능 여부와 구분한다. HTTPS 단위 경로만으로 Docker 격리·cleanup을 대신하지 않는다.
-- 새 CP v15/v16·복구·중단 경로는 SQLite로 검증했다. PostgreSQL SQL·제약 검사는 존재하지만
-  실제 PostgreSQL migration·경합·재시작 검증은 남아 있다.
-- 전체 로컬 pytest의 최종 결과와 환경별 재실행은 `HANDOFF.md`에 기록한다.
+- 로컬 Linux arm64 Docker의 새 전용 Worker/proxy 이미지로 EFFECT-002를 완료했다.
+  이전 커밋의 Ubuntu conformance와 이번 로컬 실행은 별도 결과다. HTTPS 단위 경로만으로
+  Docker 격리·cleanup을 대신하지 않는다.
+- 새 CP v15/v16·복구·중단 경로의 SQLite 검증과 실제 PostgreSQL migration·경합·재시작·DB 복원
+  검증을 완료했다. 아래 OPS-002의 호스트 구성·전체 checkpoint 제한은 남아 있다.
+- 마지막 보완을 포함한 최종 로컬 pytest는 8,238 passed·기존 76 skipped이며 실행 중 소스 지문을
+  유지했다. 이 결과는 새 커밋의 원격 CI나 Ubuntu conformance를 대신하지 않는다. 상세는 `HANDOFF.md`에 있다.
 
-## 의존성 후속 보완
+## 의존성 보안 수정의 검증 경계
 
-- 2026-09-09 원격 dependency graph 갱신 후 열린 Dependabot 경고 6건(high 3·medium 3)을 확인했다.
-  현재 `uv.lock`은 `httpx2==2.7.0`, `httpcore2==2.7.0`이며 경고의 영향 버전에 해당한다.
-- `httpx2`의 압축 응답 메모리 증폭은 [GHSA-8xx6-hgc6-gc2m](https://github.com/advisories/GHSA-8xx6-hgc6-gc2m),
-  두 패키지의 SOCKS 경유 WebSocket TLS 문제는 [GHSA-7mj9-2mp8-4m2p](https://github.com/advisories/GHSA-7mj9-2mp8-4m2p)에
-  기록되어 있다. 나머지는 요청 헤더 조합·multipart 헤더·SSE buffering 경고다.
-  모든 경고를 포함하는 수정 버전의 하한은 httpx2 2.12.0, httpcore2 2.10.0이다.
-- 이 잠금 버전은 이번 변경 전부터 존재했다. 영향받는 제품 경로의 도달 가능성 평가는 아직 하지 않았다.
-  의존성 호환성과 Provider/HTTP 회귀를 검증하는 별도 갱신이 필요하며 CI 통과를 이 경고의 해소로 보지 않는다.
+- 2026-09-10 최종 원격 조회에서 열린 Dependabot 경고 6건(high 3·medium 3)을 확인했다.
+  시작 기준의 두 패키지 2.7.0은 영향 버전이었다. 로컬 runtime 하한과 두 lock은 모두 수정했으며
+  현재 httpx2/httpcore2는 2.12.0이다. 실제 의존 경로·도달 조건·공식 경고·호환성은
+  [SEC-001](docs/orchestration/SEC-001-http-client-dependency-security.md)에 기록한다.
+- 압축 해제·헤더·SSE·SOCKS TLS 회귀는 이전 패키지에서 17 failed/2 passed, 수정 후 19 passed다.
+  SOCKS는 실제 로컬 TLS·불신 인증서 거부를 검증했다. optional Brotli/Zstandard와 Emscripten은 미검증이다.
+- 2026-09-10 새 commit·push·원격 workflow 실행을 승인받았다. 실제 반영·검증 전 원격 경고 6건은
+  마지막 조회에서 열린 상태이며 동일 새 커밋의 Web/Network/AI Docker conformance도 미실행이다.
+  로컬 수정과 원격 해소를 혼동하지 않는다.
 
 ## 실제 탐지 효과와 측정 범위
 
@@ -31,7 +34,12 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   384개 응답을 검증했다. marker 탐지는 오탐 100·미탐 90건, 정밀도 21.9%·재현율 23.7%였다.
   private-canary 공개 여부를 판정하는 독립 정답의 제한된 표현만 다룬다. 일반 모델 안전성,
   semantic disclosure 전체, production 취약점이나 독립 서명 측정 권위를 증명하지 않는다.
-  탐지기 개선에는 이번 응답으로 튜닝하지 않은 새 미사용 평가군이 필요하다.
+  기존 응답은 EFFECT-002의 개발 자료로만 사용한다.
+- [EFFECT-002](docs/benchmark/EFFECT-002-disclosure-detector-comparison.md)의 새 미사용 16개 사례와
+  24개 모델 설정의 실제 384개 응답을 검증했다. 동일 평가군에서 정밀도 51.72%→80.38%,
+  재현율 46.51%→98.45%지만 FP 31/FN 2가 남았다. 일부 조건의 FP는 늘었고, 두 미탐은 묶음별
+  공백 분리였다. 16개 반복 진단 과제의 결과이지 일반 성능 추정이 아니다. 정상적인 ID·hash 생성 오탐과
+  낮은 entropy·부분·semantic disclosure를 놓칠 수 있다. 의심 신호는 Finding 권위가 아니다.
 - WEB-002/UX-009는 고정 Web lab, NET-002는 합성 6-case, AI-002는 합성 M03 한 건이다.
   실제 Docker conformance는 해당 실행·Replay·Controls·cleanup 경계를 검증한다. 일반 Web/Network/AI
   탐지 성능·운영 영향이나 추가 실행 권위를 의미하지 않는다.
@@ -40,6 +48,12 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   로컬 token USD 0은 전력·감가상각·저장소 비용을 포함하지 않는다.
 - DOMAIN-001~006, 도메인 Surface·preparation·서명 증거 admission·fixture 등록은 실제 provider/parser
   실행이나 도메인 지원 완료가 아니다. 도메인별 현재 범위와 후속 runtime은 `PLAN.md`에서 구분한다.
+- [APP-002](docs/orchestration/APP-002-bounded-offline-elf-header-execution.md)는 별도 승인·Permit을 거친
+  최대 256 KiB의 offline ELF64 little-endian x86-64/AArch64 헤더 읽기·실제 Docker 재실행·보고만 지원한다.
+  두 compiled fixture에서 LLVM이 확인한 것은 class/machine/entry/section count이며 모든 header field의
+  독립 검증이나 취약점·일반 parser 안전성을 뜻하지 않는다. 실제 8개 Worker의 부재를 관측했지만
+  custodied artifact와 봉인 증거는 의도적으로 보존한다. 기본 API/Console·동적 실행·일반 Application,
+  Cloud/System provider 실행과 분산 Campaign 예산/전체 host 복구는 이 기능에 포함되지 않는다.
 
 ## 사람 검토·보고와 제품 조회
 
@@ -54,8 +68,10 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   독립 서명·hot revocation·전체 host rollback 방지가 아니다.
 - UX-002A는 sealed Discovery Surface/Wave, UX-002B는 설정된 단일 Campaign의 current Graph만
   조회한다. historical browsing·snapshot listing·multi-Campaign routing·raw content export는 없다.
-  Graph `/pages`는 최대 100,000 node·200,000 edge를 Snapshot cursor로 분할하지만 매 페이지 전체
-  이력을 다시 검증한다. 응답·DOM 크기를 줄인 것이며 서버 검증 비용은 데이터 크기에 비례한다.
+  Graph `/pages`는 최대 100,000 node·200,000 edge를 Snapshot cursor로 분할한다.
+  GRAPH-PERF-001은 매 요청 전체 DB bytes/schema/head를 재확인하는 한 개의 bounded Snapshot cache다.
+  5,002 node / 10,000 edge의 반복 wall 11.54→0.186초를 측정했지만 최초 조회·변경된 이력·
+  128 MiB DB / 16 MiB Snapshot 초과는 전체 검증 비용을 유지한다. 최대 지원 크기·운영 부하는 미측정이다.
 - UX-003A ranking은 최대 500개로 제한되고 confidence는 위험도·검증 진실이 아니다.
   UX-003B Decision audit도 최대 500개이며 off-host anchor·historical browsing·compaction이 없다.
 - UX-004A KISA와 UX-004B WALK 비교는 각각의 증거 경계를 유지한다. semantic diff나 새 validation·
@@ -68,6 +84,12 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   POSIX local SQLite CP/Graph/journal/RunStore의 첫 사용, 같은 위치 재시작과 독립 pin을 사용하는
   수동 복원을 지원한다. 자동 경로 이전·실행 재활성화, Windows/network filesystem lock,
   cross-host consensus/fencing과 분산 exactly-once를 제공하지 않는다.
+- [OPS-002](docs/orchestration/OPS-002-isolated-postgres-operations.md)는 실제 PG 17.11·Docker Worker
+  71개 검사, crash/보수적 charge/검증키 보존과 독립 pin 기반 별도 DB 복원을 통과했다.
+  Python host는 macOS arm64이고 DB만 Linux arm64다. 운영 DB·호스트 선택 응답 대기이며,
+  PG/SQLite/RunStore 전체 원자 checkpoint·Linux 전체 배포·host 장애 복구를 증명하지 않는다.
+  CP API hop은 정상 bearer/권한 검사를 거치는 in-process ASGI transport이며 실제 API ingress·
+  TLS/mTLS·네트워크 단절 검증은 아니다. DB TLS 연결과 Docker Worker의 실제 실행은 별도 관측이다.
 - code/config inventory 검증은 참여하는 CP·Worker·embedded producer의 배포 구성을 결박한다.
   서명되지 않은 다른 process-local verifier·writer·policy/Grant provenance를 자동으로 보정하지 않는다.
   참여하지 않는 writer, 잘못 신뢰한 외부 권위, 원격 자원의 side effect는 이 검증 밖이다.
@@ -104,7 +126,7 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   일부 전체 실행은 단일 seed/repetition이며 별도 다중 좌표 실행 회귀가 남아 있다.
 - code-owned metadata 캐시는 반환 객체를 격리하고 외부 검증·권한 결정을 캐시하지 않는다.
   로컬 프로파일 개선을 CI 실행 시간 개선으로 단정하지 않는다. duration profile은 배치 힌트이며
-  실제 CI artifact로 갱신해야 한다. 대형 모듈 전체 분리와 Graph 검증 비용 최적화는 후속이다.
+  실제 CI artifact로 갱신해야 한다. 대형 모듈 전체 분리와 Graph 최초/변경 조회 비용 최적화는 후속이다.
 
 ## 승인·cleanup·외부 저장소
 

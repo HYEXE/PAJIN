@@ -1,10 +1,57 @@
 # PAJIN 구현 계획
 
-사용자가 요청한 8개 개선을 구현하고 동일 커밋의 최종 통합 검증을 완료했다. 구현·권한 경계는 코드와
+이전 8개 개선은 완료됐으며 2026-09-09 요청의 새로운 5개 개선을 순서대로 진행한다. 구현·권한 경계는 코드와
 버전형 계약, 결정 근거는 채택된 ADR, 실행 결과와 Git 상태는 `HANDOFF.md`에서 확인한다.
 과거 Phase의 상세 구현 이력은 각 계약을 참조하며 이 파일에 누적하지 않는다.
 
-## 순차 개선 목표
+## 현재 순차 개선 목표
+
+새 goal은 아래 다섯 단계의 코드·테스트·계약과 실제 검증을 포함한다. 토큰 예산은 지정하지 않는다.
+시작 기준은 `main`의 `b359c3c782f9afa39f31a6d0aba9a9a8ace1dbd7`이다. HEAD·upstream·실제 원격
+main이 일치하고 staged/unstaged/untracked 변경 및 진행 중인 Git 작업이 없음을 확인했다.
+별도 브랜치·서브에이전트를 만들지 않는다. 이전 commit·push·원격 workflow 승인은 이 목표에 적용하지 않는다.
+2026-09-10 이번 변경의 여섯 commit·`origin/main` push·동일 커밋의 일반 CI와 Web/Network/AI Docker
+workflow 실행을 새로 승인받았다. 실제 결과 확인과 운영 DB·호스트 선택에 의존하는 검증은 남아 있다.
+
+1. [ ] **SEC-001 의존성 보안 경고 해소** — 로컬 구현·집중/전체 회귀 완료, 원격 해소/동일 커밋 conformance 대기.
+   최신 Dependabot/공식 advisory, 설치·잠금 의존 경로와 제품 도달 가능성을 확인한다.
+   최소 보안 하한을 패키지 설치 metadata와 관련 lock에 반영하고 설치·wheel/sdist·Provider·HTTP 회귀,
+   취약 동작의 재현/거부와 정상 동작을 검증한다. 로컬 취약 버전 제거와 원격 경고 해소는 별도 상태다.
+2. [x] **EFFECT-002 탐지 품질 개선** — 고정한 새 384개 응답의 실제 비교·독립 process 검증 완료.
+   정밀도 51.72%→80.38%, 재현율 46.51%→98.45%; 남은 FP 31/FN 2와 조건별 편차를 기록했다.
+   EFFECT-001을 개발 자료로만 분석한다. 새 미사용 평가군·정답 규칙·탐지기·모델·비교 계획을
+   실행 전에 고정하고 비공개 정답을 detector에 전달하지 않는다. 실제 동일 응답에 기존/개선 탐지를
+   비교해 TP/TN/FP/FN, 정밀도·재현율, 표본·반복 편차·시간·토큰·비용을 봉인·보고한다.
+   점수 개선이 없으면 그대로 기록하며 원문·canary·모델은 비공개로 유지한다.
+3. [ ] **OPS-002 배포 구성의 실제 운영 검증** — 실제 PostgreSQL·Worker 71개 검사와 crash/DB 복원 완료.
+   운영 DB·호스트 선택 응답 대기이며 종속된 운영 투입 판단은 미완료다.
+   문서·설정에서 DB/호스트 선정을 확인하고 필요한 선택만 질문한다. 격리된 폐기 가능 환경에서
+   실제 DB migration·기존 데이터·경합/중복/충돌·재시작/보수적 예산·키 교체/verifier·독립 checkpoint
+   backup/restore·실행 중 중단/Worker 관측/알림/cleanup을 검증한다. PostgreSQL은 실제 서버를 요구한다.
+   운영 데이터·서비스는 변경하지 않으며 관측하지 못한 외부 복구는 unknown으로 보존한다.
+4. [x] **GRAPH-PERF-001 대규모 Graph 비용 개선** — 실제 동일 DB 비교·변조/경합/권한 회귀 완료.
+   5,002 node / 10,000 edge에서 반복 page 평균 11.54초→0.186초; 최초 조회·크기 제한은 별도 기록.
+   대표 크기별 지연·CPU·메모리·반복 검증을 먼저 측정하고 프로파일에 근거한 최소 변경을 한다.
+   Snapshot/cursor·current head·변조 거부·권한 경계, 동시 변경·stale cursor·무효화·키/설정 변경을
+   회귀 검증하고 동일 조건의 전후 측정과 한계를 남긴다. mutable authority의 무조건 캐시는 금지한다.
+5. [x] **DOMAIN-RUN-001 추가 도메인 실제 읽기 기능** — Application ELF64 헤더 읽기·재실행·보고 완료.
+   단위 63개와 실제 Docker 12개 검사가 통과했다. 두 architecture의 독립 LLVM 비교와 최대 256 KiB,
+   거부·실패·cleanup을 확인했다. 서버 기본 활성화나 일반 Application 지원을 뜻하지 않는다.
+   Cloud/System의 credential·인증 agent runtime이 준비되지 않은 현재 환경과 기존 offline Docker·LLVM
+   독립 파서 자산을 비교해 선정했다. [APP-002](docs/orchestration/APP-002-bounded-offline-elf-header-execution.md)의
+   최대 256 KiB·x86-64/AArch64 little-endian 헤더만 지원하며 일반 Application 지원과 구분한다.
+   Cloud/System을 먼저 검토해 자산·isolation·독립 정답·실행 환경에 맞는 하나를 선정하고 범위를 기록한다.
+   허가된 입력/Scope → Capability/Policy/Approval/Permit → 실제 provider/parser/Worker → evidence/seal
+   → 독립 재실행/검증 → 제품 조회/보고를 연결한다. 정상·거부·실패·cleanup을 실제 격리 fixture로 검증한다.
+   credential·운영 호스트·유료 자원은 구체적 범위 승인 전 사용하지 않으며 도메인 전체 지원과 구분한다.
+
+각 단계는 독립 검증 가능한 기능 흐름/신뢰 경계 단위로 진행한다. 필수 결정·권한 때문에 미완료인
+부분을 명시하고, 그 결정에 의존하지 않는 다음 작업은 계속한다. 좁은 pytest부터 Ruff·Linux strict
+mypy·packaging·필요한 통합/실제 실행·전체 회귀로 확장한다. 변경 경로별 Web/Network/AI conformance는
+[정책](docs/orchestration/MEASURED-CONFORMANCE.md)을 따른다. 승인 전 원격 검증은 미실행으로 유지한다.
+각 체크포인트에서 `HANDOFF.md`·`KNOWN_ISSUES.md`를 현재 상태로 갱신하고 비자명한 결정은 새 ADR로 남긴다.
+
+## 이전 완료 범위
 
 2026-09-07 검토에서 정한 순서를 유지한다. `[x]`는 아래 명시한 범위의 구현·검증 완료를 뜻한다.
 로컬 검증, 실제 모델 평가, 특정 커밋의 Docker conformance와 배포 완료는 서로 구분한다.
@@ -57,7 +104,7 @@ PAJIN은 9개 Security Domain을 하나의 Canonical Graph와 Capability authori
 | AI | 고정 M03 source·독립 Replay 2개·Controls 3개·product read, 별도 실제 모델 효과 평가 | 임의 모델·agent 안전성이나 일반 Finding으로 확장하지 않음. [AI-002D](docs/orchestration/AI-002D-bounded-ai-measurement-product-read-and-conformance.md) |
 | Cloud | CLOUD-001A~D의 준비·서명 증거 admission·정책 비교·fixture 요구 | 실제 provider·credential 사용 runtime, 정책 translator·live benchmark 필요. [CLOUD-001D](docs/benchmark/CLOUD-001D-fresh-credential-policy-replay-disposable-fixtures.md) |
 | System | SYS-001A~D의 host metadata 준비·서명 증거 검증·재검사 비교 | 실제 host-agent·read·isolation conformance 필요. [SYS-001D](docs/benchmark/SYS-001D-system-replay-disposable-host-fixtures.md) |
-| Application | APP-001A~D의 artifact·sandbox 준비·증거 admission·재분석 비교 | 실제 custody·parser/sandbox·측정 필요, dynamic 실행 닫힘. [APP-001D](docs/benchmark/APP-001D-application-reanalysis-seeded-artifact-fixtures.md) |
+| Application | APP-001A~D 준비·admission과 APP-002의 승인된 offline ELF64 헤더 실행·재실행·보고 | APP-002는 POSIX custody·Linux Docker의 한 읽기 기능만 지원; 일반 parser/동적 실행은 닫힘. [APP-002](docs/orchestration/APP-002-bounded-offline-elf-header-execution.md) |
 | Mobile | MOBILE-001A~D의 package/static 분석 준비·증거 admission·비교 | 실제 parser·emulator/device·device-bound profile conformance 필요. [MOBILE-001D](docs/benchmark/MOBILE-001D-package-reanalysis-seeded-mobile-fixtures.md) |
 | Cryptography | CRYPTO-001A~D의 준비·서명된 재계산 증거 검증·중립 비교 | 실제 분석·semantic Oracle·수치 측정 필요. [CRYPTO-001D](docs/benchmark/CRYPTO-001D-independent-implementation-replay-seeded-vector-requirements.md) |
 | Forensics | FORENSICS-001A~D의 provenance·증거 admission·parser 비교·요구 등록 | 실제 source/parser·custody·semantic 정확도·측정 필요. [FORENSICS-001D](docs/benchmark/FORENSICS-001D-independent-parser-comparison-seeded-evidence-requirements.md) |
