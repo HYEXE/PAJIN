@@ -81,6 +81,12 @@ or oversize input takes the complete verification path. No authorization decisio
 The bounded cache and measured cost are specified in
 [GRAPH-PERF-001](../benchmark/GRAPH-PERF-001-current-graph-page-cost.md) and
 [ADR-0275](../adr/0275-bind-graph-page-cache-to-complete-current-database-bytes.md).
+The current default eligibility is DB ≤256 MiB and serialized Snapshot ≤16 MiB, retaining one entry
+and two complete DB hashes per eligible query. Historical Projections now use one exact replay of
+the verified Event Log while every persisted row still passes canonical/digest/index and exact-prefix
+comparison. [GRAPH-PERF-002](../benchmark/GRAPH-PERF-002-first-and-history-page-cost.md) and
+[ADR-0280](../adr/0280-verify-historical-graph-projections-with-one-exact-replay.md) record this additive
+implementation change, same-byte measurements and increased memory cost. These limits do not bound RSS.
 
 Malformed/mixed cursors and invalid limits return `422`; advancing the Graph makes the old
 Snapshot return `409`. A cursor cannot resume historical state. The legacy full endpoint still

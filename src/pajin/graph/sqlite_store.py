@@ -84,6 +84,7 @@ from pajin.graph.consistency import (
     GraphDecision,
 )
 from pajin.graph.models import (
+    GraphEdge,
     GraphNode,
     GraphNodeKind,
     canonical_graph_json,
@@ -3823,17 +3824,36 @@ def _verified_projections(
     if not projection_rows:
         raise SQLiteGraphStoreError("SQLite Graph backup has no genesis projection")
     projections: dict[int, GraphProjection] = {}
+    # All callers obtained these events through _events_from_connection, which validates
+    # canonical bytes, model/index identities and the complete hash chain. Replay that
+    # verified sequence once; every persisted projection still receives full validation.
+    nodes: dict[str, GraphNode] = {}
+    edges: dict[str, GraphEdge] = {}
+    revision = 0
     for row in projection_rows:
         projection = _projection_from_row(row, campaign_id=campaign_id)
         if projection.revision > len(events):
             raise SQLiteGraphStoreError(
                 "SQLite Graph backup Projection is ahead of its Event Log"
             )
-        expected_projection = GraphProjector.project(
-            campaign_id=campaign_id,
-            events=events[: projection.revision],
-        )
-        if projection != expected_projection:
+        for event in events[revision:projection.revision]:
+            if event.decision is not GraphAdmissionDecision.ADMITTED:
+                continue
+            for node in event.admitted_nodes:
+                if node.node_id in nodes and nodes[node.node_id] != node:
+                    raise GraphProjectionError("canonical Graph node identity has equivocated")
+                nodes.setdefault(node.node_id, node)
+            for edge in event.admitted_edges:
+                if edge.edge_id in edges and edges[edge.edge_id] != edge:
+                    raise GraphProjectionError("canonical Graph edge identity has equivocated")
+                edges.setdefault(edge.edge_id, edge)
+        revision = projection.revision
+        expected_head = events[revision - 1].event_digest if revision else None
+        if (
+            projection.event_log_head_digest != expected_head
+            or projection.nodes != tuple(nodes[key] for key in sorted(nodes))
+            or projection.edges != tuple(edges[key] for key in sorted(edges))
+        ):
             raise SQLiteGraphStoreError(
                 "SQLite Graph backup Projection differs from its Event Log prefix"
             )

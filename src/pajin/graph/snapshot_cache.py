@@ -20,7 +20,7 @@ from pajin.graph.sqlite_store import (
     _verified_current_snapshot_from_connection,
 )
 
-_DATABASE_LIMIT = 128 * 1024 * 1024
+_DATABASE_LIMIT = 256 * 1024 * 1024
 _SNAPSHOT_LIMIT = 16 * 1024 * 1024
 
 
