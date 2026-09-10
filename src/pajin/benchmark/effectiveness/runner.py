@@ -13,6 +13,7 @@ from typing import Literal
 
 from pajin.benchmark.effectiveness.docker import LocalModelRuntime, verify_images, verify_model
 from pajin.benchmark.effectiveness.evidence import (
+    EvaluationExecutionPlan,
     EvaluationIndex,
     EvaluationPlan,
     RunRecord,
@@ -61,7 +62,7 @@ def freeze_plan(root: Path, runtime: RuntimePin) -> RunReference:
 
 async def execute_run(
     *,
-    plan: EvaluationPlan,
+    plan: EvaluationExecutionPlan,
     coordinate: Coordinate,
     model_path: Path,
     root: Path,

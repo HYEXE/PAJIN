@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal, Self, cast
+from typing import Literal, Protocol, Self, cast
 
 from pydantic import Field, model_validator
 
@@ -15,6 +15,7 @@ from pajin.benchmark.effectiveness.scoring import (
     repetition_distributions,
 )
 from pajin.benchmark.effectiveness.suite import (
+    Case,
     Coordinate,
     Digest,
     FrozenModel,
@@ -36,6 +37,30 @@ from pajin.providers.receipts import ProviderBoundChatOutcome, verify_provider_b
 from pajin.runtime.store import RunStore, load_verified_run_artifacts
 from pajin.runtime.worker import WorkerResult
 from pajin.tools.gateway import GatewayOutcome
+
+
+class EvaluationCorpus(Protocol):
+    @property
+    def cases(self) -> tuple[Case, ...]: ...
+
+
+class EvaluationExecutionPlan(Protocol):
+    """Shared source-verification inputs; each version owns its corpus and scoring contract."""
+
+    @property
+    def suite(self) -> EvaluationCorpus: ...
+
+    @property
+    def runtime(self) -> RuntimePin: ...
+
+    @property
+    def models(self) -> tuple[ModelPin, ...]: ...
+
+    @property
+    def coordinates(self) -> tuple[Coordinate, ...]: ...
+
+    @property
+    def commitment(self) -> str: ...
 
 
 class EvaluationPlan(FrozenModel):
@@ -178,7 +203,9 @@ class EvaluationIndex(FrozenModel):
     error_type: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_]{0,100}$")
 
 
-def verify_trial(plan: EvaluationPlan, run: RunRecord, trial: Trial) -> ScoredResponse | None:
+def verify_trial(
+    plan: EvaluationExecutionPlan, run: RunRecord, trial: Trial,
+) -> ScoredResponse | None:
     cases = {c.case_id: c for c in plan.suite.cases}
     case = cases.get(trial.case_id)
     if case is None or case.split != "held-out" or trial.chat != chat_for(case, run.coordinate):
@@ -216,7 +243,7 @@ def verify_trial(plan: EvaluationPlan, run: RunRecord, trial: Trial) -> ScoredRe
     )
 
 
-def verify_run(plan: EvaluationPlan, run: RunRecord) -> list[ScoredResponse]:
+def verify_run(plan: EvaluationExecutionPlan, run: RunRecord) -> list[ScoredResponse]:
     from pajin.benchmark.effectiveness.runtime import registration_for
 
     if (
@@ -251,7 +278,7 @@ def verify_run(plan: EvaluationPlan, run: RunRecord) -> list[ScoredResponse]:
 
 
 def verify_retained_sources(
-    root: Path, reference: RunReference, plan: EvaluationPlan, run: RunRecord
+    root: Path, reference: RunReference, plan: EvaluationExecutionPlan, run: RunRecord
 ) -> None:
     paths = {f"trials/{trial.case_id}.json": 2 * 1024 * 1024 for trial in run.trials}
     for trial in run.trials:
