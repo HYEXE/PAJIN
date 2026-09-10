@@ -74,8 +74,13 @@ position, not a signed credential or read grant. Operator authentication is stil
 `nodeCount` and `edgeCount` describe the complete projection, bounded by 100,000 and 200,000.
 `pageOffset` and `pageSize` select the same slice of each sorted array; one array may be empty
 on later pages. `nextCursor` is null at completion. Endpoint IDs/kinds may refer to nodes on other
-pages. No full payloads or additional authority are exposed. Every request repeats the complete
-store verification; this bounds response and browser memory, not server verification cost.
+pages. No full payloads or additional authority are exposed. The paged reader may reuse one completely
+verified Snapshot only while the entire database byte digest, file identity, current heads and
+schema still match. Each request verifies those inputs under a SQLite read transaction; a changed
+or oversize input takes the complete verification path. No authorization decision is cached.
+The bounded cache and measured cost are specified in
+[GRAPH-PERF-001](../benchmark/GRAPH-PERF-001-current-graph-page-cost.md) and
+[ADR-0275](../adr/0275-bind-graph-page-cache-to-complete-current-database-bytes.md).
 
 Malformed/mixed cursors and invalid limits return `422`; advancing the Graph makes the old
 Snapshot return `409`. A cursor cannot resume historical state. The legacy full endpoint still

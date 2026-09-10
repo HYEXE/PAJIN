@@ -37,6 +37,7 @@ from pajin.graph import (
     load_verified_current_graph_snapshot,
     load_verified_current_graph_snapshot_consistency,
 )
+from pajin.graph.snapshot_cache import VerifiedCurrentGraphSnapshotCache
 
 if TYPE_CHECKING:
     from pajin.control_plane.graph_pages import VerifiedCanonicalGraphPage
@@ -296,6 +297,10 @@ class VerifiedCanonicalGraphViewReader:
 
     def __init__(self, database: Path | None) -> None:
         self._database = _validated_graph_database(database) if database is not None else None
+        self._page_cache = (
+            VerifiedCurrentGraphSnapshotCache(self._database)
+            if self._database is not None else None
+        )
 
     def read(self, *, campaign: str, snapshot_id: str) -> VerifiedCanonicalGraphView:
         snapshot = self._read_snapshot(campaign=campaign, snapshot_id=snapshot_id)
@@ -312,21 +317,26 @@ class VerifiedCanonicalGraphViewReader:
         from pajin.control_plane.graph_pages import build_graph_page
 
         return build_graph_page(
-            self._read_snapshot(campaign=campaign, snapshot_id=snapshot_id),
+            self._read_snapshot(campaign=campaign, snapshot_id=snapshot_id, paged=True),
             limit=limit, cursor=cursor,
         )
 
-    def _read_snapshot(self, *, campaign: str, snapshot_id: str) -> GraphSnapshot:
+    def _read_snapshot(
+        self, *, campaign: str, snapshot_id: str, paged: bool = False,
+    ) -> GraphSnapshot:
         if self._database is None:
             raise CanonicalGraphViewUnavailable("Canonical Graph views are not configured")
         _require_identifier(campaign, _CAMPAIGN_PATTERN, label="Campaign")
         _require_identifier(snapshot_id, _SNAPSHOT_ID_PATTERN, label="Graph Snapshot")
         try:
-            snapshot = load_verified_current_graph_snapshot(
-                self._database,
-                campaign_id=campaign,
-                snapshot_id=snapshot_id,
-            )
+            if paged and self._page_cache is not None:
+                snapshot = self._page_cache.load(campaign_id=campaign, snapshot_id=snapshot_id)
+            else:
+                snapshot = load_verified_current_graph_snapshot(
+                    self._database,
+                    campaign_id=campaign,
+                    snapshot_id=snapshot_id,
+                )
         except (
             GraphEventLogError,
             GraphProjectionError,

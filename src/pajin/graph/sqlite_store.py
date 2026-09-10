@@ -1206,36 +1206,49 @@ def _load_verified_current_graph_snapshot_state(
     identity = _file_identity(database)
     with _readonly_connection(database) as connection:
         _validate_schema(connection, campaign_id=campaign_id)
-        events = _events_from_connection(connection, campaign_id=campaign_id)
-        _require_exact_node_index(connection, campaign_id=campaign_id, events=events)
-        projections = _verified_projections(
-            connection,
-            campaign_id=campaign_id,
-            events=events,
+        snapshot, events = _verified_current_snapshot_from_connection(
+            connection, campaign_id=campaign_id, snapshot_id=snapshot_id,
         )
-        snapshots, snapshot_head = _verified_snapshots(
-            connection,
-            campaign_id=campaign_id,
-            projections=projections,
-        )
-        current = projections[max(projections)]
-        expected_event_head = events[-1].event_digest if events else None
-        if (
-            current.revision != len(events)
-            or current.event_log_head_digest != expected_event_head
-        ):
-            raise SQLiteGraphStoreError(
-                "SQLite Graph projection recovery is required before current Snapshot reads"
-            )
-        snapshot = snapshots.get(snapshot_id)
-        if snapshot is not None and (
-            snapshot_head != snapshot.snapshot_digest or snapshot.projection != current
-        ):
-            raise GraphSnapshotError("Graph Snapshot is not the current canonical head")
     if _file_identity(database) != identity:
         raise SQLiteGraphStoreError("SQLite Graph Store changed during Snapshot verification")
     canonical_snapshot = _canonical_snapshot(snapshot) if snapshot is not None else None
     return canonical_snapshot, tuple(events)
+
+
+def _verified_current_snapshot_from_connection(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    snapshot_id: str,
+) -> tuple[GraphSnapshot | None, tuple[GraphAdmissionEvent, ...]]:
+    """Share the complete verification under an already validated read transaction."""
+    events = _events_from_connection(connection, campaign_id=campaign_id)
+    _require_exact_node_index(connection, campaign_id=campaign_id, events=events)
+    projections = _verified_projections(
+        connection,
+        campaign_id=campaign_id,
+        events=events,
+    )
+    snapshots, snapshot_head = _verified_snapshots(
+        connection,
+        campaign_id=campaign_id,
+        projections=projections,
+    )
+    current = projections[max(projections)]
+    expected_event_head = events[-1].event_digest if events else None
+    if (
+        current.revision != len(events)
+        or current.event_log_head_digest != expected_event_head
+    ):
+        raise SQLiteGraphStoreError(
+            "SQLite Graph projection recovery is required before current Snapshot reads"
+        )
+    snapshot = snapshots.get(snapshot_id)
+    if snapshot is not None and (
+        snapshot_head != snapshot.snapshot_digest or snapshot.projection != current
+    ):
+        raise GraphSnapshotError("Graph Snapshot is not the current canonical head")
+    return snapshot, tuple(events)
 
 
 class SQLiteGraphEventLog:

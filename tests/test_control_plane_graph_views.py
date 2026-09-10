@@ -140,6 +140,8 @@ def _observation_proposal() -> ObservationProposal:
         ],
         producedAt=NOW + timedelta(seconds=2),
     )
+    assert lineage.capability_grant_id is not None
+    assert lineage.capability_grant_digest is not None
     action = GraphAction(
         campaignId=CAMPAIGN,
         requestId=lineage.request_id,
