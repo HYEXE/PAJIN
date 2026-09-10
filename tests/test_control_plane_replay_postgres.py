@@ -28,13 +28,12 @@ from pajin.control_plane.database import (
     _V3_METADATA,
     _V4_METADATA,
     _V9_METADATA,
-    CURRENT_CONTROL_PLANE_TABLES,
     CURRENT_SCHEMA_VERSION,
     LEGACY_CONTROL_PLANE_TABLES,
-    SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
     V2_CONTROL_PLANE_TABLES,
     V3_CONTROL_PLANE_TABLES,
     V4_CONTROL_PLANE_TABLES,
+    V10_CONTROL_PLANE_TABLES,
     ArtifactRecord,
     ControlPlaneRepository,
     EventRecord,
@@ -286,7 +285,7 @@ def _create_postgres_v4_schema(repository: ControlPlaneRepository) -> None:
 def _create_postgres_v9_schema(repository: ControlPlaneRepository) -> None:
     """Create exact v9 metadata and guards without invoking the v10 migration."""
 
-    pending = set(CURRENT_CONTROL_PLANE_TABLES)
+    pending = set(V10_CONTROL_PLANE_TABLES)
     with repository.engine.begin() as connection:
         for table in _V9_METADATA.sorted_tables:
             if table.name in pending:
@@ -919,7 +918,7 @@ def test_postgres_exact_v9_migration_backfills_v10_authority(
             )
             assert job.lease_deadline_at == lease_expires_at
             assert job.heartbeat_event_at == heartbeat_at
-        assert repository.schema_version() == SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
     finally:
         repository.close()
 

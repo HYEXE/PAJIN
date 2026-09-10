@@ -299,6 +299,11 @@ def test_v15_upgrade_preserves_checkpoints_and_pins_keys_only_after_verification
     try:
         with repository.engine.begin() as connection:
             connection.exec_driver_sql("DROP TABLE cp_checkpoint_key_identities")
+            if repository.dialect_name == "postgresql":
+                # A true v15 server has neither the v16 table nor its trigger function.
+                connection.exec_driver_sql(
+                    "DROP FUNCTION pajin_cp_reject_checkpoint_key_identity_mutation()"
+                )
             connection.execute(
                 text("DELETE FROM cp_schema_version WHERE version = :version"),
                 {"version": CHECKPOINT_KEY_IDENTITY_SCHEMA_VERSION},
