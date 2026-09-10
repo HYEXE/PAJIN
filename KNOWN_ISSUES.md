@@ -5,9 +5,12 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
 
 ## 현재 후속 작업의 검증 공백
 
-- 새 후속 5개 goal은 진행 중이다. 아래 `215d4fc`의 완료 결과는 새 소스 검증으로 재사용하지 않는다.
+- 새 후속 5개 goal은 구현·검증·승인된 원격 작업을 완료했다. `215d4fc`의 과거 결과를 재사용하지 않고
+  최종 `3c66c2e`의 Quality·24 shard와 Web/Network/AI를 모두 첫 시도에 검증했다.
 - ① 기존 완료 문서 4개는 검토·문서 검사·whitespace 검사를 마쳤고 승인된 `625e53b`에 저장했다.
-  이번 여섯 commit·push·동일 커밋 CI/Web/Network/AI는 승인받았으며 실제 원격 결과 확인이 남아 있다.
+  이 커밋을 포함한 여섯 commit을 push했고 HEAD·upstream·실제 원격 일치와 push 직후 clean tree를 확인했다.
+  이후 최종 결과를 반영한 `HANDOFF.md`·`PLAN.md`·이 문서 3개의 로컬 커밋을 별도로 승인받았다.
+  이 문서 커밋의 push는 승인·실행하지 않았으며 새 코드·테스트 변경은 없다.
 - ② EFFECT-003은 384시도/382응답/2실패이며 완전한 비교와 품질 개선이 확인되지 않았다.
   후보는 미탐 7→1, 오탐 45→51로 정밀도가 하락했다. 기존 기본 탐지기를 유지한다. 두 Worker exit 70의 세부 원인은 미확인이다.
 - ③ 운영자 hybrid 명령은 실제 격리 복원·별도 승인 재개·차감 보존·외부 cleanup 확인까지 통과했다.
@@ -23,7 +26,10 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   Quality·24 shard의 8,260 passed·기존 76 skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.
   24개 duration artifact의 동일 SHA·clean tree·8,336개 중복 없는 테스트와 기존 항목 보존을 대조했다.
   이후 변경은 [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에 따라 재검증한다.
-- 이번 제품·테스트의 전체 로컬 회귀는 8,342 passed·기존 76 skipped다. 새 원격 CI/Web/Network/AI는 승인받았으며 미실행이다.
+- 이번 제품·테스트의 전체 로컬 회귀와 `3c66c2e`의 원격 CI는 각각 8,342 passed·기존 76 skipped다.
+  새 CI 34493304521의 24개 artifact에서 동일 SHA·clean tree·exit 0·중복 없는 8,418개 테스트와
+  기존 8,336개 보존·새 82개 추가를 확인했다. Web 34493387107(133.92초), Network 34493428264
+  (340.94초), AI 34493435878(84.89초)는 각각 실제 1 passed와 별도 잔여 자원 검사를 통과했다.
   실제 모델·운영 복구·System mTLS의 로컬 실증과 원격 conformance는 별도 결과다.
 
 ## 의존성 보안 수정의 검증 경계

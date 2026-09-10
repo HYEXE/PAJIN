@@ -6,17 +6,20 @@
 
 ## 현재 순차 후속 목표 (2026-09-10)
 
-이전 8개 및 2026-09-09의 5개 개선 goal은 완료 상태를 유지한다. 새 goal은 아래 후속 5개를
-순서대로 구현·검증하며 토큰 예산은 지정하지 않는다. 기준은 `main`의
+이전 8개 및 2026-09-09의 5개 개선 goal에 이어 아래 후속 5개의 구현·검증과 승인된 원격 작업을
+완료했다. 토큰 예산은 지정하지 않았다. 시작 기준은 `main`의
 `215d4fc03e1385c64ccc1e4e7fe70efd0ea4add2`이며 시작 시 HEAD·upstream·실제 원격이 일치했다.
 기존 완료 기록 4개 문서의 diff와 bytes를 private `.pajin/followup-five-20260910/step1-docs/`에
 보존·검토했다. 여섯 commit·일반 `origin/main` push·동일 신규 커밋 CI/Web/Network/AI 실행은
-명시적으로 승인받았다. 앞의 다섯 커밋은 로컬에 저장했으며 상태 문서 커밋·push·원격 검증이 남았다.
+명시적으로 승인받아 실행했다. 최종 `3c66c2e`의 Quality·24 shard(8,342 passed·기존 76 skipped)와
+Web/Network/AI Docker 검증은 모두 첫 시도에 통과했다. HEAD·upstream·실제 원격이 일치했고
+push 직후 worktree는 깨끗했다. 최종 결과 운영 문서 3개는 별도 승인받은 로컬 문서 커밋으로
+관리하며 해당 문서 커밋의 push는 승인·실행하지 않았다.
 배포·운영 서비스 변경은 승인 범위 밖이다.
 
-1. [ ] **DOCS-FINAL-001 이전 최종 결과 반영** — 기존 4개 문서 검토·문서 검사 4개·diff 검사 통과.
+1. [x] **DOCS-FINAL-001 이전 최종 결과 반영** — 기존 4개 문서 검토·문서 검사 4개·diff 검사 통과.
    원본 CI/24 shard artifact/세 Docker 근거를 대조했고 정확한 기존 diff만 `625e53b`에 저장했다.
-   push는 승인받았으며 완료 기준은 원격 반영과 HEAD·upstream·실제 원격·작업 트리 확인이다.
+   `625e53b`를 포함한 여섯 commit의 원격 반영과 HEAD·upstream·실제 원격·작업 트리 확인을 완료했다.
 2. [x] **EFFECT-003 탐지 품질 2차 개선** — `novel-opaque-output-v1`을 기본 baseline으로 유지한다.
    EFFECT-002를 개발 자료로만 사용하고 정상 ID/hash·묶음 분리·표현 범위 밖 사례를 구분한다.
    후보·독립 정답·모델/반복·새 미사용 과제·제외/성공 규칙을 실행 전에 고정한다. 동일 실제 응답의
@@ -43,7 +46,8 @@
 필수 승인·결정에 의존하는 부분만 대기하고 독립적인 다음 작업은 계속한다. 각 단계는 별도 검증 가능한
 기능 흐름/신뢰 경계이며 기존 public API/reader와 false Finding authority를 보존한다. 좁은 pytest부터
 전체 Ruff·Linux strict mypy(새 scripts 포함)·필요한 실제 모델/DB/Docker·packaging·최종 회귀로 확장한다.
-새 소스의 승인된 원격 CI/conformance는 같은 커밋의 실제 결과로만 충족한다.
+새 소스의 승인된 원격 CI/conformance는 같은 커밋의 실제 결과로 충족했다. run·artifact·이미지·cleanup
+근거는 `HANDOFF.md`에 연결한다. 최종 결과 문서만의 추가 변경은 별도 문서 검사를 적용한다.
 
 ## 이전 목표의 완료 상태
 
