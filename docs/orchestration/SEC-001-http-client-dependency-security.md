@@ -1,7 +1,6 @@
 # SEC-001: Pricing HTTP Dependency Security Floor
 
-Status: Local remediation and focused verification; remote alert closure and same-commit
-Docker conformance are separate outstanding gates.
+Status: Local remediation, remote alert closure, and same-commit CI/Docker conformance verified.
 
 ## Scope and evidence
 
@@ -76,8 +75,17 @@ are separate checks. Exact current commands/results and local evidence locations
 `HANDOFF.md`; no previous CI result validates this change.
 
 The path policy selects Web, Network and AI Docker conformance for both dependency locks.
-Commit/push and remote execution were approved for this new goal on 2026-09-10. Until the fixed commit is
-published and GitHub re-evaluates its dependency graph, remote Dependabot closure remains pending.
-Neither a green local suite nor a dependency version comparison is a remote closure result.
-The final read-only check on 2026-09-10 still found all six alerts open, with the same official
-patched-version floors; remote `main` still pointed at the original pre-remediation commit.
+After explicit approval, the six implementation/checkpoint commits were pushed on 2026-09-10.
+GitHub re-evaluated commit `72bdbd9ea281741d1120f64b0016047d95955bdd`; alerts 2 through 7 changed to
+`fixed` at 08:24:01–08:24:02 UTC. The subsequent API query reported zero open alerts. This observed
+remote result is separate from the local package/version and behavioral checks above.
+
+For that exact commit, [CI](https://github.com/HYEXE/PAJIN/actions/runs/34454851268) passed Quality and
+all 24 shards: 8,238 passed and 76 existing opt-in skips. The 24 retained duration records bind the
+same clean source commit and exit 0, with 8,314 unique tests and no duplicate shard assignments.
+[Web](https://github.com/HYEXE/PAJIN/actions/runs/34454971625),
+[Network](https://github.com/HYEXE/PAJIN/actions/runs/34454974833), and
+[AI](https://github.com/HYEXE/PAJIN/actions/runs/34454978127) each passed their actual Docker
+conformance test on the same commit, including exact clean-source and unconditional zero-residue
+gates. Runtime/image identities and complete logs are retained with the checkpoint. No prior
+commit's success was substituted, and no deployment was performed.

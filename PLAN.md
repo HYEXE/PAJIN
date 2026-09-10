@@ -11,9 +11,14 @@
 main이 일치하고 staged/unstaged/untracked 변경 및 진행 중인 Git 작업이 없음을 확인했다.
 별도 브랜치·서브에이전트를 만들지 않는다. 이전 commit·push·원격 workflow 승인은 이 목표에 적용하지 않는다.
 2026-09-10 이번 변경의 여섯 commit·`origin/main` push·동일 커밋의 일반 CI와 Web/Network/AI Docker
-workflow 실행을 새로 승인받았다. 실제 결과 확인과 운영 DB·호스트 선택에 의존하는 검증은 남아 있다.
+workflow 실행을 새로 승인받았다. `72bdbd9`의 원격 반영·일반 CI·세 Docker 검증을 완료했다.
+2026-09-10 사용자가 Linux 단일 호스트·PostgreSQL 17 Control Plane·local SQLite Graph/실행 journal
+구성을 선택하고 격리 검증을 승인했다. ③의 선택 대기는 해소됐고 실제 Linux 검증은 통과했다.
+추가 변경 14개 파일을 한 commit으로 저장하고 `origin/main`에 push한 뒤 동일 커밋의 CI와
+Web/Network/AI Docker 검증을 실행하도록 승인받았다. 원격 검증 결과 확인까지는 미완료다.
 
-1. [ ] **SEC-001 의존성 보안 경고 해소** — 로컬 구현·집중/전체 회귀 완료, 원격 해소/동일 커밋 conformance 대기.
+1. [x] **SEC-001 의존성 보안 경고 해소** — 로컬 회귀·설치/packaging·원격 경고 해소·동일 커밋 conformance 완료.
+   원격 기존 6건은 모두 fixed, 열린 경고는 0건이다. `72bdbd9`의 Quality·24 shard와 Web/Network/AI가 통과했다.
    최신 Dependabot/공식 advisory, 설치·잠금 의존 경로와 제품 도달 가능성을 확인한다.
    최소 보안 하한을 패키지 설치 metadata와 관련 lock에 반영하고 설치·wheel/sdist·Provider·HTTP 회귀,
    취약 동작의 재현/거부와 정상 동작을 검증한다. 로컬 취약 버전 제거와 원격 경고 해소는 별도 상태다.
@@ -23,9 +28,14 @@ workflow 실행을 새로 승인받았다. 실제 결과 확인과 운영 DB·�
    실행 전에 고정하고 비공개 정답을 detector에 전달하지 않는다. 실제 동일 응답에 기존/개선 탐지를
    비교해 TP/TN/FP/FN, 정밀도·재현율, 표본·반복 편차·시간·토큰·비용을 봉인·보고한다.
    점수 개선이 없으면 그대로 기록하며 원문·canary·모델은 비공개로 유지한다.
-3. [ ] **OPS-002 배포 구성의 실제 운영 검증** — 실제 PostgreSQL·Worker 71개 검사와 crash/DB 복원 완료.
-   운영 DB·호스트 선택 응답 대기이며 종속된 운영 투입 판단은 미완료다.
-   문서·설정에서 DB/호스트 선정을 확인하고 필요한 선택만 질문한다. 격리된 폐기 가능 환경에서
+3. [ ] **OPS-002 배포 구성의 실제 운영 검증** — 선정 Linux 구성의 로컬 실증 완료, 새 커밋 원격 검증 대기.
+   Linux PG/journal 84개 검사, mTLS API·Worker 중단·crash 재시작·PG/SQLite/RunStore 독립 복원을 통과했다.
+   관련 회귀 125개·Ruff·mypy를 확인하며 아래 원격 conformance 정책까지 충족해야 체크포인트를 완료한다.
+   선정 구성은 Linux 단일 호스트·PostgreSQL 17 Control Plane·local SQLite Graph/실행 journal·
+   host-local RunStore다. Linux에서 실제 CP/Worker와 검증된 TLS API 연결을 실행하고, 참여 writer를
+   정지·확인한 수동 cold checkpoint로 DB/Graph/journal/RunStore를 함께 보존한다. 독립 pin과 원래
+   verifier로 새 격리 대상에 복원하고 기존 이력·보수적 예산·재실행 거부를 확인해야 완료다.
+   물리 호스트 장애·외부 자원 rollback·자동 복원/재활성화는 이 검증으로 추정하지 않는다. 격리된 폐기 가능 환경에서
    실제 DB migration·기존 데이터·경합/중복/충돌·재시작/보수적 예산·키 교체/verifier·독립 checkpoint
    backup/restore·실행 중 중단/Worker 관측/알림/cleanup을 검증한다. PostgreSQL은 실제 서버를 요구한다.
    운영 데이터·서비스는 변경하지 않으며 관측하지 못한 외부 복구는 unknown으로 보존한다.
@@ -48,7 +58,7 @@ workflow 실행을 새로 승인받았다. 실제 결과 확인과 운영 DB·�
 각 단계는 독립 검증 가능한 기능 흐름/신뢰 경계 단위로 진행한다. 필수 결정·권한 때문에 미완료인
 부분을 명시하고, 그 결정에 의존하지 않는 다음 작업은 계속한다. 좁은 pytest부터 Ruff·Linux strict
 mypy·packaging·필요한 통합/실제 실행·전체 회귀로 확장한다. 변경 경로별 Web/Network/AI conformance는
-[정책](docs/orchestration/MEASURED-CONFORMANCE.md)을 따른다. 승인 전 원격 검증은 미실행으로 유지한다.
+[정책](docs/orchestration/MEASURED-CONFORMANCE.md)을 따른다. 새로운 코드 변경에는 그 커밋의 검증을 적용한다.
 각 체크포인트에서 `HANDOFF.md`·`KNOWN_ISSUES.md`를 현재 상태로 갱신하고 비자명한 결정은 새 ADR로 남긴다.
 
 ## 이전 완료 범위

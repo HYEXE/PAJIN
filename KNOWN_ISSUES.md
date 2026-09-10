@@ -5,28 +5,28 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
 
 ## 현재 통합 검증
 
-- `e7c8243`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 통과했다.
-  8,095 passed·76 opt-in skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.
+- `72bdbd9`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 첫 시도에 통과했다.
+  Quality·24 shard의 8,238 passed·기존 76 skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.
   이후 변경은 [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에 따라 재검증한다.
 - 로컬 Linux arm64 Docker의 새 전용 Worker/proxy 이미지로 EFFECT-002를 완료했다.
   이전 커밋의 Ubuntu conformance와 이번 로컬 실행은 별도 결과다. HTTPS 단위 경로만으로
   Docker 격리·cleanup을 대신하지 않는다.
 - 새 CP v15/v16·복구·중단 경로의 SQLite 검증과 실제 PostgreSQL migration·경합·재시작·DB 복원
-  검증을 완료했다. 아래 OPS-002의 호스트 구성·전체 checkpoint 제한은 남아 있다.
+  검증을 완료했다. 선정 Linux hybrid의 수동 전체 상태 복원도 통과했으며, 아래 OPS-002의 운영 경계는 유지한다.
 - 마지막 보완을 포함한 최종 로컬 pytest는 8,238 passed·기존 76 skipped이며 실행 중 소스 지문을
-  유지했다. 이 결과는 새 커밋의 원격 CI나 Ubuntu conformance를 대신하지 않는다. 상세는 `HANDOFF.md`에 있다.
+  유지했다. 원격 결과도 별도로 검증했으며 run·이미지·로그 근거는 `HANDOFF.md`에 있다.
 
 ## 의존성 보안 수정의 검증 경계
 
-- 2026-09-10 최종 원격 조회에서 열린 Dependabot 경고 6건(high 3·medium 3)을 확인했다.
-  시작 기준의 두 패키지 2.7.0은 영향 버전이었다. 로컬 runtime 하한과 두 lock은 모두 수정했으며
+- 2026-09-10 `72bdbd9` push 뒤 GitHub 의존 그래프 재평가에서 기존 Dependabot 6건(high 3·medium 3)이
+  모두 fixed로 바뀌었고 열린 경고는 0건이다. 시작 기준의 두 패키지 2.7.0은 영향 버전이었다.
+  로컬 runtime 하한과 두 lock은 모두 수정했으며
   현재 httpx2/httpcore2는 2.12.0이다. 실제 의존 경로·도달 조건·공식 경고·호환성은
   [SEC-001](docs/orchestration/SEC-001-http-client-dependency-security.md)에 기록한다.
 - 압축 해제·헤더·SSE·SOCKS TLS 회귀는 이전 패키지에서 17 failed/2 passed, 수정 후 19 passed다.
   SOCKS는 실제 로컬 TLS·불신 인증서 거부를 검증했다. optional Brotli/Zstandard와 Emscripten은 미검증이다.
-- 2026-09-10 새 commit·push·원격 workflow 실행을 승인받았다. 실제 반영·검증 전 원격 경고 6건은
-  마지막 조회에서 열린 상태이며 동일 새 커밋의 Web/Network/AI Docker conformance도 미실행이다.
-  로컬 수정과 원격 해소를 혼동하지 않는다.
+- 승인된 여섯 커밋을 원격 main에 반영하고 그 동일 커밋의 일반 CI·Web/Network/AI Docker conformance를
+  모두 확인했다. 로컬 취약 동작 재현/수정, 원격 경고 fixed 상태와 Docker 검증은 각각의 근거를 보존한다.
 
 ## 실제 탐지 효과와 측정 범위
 
@@ -86,10 +86,15 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   cross-host consensus/fencing과 분산 exactly-once를 제공하지 않는다.
 - [OPS-002](docs/orchestration/OPS-002-isolated-postgres-operations.md)는 실제 PG 17.11·Docker Worker
   71개 검사, crash/보수적 charge/검증키 보존과 독립 pin 기반 별도 DB 복원을 통과했다.
-  Python host는 macOS arm64이고 DB만 Linux arm64다. 운영 DB·호스트 선택 응답 대기이며,
-  PG/SQLite/RunStore 전체 원자 checkpoint·Linux 전체 배포·host 장애 복구를 증명하지 않는다.
-  CP API hop은 정상 bearer/권한 검사를 거치는 in-process ASGI transport이며 실제 API ingress·
-  TLS/mTLS·네트워크 단절 검증은 아니다. DB TLS 연결과 Docker Worker의 실제 실행은 별도 관측이다.
+  기존 검증의 Python host는 macOS arm64이고 DB는 Linux arm64다. 사용자가 Linux 단일 호스트·
+  PostgreSQL 17 Control Plane·local SQLite Graph/실행 journal 구성을 선택해 선택 대기는 해소됐다.
+  새 Linux aarch64 / Python 3.12.13 + PG 17.11 실행에서 84개 검사와 실제 CP/Worker mTLS·중단,
+  강제 종료·재시작·PG/SQLite/RunStore 전체 cold checkpoint/별도 DB·볼륨 복원이 통과했다.
+  실제 차감 1회가 보존됐고 downtime으로 30초 예산이 소진된 실행 및 미승인 재개는 거부됐다.
+  원래 배포를 정지한 수동 복원 검증이며, 등록형 OPS-001 hybrid 지원·live atomic backup·물리 host
+  장애·외부 rollback·자동 실행 재개·운영 배포를 증명하지 않는다. 소유 자원 부재는 별도 관측했고
+  새 변경의 한 commit·push·원격 CI/Web/Network/AI 검증은 승인받았으며 실제 실행 결과가 남아 있다.
+  구성 선택과 실행 승인은 더 이상 대기하지 않는다.
 - code/config inventory 검증은 참여하는 CP·Worker·embedded producer의 배포 구성을 결박한다.
   서명되지 않은 다른 process-local verifier·writer·policy/Grant provenance를 자동으로 보정하지 않는다.
   참여하지 않는 writer, 잘못 신뢰한 외부 권위, 원격 자원의 side effect는 이 검증 밖이다.

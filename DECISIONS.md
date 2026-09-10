@@ -5,6 +5,8 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0277: Rehearse Passive Cold Recovery of the Selected Linux Hybrid Host](docs/adr/0277-rehearse-passive-cold-recovery-of-the-selected-linux-hybrid-host.md) — 채택
+
 - [ADR-0276: Execute One Approved Offline ELF Header Read](docs/adr/0276-execute-one-approved-offline-elf-header-read.md) — 채택
 - [ADR-0275: Bind Graph Page Cache to Complete Current Database Bytes](docs/adr/0275-bind-graph-page-cache-to-complete-current-database-bytes.md) — 채택
 - [ADR-0274: Compare Disclosure Suspicion with a Fresh Private Evaluation](docs/adr/0274-compare-disclosure-suspicion-with-a-fresh-private-evaluation.md) — 채택

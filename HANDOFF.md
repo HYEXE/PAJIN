@@ -3,14 +3,18 @@
 ## 현재 체크포인트
 
 2026-09-09 새 goal의 5개 과제를 `PLAN.md` 순서로 진행한다. 이전 8개 개선은 완료됐고 반복하지 않는다.
-SEC-001은 로컬 수정·집중 검증을 완료했다. 원격 해소와 동일 새 커밋 conformance는 대기 중이다.
+SEC-001은 로컬 수정·회귀·설치/packaging과 원격 6건 fixed·동일 커밋 conformance를 완료했다.
 EFFECT-002는 새 384개 응답의 비교·fresh-process 검증을 완료했다. 고정된 비교 기준을 통과했으며
-남은 FP 31/FN 2·조건별 편차·시간·토큰·비용을 문서화했다. ③의 독립 PostgreSQL·Worker·crash·DB 복원 검증을 완료했다. 운영 구성 선택에 따른 종속 범위는 남아 있다.
+남은 FP 31/FN 2·조건별 편차·시간·토큰·비용을 문서화했다. ③의 독립 PostgreSQL·Worker·crash·DB 복원 검증을 완료했다. 선정 Linux hybrid 구성의 전체 상태 cold backup/독립 복원 검증도 완료했다.
 ④의 Graph 반복 조회 개선과 ⑤의 승인된 offline ELF64 헤더 실행·재실행·보고를 로컬에서 검증했다.
-마지막 변경을 포함한 최종 소스의 전체 회귀와 실제 DB/Docker 로컬 검증을 완료했다. 원격 경고/동일 커밋 conformance,
-운영 구성 선택과 종속 검증이 남아 있어 전체 goal은 미완료다.
+마지막 변경을 포함한 최종 소스의 전체 회귀와 실제 DB/Docker 로컬 검증을 완료했다.
+`72bdbd9`의 일반 CI·Web/Network/AI 원격 검증도 완료했다. 추가 Linux 검증 변경의 새 커밋·원격 CI/conformance가 남아 전체 goal은 미완료다.
 2026-09-10 사용자가 준비된 여섯 commit·push·동일 커밋의 원격 workflow 실행을 승인했다.
-승인된 원격 반영·검증을 진행한다. 운영 DB·호스트 선택은 별도 미결이며 종속된 검증은 남아 있다.
+승인된 여섯 커밋의 원격 반영·검증을 마쳤다. 사용자는 Linux 단일 호스트·PostgreSQL 17 Control Plane·local SQLite Graph/실행 journal을
+선택하고 ③의 격리 검증 진행을 승인했다. 해당 로컬 검증은 완료했다. 검토한 추가 14개 파일의
+한 commit·`origin/main` push·동일 커밋 CI 및 Web/Network/AI 실행도 새로 승인받았다.
+다음 단계는 승인된 커밋을 원격에 반영하고 해당 커밋의 실제 검증 결과를 확인하는 것이다.
+구성 선택은 더 이상 대기하지 않는다. 운영 배포·운영 데이터 변경 승인은 아니다.
 
 ## Git과 승인 범위
 
@@ -19,10 +23,13 @@ EFFECT-002는 새 384개 응답의 비교·fresh-process 검증을 완료했다.
   staged/unstaged/untracked 변경과 merge/rebase/cherry-pick/revert/bisect는 없었다.
 - 하위 `AGENTS.md`는 없다. `main`에서 작업하며 새 브랜치·서브에이전트는 만들지 않았다.
 - 이번 58개 변경의 여섯 commit·`origin/main` push·일반 CI와 Web/Network/AI Docker workflow 실행을
-  새로 승인받았다. 배포나 운영 구성 선택 승인은 아니다. 제품·회귀·계약 53개 파일은 아래 다섯
-  커밋에 보존했고 나머지 운영 상태·색인 5개 파일을 여섯 번째 커밋으로 묶는다.
-  제품 변경의 마지막 커밋은 `16a401313a25dfaaaf7e3043415cdc4a3f18e7d1`이며 원격 반영은 아직 전이다.
-  실제 최종 HEAD·staging 상태는 `git status --short`와 `git log`로 확인한다.
+  새로 승인받았다. 이후 Linux hybrid 구성의 격리 검증도 별도로 승인받았다. 배포 승인은 아니다. 제품·회귀·계약 53개 파일은 아래 다섯
+  커밋에 보존했고 운영 상태·색인 5개 파일을 여섯 번째 커밋으로 묶어 push했다.
+  local HEAD·upstream·실제 원격 main은 `72bdbd9ea281741d1120f64b0016047d95955bdd`로 일치했고
+  push 직후 worktree는 깨끗했다. 이후 검증 결과를 이 문서·`PLAN.md`·`KNOWN_ISSUES.md`·SEC-001에
+  반영한 Markdown 4개를 보존하면서 Linux 검증 실행기·테스트 전용 이미지/lock·ADR·계약을 추가했다.
+  현재 총 14개 파일이 미커밋이며 staging·삭제·진행 중인 Git 작업은 없다. 제품 `src`·기존 lock은
+  바뀌지 않았다. 추가 14개 파일의 한 commit·push·CI/세 Docker workflow 실행은 별도로 승인받았다.
 
 ## SEC-001 구현과 실제 결과
 
@@ -66,14 +73,28 @@ git diff --check
 `sec001-final.log`, `sec001-socks-tls.log`, `sec001-mypy.log`, `sec001-build.log`,
 `sec001-conformance-required.json`. 마지막 보완을 포함한 전체 pytest 결과는 아래 통합 검증에 있다.
 
-## 원격 및 이전 기준
+## 동일 커밋 원격 검증
 
-- 2026-09-10 최종 읽기 조회에서도 원격 main은 시작 HEAD와 같고 Dependabot 6건(high 3·medium 3)은
-  열려 있었다. 경고별 공식 수정 하한도 재확인했다. 로컬 패키지 제거와 원격
-  경고 해소는 다르며 push/graph 재평가 전 해소로 보고하지 않는다.
-- 변경 경로 정책은 Web/Network/AI workflow 세 개를 모두 요구한다. 사용자 실행 승인은 받았지만
-  실제 결과는 아직 `not-executed`다. 경로 판정 도구의 `dispatchAuthorized: false`는 자동 실행 권한을
-  부여하지 않는다는 뜻이다. 로컬 Docker 결과도 exact-clean Ubuntu gate를 대신하지 않는다.
+- `72bdbd9ea281741d1120f64b0016047d95955bdd`를 push하고 GitHub의 의존 그래프 갱신을 확인했다.
+  2026-09-10 08:24:01~02 UTC에 기존 Dependabot 경고 2~7번이 모두 fixed로 바뀌었고 열린 경고는 0건이다.
+  로컬 패키지 제거·취약 동작 회귀와 실제 원격 경고 해소를 각각 검증했다.
+- [CI 34454851268](https://github.com/HYEXE/PAJIN/actions/runs/34454851268): 첫 시도에 Quality와
+  24 shard 모두 성공. **8,238 passed·기존 76 skipped**, 전체 job 실행 구간 515초다.
+  로그 집계와 duration artifact 24개를 대조해 동일 SHA·clean tree·exit 0, 테스트 8,314개의
+  중복 없는 처리를 확인했다. 집계는 `.pajin/five-improvements-remote/72bdbd9ea281741d1120f64b0016047d95955bdd/ci-verified.json`에 있다.
+- 동일 커밋의 실제 Ubuntu 24.04 / Linux amd64 Docker 검증은 모두 첫 시도에 통과했다.
+
+  | Workflow | 실제 검사 | 결과 |
+  | --- | --- | --- |
+  | [Web 34454971625](https://github.com/HYEXE/PAJIN/actions/runs/34454971625) | source·controlled validation·거부·product/fresh process | 1 passed / 132.94초 |
+  | [Network 34454974833](https://github.com/HYEXE/PAJIN/actions/runs/34454974833) | 6 source·6 Replay·floor·product/fresh process | 1 passed / 334.19초 |
+  | [AI 34454978127](https://github.com/HYEXE/PAJIN/actions/runs/34454978127) | source·Replay 2개·Controls 3개·floor·product/fresh process | 1 passed / 77.17초 |
+
+  각 workflow의 명시적 확인·clean commit·이미지 ID 기록·실제 검사·무조건 실행되는 zero-residue
+  단계가 모두 성공했다. 이미지 ID·runtime·로그 SHA-256은 같은 private 디렉터리의
+  `web-verified.json`, `network-verified.json`, `ai-verified.json`에 보존했다. 원문·private inventory는 공개하지 않았다.
+- 변경 경로 정책과 비교는 `five-improvements-conformance-committed.json`에 보존했다. 도구의
+  `dispatchAuthorized: false`는 도구가 자동 실행 권한을 부여하지 않는다는 뜻이며 실제 사용자 승인·실행 결과와 구분한다.
 - 이전 제품 검증 커밋 `e7c824362b8c69116db24c8b8f5e3917431eab1e`의 CI 34299070623과
   Web 34299157203·Network 34299158701·AI 34299160492는 성공 기록이다. 이전 최종 문서 커밋은
   b359c3c이며 사용자 제공 CI 34300565021은 8,095 passed·76 opt-in skipped 기록이다.
@@ -113,30 +134,38 @@ git diff --check
 - 2026-09-10 실제 소유 label 기반 Docker inventory에서 target/Worker container·network 잔여가 없었다.
   실행 프로세스는 종료됐으며 `.pajin/effect002-run.log`, `.pajin/effect002-report.log`에 결과가 있다.
 
-## OPS-002 로컬 검증 체크포인트
+## OPS-002 선정 Linux 구성의 로컬 검증
 
-- `scripts/operational_postgres.py`는 외부 DB URL을 받지 않고 새 TLS·임시 계정·loopback 포트·
-  고정 PostgreSQL 17.11 컨테이너와 볼륨만 생성한다. 소유 ID/label 확인 후 해당 자원만 종료·정리한다.
-  명시적 `tests/operational_postgres_probe.py`를 추가했으며 skip은 추가하지 않았다.
-- 실제 PostgreSQL 회귀에서 기존 v9 fixture의 최신 테이블/최종 버전 전제와 새 v15 fixture의
-  잔여 PG 함수를 발견해 실제 과거 스키마로 바로잡았다. 제품 migration/인증 검증을 약화하지 않았다.
-- Graph/APP 통합 뒤 `.pajin/ops002-live-07/report.json`: **complete=true**, 71 passed / 94.03초.
-  전체 109.26초 동안 소스 지문을 유지했다. PostgreSQL Linux arm64 17.11, Python macOS arm64 3.12.13이다.
-- 실제 Docker Worker의 실행·긴급 중단·봉인·알림과 컨테이너 소멸을 각각 확인했다. 네트워크 없는
-  bounded sleep action이며 외부 대상의 rollback 검증이 아니다. Worker cleanup 권위는 false를 유지한다.
-- DB 강제 종료 후 실제 crash recovery와 fresh-process 전체 행 지문·검증키·미완료 Permit의 보수적
-  consumed_calls 보존을 확인했다. 독립 archive/state pin을 대조해 별도 빈 DB에 복원하고 재검증했다.
-  모든 소유 container/volume label의 부재를 확인했고 임시 프로세스는 끝났다.
-- 중간 도구 실패: 버전 조회 DB 이름 누락, asyncio 표식 누락, Docker 임시 포트 재할당,
-  Docker archive copy 실패. 원인을 분리하거나 좁은 비루트 streaming 복원 검증 후 수정했다.
-  이전 실패 Run을 성공으로 덮어쓰지 않았다. 최종 결과와 경계는
-  [OPS-002](docs/orchestration/OPS-002-isolated-postgres-operations.md)에 기록했다.
-- SQLite checkpoint/runner 31 passed; 마지막 runner/문서 9 passed. 중복 수는 합산하지 않는다.
-- 운영 Linux 단일 호스트의 PostgreSQL/SQLite 선택을 사용자에게 물었으며 응답 대기다.
-  이번 PG 단독 dump를 OPS-001의 SQLite CP/Graph/journal/RunStore 전체 복구로 취급하지 않는다.
-  PostgreSQL을 포함한 전체 호스트 복구·실제 운영 host 검증은 미완료다. 운영 데이터/서비스는 건드리지 않았다.
-- Graph와 ⑤의 최종 승인 경계 보완까지 포함한 source manifest에서 위 PG 검증을 재실행했다.
-  manifest SHA-256은 `b9dbba2a3b2922ad7fa63a1fbded91154cc7c491e2d376fe32da3f91f74b0c1e`다.
+- 선정 구성은 Linux 단일 호스트·PostgreSQL 17 Control Plane·local SQLite Graph/실행 journal·
+  host-local RunStore다. `scripts/operational_linux.py`, `operations_cold_checkpoint.py`,
+  `tests/operational_linux_probe.py`와 전용 테스트 이미지/lock을 추가했다. 기존 SQLite 전용
+  OPS-001 API·schema·등록 정책을 변경하지 않는다. 근거는 ADR-0277과 OPS-002다.
+- `.pajin/ops002-linux-live-07/report.json`: **complete=true**, Linux aarch64 / Python 3.12.13,
+  실제 PostgreSQL 17.11. PG/journal 회귀 **84 passed / 69.38초**, 전체 **134.55초**다.
+  migration·기존 행·경합/중복/충돌·key rotation과 verifier 재결박 거부를 실제 DB에서 확인했다.
+- 별도 Linux API process와 Worker가 실제 TLS/mTLS·bearer 인증으로 통신했다. 인증서 없는 Worker,
+  잘못된 서버 hostname/CA, 평문, bearer 없는 요청을 거부했다. 실제 실행 중 Worker를 중단하고
+  알림·정지 보고·두 Run 봉인을 확인했다. 별도 observer는 실제 실행 container의 부재를 확인했고
+  Worker `resourceCleanupVerified=false`, 외부 rollback `unknown`을 유지한다.
+- 서비스 중인 API container와 PG process를 강제 종료했다. fresh Linux process에서 전체 DB 행,
+  원래 verifier, Graph Snapshot/history, Run 봉인, 실제 Worker journal의 차감 1회를 대조했다.
+  모든 소유 writer의 정지/PID 0·DB 연결 0을 확인한 뒤 PG dump와 local 파일 18개를 함께 암호화했다.
+- 독립 pin과 키로 별도 PG container·빈 local volume에 복원했다. 원래 서비스는 정지 상태를 유지했다.
+  재시작 때 차감 1회를 복원했고, 복원 때는 기존 30초 예산이 소진돼 실행 재개를 정확히 거부했다.
+  저장된 지문·예산 이력과 실제 경과 시간을 독립 확인했다. 미승인 checkpoint 재개도 409로 거부했다.
+  자동 Worker 시작·예산 환불·불확실한 호출 재전송은 수행하지 않았다.
+- source inventory **1,513개 파일**이 실행 전후 일치했다. SHA-256은
+  `91ed1c43a3ca7650444c17ae83be66412127eb8f1bcc74327d29afa1f3a9bc05`,
+  암호화 checkpoint pin은 `3594fbd66133af32a0670af0816804be81e97678f34df303bcfc71ec066b3276`다.
+  Linux 로그를 private evidence archive에 보존한 뒤 소유 container/volume의 부재를 관측했다.
+- 이전 `.pajin/ops002-live-07`의 macOS Python + Linux PG 단독 검증 71개는 별도 기록이다.
+  이번 Linux 결과로 구분하며 이전 PG dump만으로 전체 상태 복원을 주장하지 않는다.
+- 초기 검증기의 volume 권한 순서/범위·Snapshot 인터페이스·종료 대기 문제를 수정했다.
+  예산 소진 거부는 제품 보호 동작으로 유지했다. 실패 Run을 성공으로 덮어쓰지 않았다.
+- 새 cold archive/실행기 경계 22개를 포함한 관련 회귀 125개, 전체 Ruff, 기존 strict Linux mypy
+  447개와 새 script 2개가 통과했다. 새 namespace script는 별도 `--explicit-package-bases` 검사다.
+- 현재 변경의 정책 결과는 Web/Network/AI 모두 필요다. `72bdbd9`의 이전 성공은 이번 추가 변경의
+  원격 결과가 아니다. 새 commit·push·동일 커밋 원격 검증은 승인받아 실행할 단계다. 운영 배포는 범위 밖이다.
 
 ## GRAPH-PERF-001 완료 체크포인트
 
@@ -202,7 +231,7 @@ git diff --check
 - 마지막 보완의 APP/Graph view **85 passed / 5.32초**, checkpoint/Graph cache/문서 **25 passed / 2.50초**.
   `.pajin/five-improvements-review-regression-final.log`, `five-improvements-final-checkpoint-tests.log`에 있다.
   이와 별도로 같은 최종 소스의 실제 APP Docker 12개·PostgreSQL/Worker 71개 검증을 통과했다.
-  중복된 테스트 수를 합산하지 않는다. 새 커밋의 전체 CI·Ubuntu conformance는 아직 미실행이다.
+  중복된 테스트 수를 합산하지 않는다. 새 커밋의 전체 CI·Ubuntu conformance도 위 별도 근거로 확인했다.
 - Ruff 전체 통과, Linux strict mypy는 기존 필수 대상과 새 운영/profile script까지 **447 source files 통과**.
   Graph profile의 fixture를 재사용하면서 노출된 optional 타입은 실제 non-None assertion으로 확인했다.
   `git diff --check`와 41개 untracked 파일의 whitespace 검사도 통과했다. suppression은 추가하지 않았다.
@@ -211,12 +240,12 @@ git diff --check
   실제 DB/Docker 검증과 일반 전체 pytest 프로세스는 모두 종료됐다.
 - 이번 58개 파일은 모두 이 goal의 수정·추가이며 삭제나 진행 중인 merge/rebase 등은 없다.
   각 커밋의 staged bytes를 최종 검증 지문과 대조했다. 새 승인 상태의 문서 검사 4개도 통과했다.
-  다음 단계는 마지막 문서 커밋 뒤 승인받은 push·같은 새 커밋의 원격 검증 실행이다.
-  운영 DB·호스트 선택 응답은 별도 대기이며 종속된 운영 투입 판단을 완료로 표시하지 않는다.
+  앞선 여섯 commit·push·원격 검증은 완료했다. 이후 원격 결과 문서와 Linux 검증 추가분
+  총 14개 파일이 미커밋이다. Linux 격리 검증은 통과했으며 새 커밋의 원격 검증은 아직 없다.
 
 ## 유지할 경계
 
-OPS-001의 완료 범위는 POSIX local SQLite다. 선정 운영 구성의 전체 호스트 검증과 새 커밋의 원격 검증은 남아 있다. APP-002 한 기능을 도메인 전체 지원으로 확대하지 않는다. 관측하지 않은 복구·외부 cleanup은 unknown이다.
+OPS-001의 등록형 복구 API는 POSIX local SQLite다. 선정 Linux hybrid 구성은 격리된 수동 cold 복원을 검증했다. 물리 host/storage 장애·분산 fencing·자동 재활성화·운영 배포는 이 결과로 주장하지 않는다. APP-002 한 기능을 도메인 전체 지원으로 확대하지 않는다. 관측하지 않은 복구·외부 cleanup은 unknown이다.
 Discovery·model output·metadata·사람 평가는 Scope·Capability·Permit·자동 Finding 권위가 아니다.
 
 ## 승인된 커밋과 원격 검증
@@ -229,10 +258,8 @@ Discovery·model output·metadata·사람 평가는 Scope·Capability·Permit·�
 3. `7b34123` — `test(operations): 실제 PostgreSQL 장애와 독립 복원 검증`; 격리 실행기·실제 probe·fixture 교정·계약 6개 파일.
 4. `3fbd480` — `perf(graph): 현재 DB 검증을 유지하며 페이지 조회 비용 감소`; cache·기존 reader·profile·회귀·계약/ADR 9개 파일.
 5. `16a4013` — `feat(application): 승인된 ELF 헤더 읽기와 독립 보고 연결`; Capability/Gateway/reader·전용 image·실제/단위 검증·계약/ADR 18개 파일.
-6. `docs(project): 다섯 개선 과제의 검증과 남은 경계 정리` — 운영 상태·문서/ADR 색인 5개 파일.
+6. `72bdbd9` — `docs(project): 다섯 개선 과제의 검증과 남은 경계 정리`; 운영 상태·문서/ADR 색인 5개 파일.
 
-승인 대상 원격은 `origin/main`이다. 새 최종 커밋을 반영한 뒤 일반 `ci.yml` 결과와 그 동일 커밋의
-`web-002d-conformance.yml`, `network-002d-conformance.yml`, `ai-002d-conformance.yml`를 확인해야 한다.
-세 수동 workflow는 각각의 `confirm_*_002d_conformance=true` 입력을 요구한다. 현재 변경 경로 판정은
-`.pajin/five-improvements-conformance-required.json`에 있으며 세 workflow 모두 필요·미실행 상태다.
-이는 GitHub main 갱신과 CI/Docker runner 실행 승인이며 운영 배포 승인이 아니다.
+승인 대상 `origin/main` 반영과 동일 커밋의 일반 CI·세 수동 workflow 확인을 완료했다.
+각 `confirm_*_002d_conformance=true` 입력과 실제 run ID는 private `dispatch.json`에 보존했다.
+이는 GitHub main 갱신과 CI/Docker runner 실행 승인이며 운영 배포나 DB·호스트 선정 승인이 아니다.
