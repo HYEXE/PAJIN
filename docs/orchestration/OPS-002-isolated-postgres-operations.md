@@ -2,7 +2,7 @@
 
 Status: The initial real-server/Worker/crash/DB-restore drill is verified. The operator selected
 the Linux hybrid configuration below; its full-state local rehearsal is verified.
-The additional commit, push and remote CI/conformance are approved; their results remain pending. No deployment or
+The additional change is published at `215d4fc`; its same-commit CI and three Docker conformance runs passed. No deployment or
 production data changes are part of either command.
 
 ## Configuration and scope
@@ -203,6 +203,10 @@ Linux log retention also succeeded. `complete=true` describes this local rehears
 - Runtime image: `sha256:490d592c0c17097754e0efdc72d9b763cef7b8f34628186bdafcc1dd81d33ac5`.
 - Worker image: `sha256:144b961e48a3a71b360f011471416e261f0cc86e3237f18f72d07a0291d968b3`.
 - Source manifest SHA-256: `91ed1c43a3ca7650444c17ae83be66412127eb8f1bcc74327d29afa1f3a9bc05`.
+- Of the 1,513 local inventory files, all 840 repository files match the published commit. The
+  remaining 673 are ignored vendor files unused by either image; the Worker installs dependencies
+  inside its image from the committed hash lock. Copied controller sources were compared inside
+  the actual Linux container before the live tests.
 - Independently pinned encrypted checkpoint: `3594fbd66133af32a0670af0816804be81e97678f34df303bcfc71ec066b3276`.
 - Expected state SHA-256: `6fb1f318314d19ab35f038120656b5acc8ed34872a324f4fef52091003c9d15c`.
 - Private evidence: `.pajin/ops002-linux-live-07/`, including `private-linux-evidence.json`.
@@ -211,8 +215,16 @@ The local focused regression passed 125 cases, including 22 new cold-archive/con
 cases. Repository-wide Ruff and Linux strict mypy passed (447 existing sources and two new scripts;
 the namespace scripts use a separate `--explicit-package-bases` invocation). The earlier full suite
 and remote results at `72bdbd9` are historical evidence, not results for this additional change.
-The measured-conformance policy selects Web, Network and AI for the new test/build paths. A new
-published commit, ordinary CI and all three workflows are approved and still required for completion.
+The additional change was published at `215d4fc03e1385c64ccc1e4e7fe70efd0ea4add2`. Its
+[CI run](https://github.com/HYEXE/PAJIN/actions/runs/34466459329) passed Quality and all 24 shards:
+8,260 passed and 76 existing opt-in skips. All 8,336 test IDs were unique across the 24 clean,
+same-SHA duration artifacts; the earlier test set was retained and 22 boundary cases were added.
+The required [Web](https://github.com/HYEXE/PAJIN/actions/runs/34466552572) (136.13 seconds),
+[Network](https://github.com/HYEXE/PAJIN/actions/runs/34466556691) (270.42 seconds) and
+[AI](https://github.com/HYEXE/PAJIN/actions/runs/34466560216) (91.39 seconds) Docker tests each
+passed once on Ubuntu 24.04 / Linux amd64. Each first attempt passed its exact clean-commit gate,
+recorded image IDs, actual conformance test and unconditional residue audit. These remote product
+checks are separate from the selected Linux aarch64 operational rehearsal above.
 
 Initial rehearsal failures were confined to controller setup/verification: source file ownership,
 volume initialization scope/order, an incorrect Snapshot accessor, and checking termination before

@@ -5,21 +5,24 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
 
 ## 현재 통합 검증
 
-- `72bdbd9`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 첫 시도에 통과했다.
-  Quality·24 shard의 8,238 passed·기존 76 skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.
+- 최종 `215d4fc`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 첫 시도에 통과했다.
+  Quality·24 shard의 8,260 passed·기존 76 skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.
+  24개 duration artifact의 동일 SHA·clean tree·8,336개 중복 없는 테스트와 기존 항목 보존을 대조했다.
   이후 변경은 [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에 따라 재검증한다.
 - 로컬 Linux arm64 Docker의 새 전용 Worker/proxy 이미지로 EFFECT-002를 완료했다.
   이전 커밋의 Ubuntu conformance와 이번 로컬 실행은 별도 결과다. HTTPS 단위 경로만으로
   Docker 격리·cleanup을 대신하지 않는다.
 - 새 CP v15/v16·복구·중단 경로의 SQLite 검증과 실제 PostgreSQL migration·경합·재시작·DB 복원
   검증을 완료했다. 선정 Linux hybrid의 수동 전체 상태 복원도 통과했으며, 아래 OPS-002의 운영 경계는 유지한다.
-- 마지막 보완을 포함한 최종 로컬 pytest는 8,238 passed·기존 76 skipped이며 실행 중 소스 지문을
-  유지했다. 원격 결과도 별도로 검증했으며 run·이미지·로그 근거는 `HANDOFF.md`에 있다.
+- Linux 검증 추가 이전의 로컬 전체 pytest는 8,238 passed·기존 76 skipped이며 실행 중 소스 지문을
+  유지했다. 이후 Linux 검증 추가분은 관련 125개 및 실제 Linux 84개 검사를 통과했고, 위 새 커밋의
+  원격 전체 pytest에는 새 경계 테스트 22개가 포함됐다. run·이미지·로그 근거는 `HANDOFF.md`에 있다.
 
 ## 의존성 보안 수정의 검증 경계
 
 - 2026-09-10 `72bdbd9` push 뒤 GitHub 의존 그래프 재평가에서 기존 Dependabot 6건(high 3·medium 3)이
   모두 fixed로 바뀌었고 열린 경고는 0건이다. 시작 기준의 두 패키지 2.7.0은 영향 버전이었다.
+  최종 `215d4fc` push 뒤에도 동일한 fixed 상태와 열린 경고 0건을 다시 확인했다.
   로컬 runtime 하한과 두 lock은 모두 수정했으며
   현재 httpx2/httpcore2는 2.12.0이다. 실제 의존 경로·도달 조건·공식 경고·호환성은
   [SEC-001](docs/orchestration/SEC-001-http-client-dependency-security.md)에 기록한다.
@@ -93,8 +96,8 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   실제 차감 1회가 보존됐고 downtime으로 30초 예산이 소진된 실행 및 미승인 재개는 거부됐다.
   원래 배포를 정지한 수동 복원 검증이며, 등록형 OPS-001 hybrid 지원·live atomic backup·물리 host
   장애·외부 rollback·자동 실행 재개·운영 배포를 증명하지 않는다. 소유 자원 부재는 별도 관측했고
-  새 변경의 한 commit·push·원격 CI/Web/Network/AI 검증은 승인받았으며 실제 실행 결과가 남아 있다.
-  구성 선택과 실행 승인은 더 이상 대기하지 않는다.
+  새 변경의 `215d4fc` commit·push·동일 커밋 CI/Web/Network/AI 검증까지 완료했다.
+  구성 선택·실행 승인 대기나 이번 goal의 필수 미실행 검증은 없다.
 - code/config inventory 검증은 참여하는 CP·Worker·embedded producer의 배포 구성을 결박한다.
   서명되지 않은 다른 process-local verifier·writer·policy/Grant provenance를 자동으로 보정하지 않는다.
   참여하지 않는 writer, 잘못 신뢰한 외부 권위, 원격 자원의 side effect는 이 검증 밖이다.

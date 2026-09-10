@@ -1,6 +1,6 @@
 # PAJIN 구현 계획
 
-이전 8개 개선은 완료됐으며 2026-09-09 요청의 새로운 5개 개선을 순서대로 진행한다. 구현·권한 경계는 코드와
+이전 8개 개선에 이어 2026-09-09 요청의 새로운 5개 개선도 아래 범위의 구현·검증을 완료했다. 구현·권한 경계는 코드와
 버전형 계약, 결정 근거는 채택된 ADR, 실행 결과와 Git 상태는 `HANDOFF.md`에서 확인한다.
 과거 Phase의 상세 구현 이력은 각 계약을 참조하며 이 파일에 누적하지 않는다.
 
@@ -14,11 +14,12 @@ main이 일치하고 staged/unstaged/untracked 변경 및 진행 중인 Git 작�
 workflow 실행을 새로 승인받았다. `72bdbd9`의 원격 반영·일반 CI·세 Docker 검증을 완료했다.
 2026-09-10 사용자가 Linux 단일 호스트·PostgreSQL 17 Control Plane·local SQLite Graph/실행 journal
 구성을 선택하고 격리 검증을 승인했다. ③의 선택 대기는 해소됐고 실제 Linux 검증은 통과했다.
-추가 변경 14개 파일을 한 commit으로 저장하고 `origin/main`에 push한 뒤 동일 커밋의 CI와
-Web/Network/AI Docker 검증을 실행하도록 승인받았다. 원격 검증 결과 확인까지는 미완료다.
+추가 변경 14개 파일은 승인받은 한 commit `215d4fc`로 저장하고 `origin/main`에 반영했다.
+동일 커밋의 Quality·24 shard(8,260 passed·기존 76 skipped)와 Web/Network/AI Docker 검증이
+모두 첫 시도에 통과했다. 최종 결과를 반영한 운영 문서 4개는 로컬 변경으로 보존했다.
 
 1. [x] **SEC-001 의존성 보안 경고 해소** — 로컬 회귀·설치/packaging·원격 경고 해소·동일 커밋 conformance 완료.
-   원격 기존 6건은 모두 fixed, 열린 경고는 0건이다. `72bdbd9`의 Quality·24 shard와 Web/Network/AI가 통과했다.
+   원격 기존 6건은 모두 fixed, 열린 경고는 0건이다. 최종 `215d4fc`에서도 해당 상태와 CI/세 Docker 검증을 확인했다.
    최신 Dependabot/공식 advisory, 설치·잠금 의존 경로와 제품 도달 가능성을 확인한다.
    최소 보안 하한을 패키지 설치 metadata와 관련 lock에 반영하고 설치·wheel/sdist·Provider·HTTP 회귀,
    취약 동작의 재현/거부와 정상 동작을 검증한다. 로컬 취약 버전 제거와 원격 경고 해소는 별도 상태다.
@@ -28,9 +29,9 @@ Web/Network/AI Docker 검증을 실행하도록 승인받았다. 원격 검증 �
    실행 전에 고정하고 비공개 정답을 detector에 전달하지 않는다. 실제 동일 응답에 기존/개선 탐지를
    비교해 TP/TN/FP/FN, 정밀도·재현율, 표본·반복 편차·시간·토큰·비용을 봉인·보고한다.
    점수 개선이 없으면 그대로 기록하며 원문·canary·모델은 비공개로 유지한다.
-3. [ ] **OPS-002 배포 구성의 실제 운영 검증** — 선정 Linux 구성의 로컬 실증 완료, 새 커밋 원격 검증 대기.
+3. [x] **OPS-002 배포 구성의 실제 운영 검증** — 선정 Linux 구성의 로컬 실증·동일 커밋 원격 검증 완료.
    Linux PG/journal 84개 검사, mTLS API·Worker 중단·crash 재시작·PG/SQLite/RunStore 독립 복원을 통과했다.
-   관련 회귀 125개·Ruff·mypy를 확인하며 아래 원격 conformance 정책까지 충족해야 체크포인트를 완료한다.
+   관련 회귀 125개·Ruff·mypy와 최종 커밋의 CI/세 Docker conformance 정책을 충족했다.
    선정 구성은 Linux 단일 호스트·PostgreSQL 17 Control Plane·local SQLite Graph/실행 journal·
    host-local RunStore다. Linux에서 실제 CP/Worker와 검증된 TLS API 연결을 실행하고, 참여 writer를
    정지·확인한 수동 cold checkpoint로 DB/Graph/journal/RunStore를 함께 보존한다. 독립 pin과 원래
@@ -125,13 +126,13 @@ metric registry는 구현됐다. 각 registry의 false authority와 `required`/`
 
 ## 다음 제품 작업의 선정 기준
 
-현재 8개 개선을 검증한 뒤 다음 독립 slice를 선정한다. 아래 항목은 이번 목표의 완료 범위를
+이번 5개 개선의 검증 범위와 남은 제약을 기준으로 다음 독립 slice를 선정한다. 아래 항목은 이번 목표의 완료 범위를
 암묵적으로 확대하지 않으며, 새로운 실행·비용·운영 권한이 필요하면 별도로 정한다.
 
-- EFFECT-001이 확인한 marker 탐지의 오탐·미탐을 줄이는 탐지기와 새 미사용 평가군.
-- 배포에 사용할 정확한 SQLite 또는 PostgreSQL 환경의 live 복구·동시성 검증.
-- Graph 전체 이력 재검증 비용과 shared fixture 비용을 새 프로파일로 측정한 후 같은 권한 경계에서 분리.
-- Cloud/System/Application/Mobile/Cryptography/Forensics의 실제 provider·parser·sandbox와 독립 측정.
+- EFFECT-002의 남은 오탐 31개·미탐 2개와 표현 범위 밖 사례를 다루는 별도 탐지 개선·새 미사용 평가군.
+- 선정 Linux hybrid 구성의 물리 host/storage 장애, 복원 후 활성화와 실제 운영 환경의 복구 계약.
+- Graph의 최초 조회 비용과 128 MiB cache 범위 밖 크기를 새 프로파일로 측정한 뒤 같은 권한 경계에서 개선.
+- APP-002 한 기능 이후 Cloud/System 등 다음 도메인의 실제 provider·parser·sandbox와 독립 측정.
 - 단일 호스트 밖의 verifier·store fence·독립 checkpoint·credential custody와 운영 복구 계약.
 
 도메인 기본 우선순위는 Web·AI, Network·Cloud·System, Application·Mobile, Cryptography·Forensics다.
