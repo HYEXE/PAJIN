@@ -5,6 +5,12 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0280: Verify Historical Graph Projections with One Exact Replay](docs/adr/0280-verify-historical-graph-projections-with-one-exact-replay.md) — 채택; 동일 데이터의 지연 감소와 메모리 비용 검증
+
+- [ADR-0279: Separate Managed Hybrid Recovery from Execution Activation](docs/adr/0279-separate-managed-hybrid-recovery-from-execution-activation.md) — 채택
+
+- [ADR-0278: Version Context Disclosure Comparison without Relabeling Evidence](docs/adr/0278-version-context-disclosure-comparison-without-relabeling-evidence.md) — 채택
+
 - [ADR-0277: Rehearse Passive Cold Recovery of the Selected Linux Hybrid Host](docs/adr/0277-rehearse-passive-cold-recovery-of-the-selected-linux-hybrid-host.md) — 채택
 
 - [ADR-0276: Execute One Approved Offline ELF Header Read](docs/adr/0276-execute-one-approved-offline-elf-header-read.md) — 채택
@@ -222,3 +228,5 @@
 전체 append-only 결정 이력은 `docs/adr/`에서 확인한다. 권위, Trust Boundary, 호환성,
 마이그레이션, 롤백 또는 보안 근거가 실질적으로 바뀌면 새 ADR을 추가한다. 채택된 ADR을
 조용히 다시 작성하지 않는다.
+
+- [ADR-0281](docs/adr/0281-execute-one-authenticated-system-os-release-read.md): 실제 mTLS System OS-release 읽기 한 기능의 권한·증거·독립 검증 경계.

@@ -42,6 +42,16 @@ success, and Security Domain labels are not authority. A discovered Surface is c
 only and remains registered-not-authorized until a new exact Proposal is admitted through current
 Campaign, Capability, Policy, approval, Permit, and Worker authority.
 
+The additive [OPS-003 managed hybrid commands](docs/orchestration/OPS-003-managed-hybrid-recovery.md)
+connect preflight, pinned writer stop, encrypted PostgreSQL 17/SQLite/RunStore cold checkpoint,
+separate-target restore, passive verification and separately authorized continuation. The supported
+boundary is an explicitly managed Linux host; actual isolated recovery passed locally. This does not
+change OPS-001's SQLite enrollment API or assert production deployment or physical failure recovery.
+
+[EFFECT-003](docs/benchmark/EFFECT-003-context-disclosure-comparison.md) preserved a new unsuccessful
+detector experiment: 382 paired responses from 384 attempts, fewer misses but more false positives.
+The fixed completeness and precision requirements did not pass; the v1 product default remains.
+
 ## Profile, Domain, Capability, and Tool
 
 These concepts are orthogonal:
@@ -181,6 +191,7 @@ The table distinguishes implemented runtime behavior from contract-only and plan
 | System read-only inspection binding | Implemented, preparation and request adaptation only | SYS-001B binds one exact typed System Surface to a current signed metadata-only, network-disabled CAP-002 release, its exact non-routable Surface-token Scope, one deployment-owned public Worker mTLS policy and selected subject/SPKI, a declared non-root identity, operation membership, and request/artifact/runtime ceilings; it invents no agent endpoint, and preparation performs no live authentication, session, host read, WorkerJob, network call, Observation/Evidence, Graph admission, root action, mutation, or execution |
 | System sealed host knowledge | Implemented, bounded admission only | SYS-001C rebuilds current SYS-001B authority, recomputes the Gateway policy decision, and verifies one deployment-signed consumed-Permit/direct-mTLS/non-root execution plus a raw-result-free receipt whose signed source kind distinguishes a live authenticated host from an immutable snapshot before the existing Graph writer admits one neutral `system.host-observation`, two restricted Evidence nodes, and only for fixed service/configuration review signals one confidence `0.5` open Hypothesis; it provides no host-agent runtime, raw host interpretation, state confirmation, host/root access, mutation, Replay, Finding, or further execution authority |
 | System snapshot/fresh-inspection Replay and fixtures | Implemented, bounded and unmeasured | SYS-001D reopens one stored SYS-001C admission and a separately authorized sealed execution with disjoint Run/request/Decision/Permit/approval/execution/evidence identities and a signed start strictly after source finish, distinguishes exact same-snapshot re-analysis from fresh authenticated inspection, and reports neutral digest/byte-count/signal match/change/unresolved; trusted wire reload requires the receiver trust anchor and both exact Graph stores, while five disposable non-root container/VM Ground Truth requirements register full Surface coverage, negative Controls, privilege denial, and evidence completeness without verification, host provisioning, fixture execution, cleanup observation, measurement, Profile-floor, host-state/Finding, Replay scheduling, root, mutation, or action authority |
+| Authenticated System distribution read | Implemented, locally verified bounded runtime | [SYS-002](docs/orchestration/SYS-002-authenticated-os-release-read.md) uses an exact scoped mTLS Linux agent, one-use leased credentials, current code-backed Capability and Policy, separately signed approval and durable Permit. Two fresh approved Runs, independent standard-library result verification, a sealed read-only CLI report and observed cleanup cover one container-userspace metadata read; general System and SYS-001 conformance are separate. |
 | Application typed Surface | Implemented, registry only | APP-001A binds caller-supplied digest-only binaries and exact-parent configuration, declared-runtime, and library artifact coordinates to the Application Domain and `application.artifact-runtime` semantics; paths, raw content, process state, floating versions, secrets, credentials, artifact resolution/read, analysis, Scope, Capability, Permit, sandbox/Worker, network, debugger, Graph, Finding, mutation, and execution authority remain absent |
 | Application read-only static analysis | Implemented, preparation and request adaptation only | APP-001B binds one exact APP-001A Surface to a current signed CAP-002 release, exact non-routable Surface-token Scope, a path-free deployment custody/authorization reference, exact class-owned parser, image/executable digests, non-root network-disabled read-only sandbox requirements, and artifact/output/runtime/memory/process ceilings; preparation performs no authorization verification, artifact resolution/read, mount, sandbox/Worker execution, network, dynamic execution, debugger attach, Observation/Evidence, Graph admission, Finding, or execution |
 | Application sealed static-analysis knowledge | Implemented, bounded admission only | APP-001C rebuilds current APP-001B authority, resolves one consumed Permit and durable approval receipt, recomputes Gateway policy, and verifies a deployment-signed exact-artifact/offline-sandbox execution plus a digest-only detached result receipt before the existing Graph writer admits one neutral `application.analysis-observation`, two restricted Evidence nodes, and only for fixed class-bound review signals one confidence `0.5` open Hypothesis; it adds no artifact resolver, parser/sandbox runtime, raw-output interpretation, format/runtime/dependency/vulnerability truth, network, dynamic execution, debugger, mutation, Replay, Finding, or further action authority |
@@ -329,8 +340,8 @@ SYS-001B adds a current signed metadata-only preparation and explicit host-agent
 for that exact identity. It pins public Worker mTLS deployment configuration, one selected
 subject/SPKI, an explicit non-root run-as identity, exact Campaign Surface-token Scope, and bounded
 request/artifact/runtime ceilings. It deliberately adds no routable agent URL: the existing Worker
-is the authenticated Control Plane client, and Tool network access remains disabled. The repository
-still has no live authenticated host agent; the Tool fails closed before Worker materialization,
+is the authenticated Control Plane client, and Tool network access remains disabled. SYS-001B
+has no live authenticated host-agent implementation; its Tool fails closed before Worker materialization,
 and the preparation grants no bearer or direct-mTLS admission, non-root attestation, session, host
 access, result, knowledge admission, root privilege, mutation, or execution authority.
 
@@ -345,8 +356,8 @@ writer for one neutral `system.host-observation` and two restricted Evidence nod
 status or configuration metadata review signal may add only a confidence `0.5` open
 `system.security-configuration` Hypothesis; no signal creates no conclusion. Raw host content,
 paths, service/configuration values, host access, root or privilege escalation, mutation, Replay,
-Finding, and further execution authority are never admitted. The repository still does not provide
-the live host-agent runtime that produced the external signed evidence.
+Finding, and further execution authority are never admitted. SYS-001C does not provide
+the live host-agent runtime that produced its external signed evidence.
 
 SYS-001D does not execute Replay. It reopens the exact stored SYS-001C source and one separately
 authorized sealed execution under the same Surface, operation, release, deployment, Scope, request
@@ -364,6 +375,11 @@ covers all System Surface classes and registers disposable non-root host,
 known-positive, negative-Control, privilege-denial, cleanup, and evidence-completeness requirements,
 but keeps private Ground Truth verification false, provisions, executes, cleans up, and measures
 nothing, and grants no host, root, mutation, Finding, Replay, or further execution authority.
+
+SYS-002 is a separate bounded runtime for one fixed OS-distribution file on an authenticated Linux
+container agent. It connects current Capability, exact Scope, a separate signed approval, durable
+Permit, leased mTLS credentials, actual isolated reads, sealed evidence and a product report. Its
+local independent parser and fresh approved re-execution do not satisfy the broader SYS-001 profile.
 
 APP-001A adds a secret-free typed registry only. Binary identity is one caller-supplied lowercase
 artifact SHA-256; configuration and declared runtime identities embed an exact binary parent, and

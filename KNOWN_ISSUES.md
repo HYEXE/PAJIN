@@ -3,20 +3,28 @@
 현재 구현의 미해결 제약과 검증 공백을 기록한다. 제품 우선순위는 `PLAN.md`, 실제 실행 결과와
 Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계약이 권위다.
 
-## 현재 통합 검증
+## 현재 후속 작업의 검증 공백
+
+- 새 후속 5개 goal은 진행 중이다. 아래 `215d4fc`의 완료 결과는 새 소스 검증으로 재사용하지 않는다.
+- ① 기존 완료 문서 4개는 검토·문서 검사·whitespace 검사를 마쳤고 승인된 `625e53b`에 저장했다.
+  이번 여섯 commit·push·동일 커밋 CI/Web/Network/AI는 승인받았으며 실제 원격 결과 확인이 남아 있다.
+- ② EFFECT-003은 384시도/382응답/2실패이며 완전한 비교와 품질 개선이 확인되지 않았다.
+  후보는 미탐 7→1, 오탐 45→51로 정밀도가 하락했다. 기존 기본 탐지기를 유지한다. 두 Worker exit 70의 세부 원인은 미확인이다.
+- ③ 운영자 hybrid 명령은 실제 격리 복원·별도 승인 재개·차감 보존·외부 cleanup 확인까지 통과했다.
+  초기 fixture/readiness와 duration 직렬화 오류는 수정했고 실패 기록을 보존했다. 운영 배포는 아니다.
+- ④ Graph 관련 90개 회귀와 동일 fixture의 전후 측정을 마쳤다. 최초/변경 후 조회는 감소했지만
+  작은 DB의 반복은 8–12 ms 느려졌고 큰 이력의 관측 RSS는 약 305 MiB 증가했다.
+- ⑤ SYS-002의 실제 mTLS 읽기/독립 확인/새 승인 재실행/제품 보고와 거부·실패·cleanup은 로컬 통과했다.
+  임의 호스트·물리 호스트·일반 System·SYS-001 전체 conformance는 해당하지 않는다.
+
+## 기존 검증과 이번 변경의 구분
 
 - 최종 `215d4fc`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 첫 시도에 통과했다.
   Quality·24 shard의 8,260 passed·기존 76 skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.
   24개 duration artifact의 동일 SHA·clean tree·8,336개 중복 없는 테스트와 기존 항목 보존을 대조했다.
   이후 변경은 [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에 따라 재검증한다.
-- 로컬 Linux arm64 Docker의 새 전용 Worker/proxy 이미지로 EFFECT-002를 완료했다.
-  이전 커밋의 Ubuntu conformance와 이번 로컬 실행은 별도 결과다. HTTPS 단위 경로만으로
-  Docker 격리·cleanup을 대신하지 않는다.
-- 새 CP v15/v16·복구·중단 경로의 SQLite 검증과 실제 PostgreSQL migration·경합·재시작·DB 복원
-  검증을 완료했다. 선정 Linux hybrid의 수동 전체 상태 복원도 통과했으며, 아래 OPS-002의 운영 경계는 유지한다.
-- Linux 검증 추가 이전의 로컬 전체 pytest는 8,238 passed·기존 76 skipped이며 실행 중 소스 지문을
-  유지했다. 이후 Linux 검증 추가분은 관련 125개 및 실제 Linux 84개 검사를 통과했고, 위 새 커밋의
-  원격 전체 pytest에는 새 경계 테스트 22개가 포함됐다. run·이미지·로그 근거는 `HANDOFF.md`에 있다.
+- 이번 제품·테스트의 전체 로컬 회귀는 8,342 passed·기존 76 skipped다. 새 원격 CI/Web/Network/AI는 승인받았으며 미실행이다.
+  실제 모델·운영 복구·System mTLS의 로컬 실증과 원격 conformance는 별도 결과다.
 
 ## 의존성 보안 수정의 검증 경계
 
@@ -43,6 +51,11 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   재현율 46.51%→98.45%지만 FP 31/FN 2가 남았다. 일부 조건의 FP는 늘었고, 두 미탐은 묶음별
   공백 분리였다. 16개 반복 진단 과제의 결과이지 일반 성능 추정이 아니다. 정상적인 ID·hash 생성 오탐과
   낮은 entropy·부분·semantic disclosure를 놓칠 수 있다. 의심 신호는 Finding 권위가 아니다.
+- [EFFECT-003](docs/benchmark/EFFECT-003-context-disclosure-comparison.md)의 새 16개 과제는
+  384번 시도 중 382개 응답만 받았다. 후보 정밀도 72.58%는 baseline 74.14%보다 낮으며
+  완전성·정밀도 비감소 기준을 실패했다. 후보는 실험 버전이고 기본 탐지기는 바꾸지 않았다.
+  실패한 두 호출의 세부 원인은 미확인이고 재시도/제외로 완전한 비교를 만들지 않는다.
+  전용 평가가 아닌 공유 호스트에서 관측한 시간은 일반 처리량이나 모델 간 성능 지표가 아니다.
 - WEB-002/UX-009는 고정 Web lab, NET-002는 합성 6-case, AI-002는 합성 M03 한 건이다.
   실제 Docker conformance는 해당 실행·Replay·Controls·cleanup 경계를 검증한다. 일반 Web/Network/AI
   탐지 성능·운영 영향이나 추가 실행 권위를 의미하지 않는다.
@@ -57,6 +70,11 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   독립 검증이나 취약점·일반 parser 안전성을 뜻하지 않는다. 실제 8개 Worker의 부재를 관측했지만
   custodied artifact와 봉인 증거는 의도적으로 보존한다. 기본 API/Console·동적 실행·일반 Application,
   Cloud/System provider 실행과 분산 Campaign 예산/전체 host 복구는 이 기능에 포함되지 않는다.
+- [SYS-002](docs/orchestration/SYS-002-authenticated-os-release-read.md)는 새 격리 Linux container의
+  고정 OS-release 한 파일을 mTLS로 읽는다. 독립 표준 parser·새 승인 재실행·제품 CLI·거부/실패·
+  외부 cleanup을 실제 검증했지만 물리 host, 임의 경로/명령, 일반 System 또는 SYS-001 전체 지원은 아니다.
+  agent의 중복 nonce 거부는 process-local이며 재시작을 넘는 ledger는 아니다. 기본 CP/Console의 자동
+  활성화 경로가 아니고 별도 배포 pin·인증·현재 Capability·승인·Permit을 요구한다.
 
 ## 사람 검토·보고와 제품 조회
 
@@ -72,9 +90,13 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
 - UX-002A는 sealed Discovery Surface/Wave, UX-002B는 설정된 단일 Campaign의 current Graph만
   조회한다. historical browsing·snapshot listing·multi-Campaign routing·raw content export는 없다.
   Graph `/pages`는 최대 100,000 node·200,000 edge를 Snapshot cursor로 분할한다.
-  GRAPH-PERF-001은 매 요청 전체 DB bytes/schema/head를 재확인하는 한 개의 bounded Snapshot cache다.
-  5,002 node / 10,000 edge의 반복 wall 11.54→0.186초를 측정했지만 최초 조회·변경된 이력·
-  128 MiB DB / 16 MiB Snapshot 초과는 전체 검증 비용을 유지한다. 최대 지원 크기·운영 부하는 미측정이다.
+  [GRAPH-PERF-002](docs/benchmark/GRAPH-PERF-002-first-and-history-page-cost.md)는 모든 이력 Projection을
+  정확히 비교하면서 중복 prefix replay를 제거했다. DB ≤256 MiB / Snapshot ≤16 MiB 한 entry만
+  재사용하며 매 요청 전체 bytes를 두 번 hash하고 schema/integrity/current head를 확인한다.
+  5,002 node / 10,000 edge 최초 13.48→8.13초, 변경 직후 15.65→9.20초이며 큰 이력 반복은
+  20.80→0.304초다. 작은 DB 반복은 소폭 느려졌고 history RSS는 평균 1,313→1,618 MiB로 늘었다.
+  이력 전체 검증·defensive copy·hash 비용은 남는다. 크기 초과/플랫폼 fallback은 전체 검증이며
+  더 긴 이력·동시 reader·cold disk·최대 크기·실제 운영 메모리/SLO는 미측정이다.
 - UX-003A ranking은 최대 500개로 제한되고 confidence는 위험도·검증 진실이 아니다.
   UX-003B Decision audit도 최대 500개이며 off-host anchor·historical browsing·compaction이 없다.
 - UX-004A KISA와 UX-004B WALK 비교는 각각의 증거 경계를 유지한다. semantic diff나 새 validation·
@@ -97,7 +119,13 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   원래 배포를 정지한 수동 복원 검증이며, 등록형 OPS-001 hybrid 지원·live atomic backup·물리 host
   장애·외부 rollback·자동 실행 재개·운영 배포를 증명하지 않는다. 소유 자원 부재는 별도 관측했고
   새 변경의 `215d4fc` commit·push·동일 커밋 CI/Web/Network/AI 검증까지 완료했다.
-  구성 선택·실행 승인 대기나 이번 goal의 필수 미실행 검증은 없다.
+  OPS-002의 구성 선택·실행 승인 대기는 해소됐다. 이번 새 변경의 승인은 별도다.
+- [OPS-003](docs/orchestration/OPS-003-managed-hybrid-recovery.md)의 운영자 명령은 선정 hybrid의
+  안전한 정지·암호화 cold checkpoint·독립 pin 검증·새 빈 대상 복원·현재 권한과 별도 승인 재개를
+  실제 격리 환경에서 검증했다. 기존 OPS-001 등록형 API는 여전히 POSIX local SQLite 전용이다.
+  source writer/DB를 정지한 복원이며 live backup·물리 장애·분산 failover·미확인 외부 rollback·
+  운영 배포를 증명하지 않는다. manifest-bound journal과 host-local sealed RunStore만 지원하고
+  외부 artifact/provider store는 거부한다. serialization 크기 제한은 peak RSS 보장이 아니다.
 - code/config inventory 검증은 참여하는 CP·Worker·embedded producer의 배포 구성을 결박한다.
   서명되지 않은 다른 process-local verifier·writer·policy/Grant provenance를 자동으로 보정하지 않는다.
   참여하지 않는 writer, 잘못 신뢰한 외부 권위, 원격 자원의 side effect는 이 검증 밖이다.
@@ -134,7 +162,7 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   일부 전체 실행은 단일 seed/repetition이며 별도 다중 좌표 실행 회귀가 남아 있다.
 - code-owned metadata 캐시는 반환 객체를 격리하고 외부 검증·권한 결정을 캐시하지 않는다.
   로컬 프로파일 개선을 CI 실행 시간 개선으로 단정하지 않는다. duration profile은 배치 힌트이며
-  실제 CI artifact로 갱신해야 한다. 대형 모듈 전체 분리와 Graph 최초/변경 조회 비용 최적화는 후속이다.
+  실제 CI artifact로 갱신해야 한다. 대형 모듈 전체 분리와 남은 Graph Snapshot 검증/RSS 비용은 후속이다.
 
 ## 승인·cleanup·외부 저장소
 

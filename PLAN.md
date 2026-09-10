@@ -4,100 +4,59 @@
 버전형 계약, 결정 근거는 채택된 ADR, 실행 결과와 Git 상태는 `HANDOFF.md`에서 확인한다.
 과거 Phase의 상세 구현 이력은 각 계약을 참조하며 이 파일에 누적하지 않는다.
 
-## 현재 순차 개선 목표
+## 현재 순차 후속 목표 (2026-09-10)
 
-새 goal은 아래 다섯 단계의 코드·테스트·계약과 실제 검증을 포함한다. 토큰 예산은 지정하지 않는다.
-시작 기준은 `main`의 `b359c3c782f9afa39f31a6d0aba9a9a8ace1dbd7`이다. HEAD·upstream·실제 원격
-main이 일치하고 staged/unstaged/untracked 변경 및 진행 중인 Git 작업이 없음을 확인했다.
-별도 브랜치·서브에이전트를 만들지 않는다. 이전 commit·push·원격 workflow 승인은 이 목표에 적용하지 않는다.
-2026-09-10 이번 변경의 여섯 commit·`origin/main` push·동일 커밋의 일반 CI와 Web/Network/AI Docker
-workflow 실행을 새로 승인받았다. `72bdbd9`의 원격 반영·일반 CI·세 Docker 검증을 완료했다.
-2026-09-10 사용자가 Linux 단일 호스트·PostgreSQL 17 Control Plane·local SQLite Graph/실행 journal
-구성을 선택하고 격리 검증을 승인했다. ③의 선택 대기는 해소됐고 실제 Linux 검증은 통과했다.
-추가 변경 14개 파일은 승인받은 한 commit `215d4fc`로 저장하고 `origin/main`에 반영했다.
-동일 커밋의 Quality·24 shard(8,260 passed·기존 76 skipped)와 Web/Network/AI Docker 검증이
-모두 첫 시도에 통과했다. 최종 결과를 반영한 운영 문서 4개는 로컬 변경으로 보존했다.
+이전 8개 및 2026-09-09의 5개 개선 goal은 완료 상태를 유지한다. 새 goal은 아래 후속 5개를
+순서대로 구현·검증하며 토큰 예산은 지정하지 않는다. 기준은 `main`의
+`215d4fc03e1385c64ccc1e4e7fe70efd0ea4add2`이며 시작 시 HEAD·upstream·실제 원격이 일치했다.
+기존 완료 기록 4개 문서의 diff와 bytes를 private `.pajin/followup-five-20260910/step1-docs/`에
+보존·검토했다. 여섯 commit·일반 `origin/main` push·동일 신규 커밋 CI/Web/Network/AI 실행은
+명시적으로 승인받았다. 앞의 다섯 커밋은 로컬에 저장했으며 상태 문서 커밋·push·원격 검증이 남았다.
+배포·운영 서비스 변경은 승인 범위 밖이다.
 
-1. [x] **SEC-001 의존성 보안 경고 해소** — 로컬 회귀·설치/packaging·원격 경고 해소·동일 커밋 conformance 완료.
-   원격 기존 6건은 모두 fixed, 열린 경고는 0건이다. 최종 `215d4fc`에서도 해당 상태와 CI/세 Docker 검증을 확인했다.
-   최신 Dependabot/공식 advisory, 설치·잠금 의존 경로와 제품 도달 가능성을 확인한다.
-   최소 보안 하한을 패키지 설치 metadata와 관련 lock에 반영하고 설치·wheel/sdist·Provider·HTTP 회귀,
-   취약 동작의 재현/거부와 정상 동작을 검증한다. 로컬 취약 버전 제거와 원격 경고 해소는 별도 상태다.
-2. [x] **EFFECT-002 탐지 품질 개선** — 고정한 새 384개 응답의 실제 비교·독립 process 검증 완료.
-   정밀도 51.72%→80.38%, 재현율 46.51%→98.45%; 남은 FP 31/FN 2와 조건별 편차를 기록했다.
-   EFFECT-001을 개발 자료로만 분석한다. 새 미사용 평가군·정답 규칙·탐지기·모델·비교 계획을
-   실행 전에 고정하고 비공개 정답을 detector에 전달하지 않는다. 실제 동일 응답에 기존/개선 탐지를
-   비교해 TP/TN/FP/FN, 정밀도·재현율, 표본·반복 편차·시간·토큰·비용을 봉인·보고한다.
-   점수 개선이 없으면 그대로 기록하며 원문·canary·모델은 비공개로 유지한다.
-3. [x] **OPS-002 배포 구성의 실제 운영 검증** — 선정 Linux 구성의 로컬 실증·동일 커밋 원격 검증 완료.
-   Linux PG/journal 84개 검사, mTLS API·Worker 중단·crash 재시작·PG/SQLite/RunStore 독립 복원을 통과했다.
-   관련 회귀 125개·Ruff·mypy와 최종 커밋의 CI/세 Docker conformance 정책을 충족했다.
-   선정 구성은 Linux 단일 호스트·PostgreSQL 17 Control Plane·local SQLite Graph/실행 journal·
-   host-local RunStore다. Linux에서 실제 CP/Worker와 검증된 TLS API 연결을 실행하고, 참여 writer를
-   정지·확인한 수동 cold checkpoint로 DB/Graph/journal/RunStore를 함께 보존한다. 독립 pin과 원래
-   verifier로 새 격리 대상에 복원하고 기존 이력·보수적 예산·재실행 거부를 확인해야 완료다.
-   물리 호스트 장애·외부 자원 rollback·자동 복원/재활성화는 이 검증으로 추정하지 않는다. 격리된 폐기 가능 환경에서
-   실제 DB migration·기존 데이터·경합/중복/충돌·재시작/보수적 예산·키 교체/verifier·독립 checkpoint
-   backup/restore·실행 중 중단/Worker 관측/알림/cleanup을 검증한다. PostgreSQL은 실제 서버를 요구한다.
-   운영 데이터·서비스는 변경하지 않으며 관측하지 못한 외부 복구는 unknown으로 보존한다.
-4. [x] **GRAPH-PERF-001 대규모 Graph 비용 개선** — 실제 동일 DB 비교·변조/경합/권한 회귀 완료.
-   5,002 node / 10,000 edge에서 반복 page 평균 11.54초→0.186초; 최초 조회·크기 제한은 별도 기록.
-   대표 크기별 지연·CPU·메모리·반복 검증을 먼저 측정하고 프로파일에 근거한 최소 변경을 한다.
-   Snapshot/cursor·current head·변조 거부·권한 경계, 동시 변경·stale cursor·무효화·키/설정 변경을
-   회귀 검증하고 동일 조건의 전후 측정과 한계를 남긴다. mutable authority의 무조건 캐시는 금지한다.
-5. [x] **DOMAIN-RUN-001 추가 도메인 실제 읽기 기능** — Application ELF64 헤더 읽기·재실행·보고 완료.
-   단위 63개와 실제 Docker 12개 검사가 통과했다. 두 architecture의 독립 LLVM 비교와 최대 256 KiB,
-   거부·실패·cleanup을 확인했다. 서버 기본 활성화나 일반 Application 지원을 뜻하지 않는다.
-   Cloud/System의 credential·인증 agent runtime이 준비되지 않은 현재 환경과 기존 offline Docker·LLVM
-   독립 파서 자산을 비교해 선정했다. [APP-002](docs/orchestration/APP-002-bounded-offline-elf-header-execution.md)의
-   최대 256 KiB·x86-64/AArch64 little-endian 헤더만 지원하며 일반 Application 지원과 구분한다.
-   Cloud/System을 먼저 검토해 자산·isolation·독립 정답·실행 환경에 맞는 하나를 선정하고 범위를 기록한다.
-   허가된 입력/Scope → Capability/Policy/Approval/Permit → 실제 provider/parser/Worker → evidence/seal
-   → 독립 재실행/검증 → 제품 조회/보고를 연결한다. 정상·거부·실패·cleanup을 실제 격리 fixture로 검증한다.
-   credential·운영 호스트·유료 자원은 구체적 범위 승인 전 사용하지 않으며 도메인 전체 지원과 구분한다.
+1. [ ] **DOCS-FINAL-001 이전 최종 결과 반영** — 기존 4개 문서 검토·문서 검사 4개·diff 검사 통과.
+   원본 CI/24 shard artifact/세 Docker 근거를 대조했고 정확한 기존 diff만 `625e53b`에 저장했다.
+   push는 승인받았으며 완료 기준은 원격 반영과 HEAD·upstream·실제 원격·작업 트리 확인이다.
+2. [x] **EFFECT-003 탐지 품질 2차 개선** — `novel-opaque-output-v1`을 기본 baseline으로 유지한다.
+   EFFECT-002를 개발 자료로만 사용하고 정상 ID/hash·묶음 분리·표현 범위 밖 사례를 구분한다.
+   후보·독립 정답·모델/반복·새 미사용 과제·제외/성공 규칙을 실행 전에 고정한다. 동일 실제 응답의
+   TP/TN/FP/FN·정밀도/재현율·반복 편차·시간/토큰/비용을 봉인·재검증했다. 384 시도/382 응답/2 실패,
+   baseline 129/201/45/7 → 후보 135/195/51/1이다. 비교 완전성과 정밀도 기준 실패로 개선 미확인·기존 기본값 유지다.
+3. [x] **OPS-003 운영 복구 명령 제품화** — 선정 Linux 단일 호스트·PG17 CP·SQLite Graph/journal·
+   host-local RunStore를 유지한다. 제한된 사전 점검·writer 정지·전체 checkpoint·독립 pin/검증키/
+   예산/Graph/Run 검증·별도 대상 복원·결과 확인·별도 승인/현재 권한 기반 재개를 연결한다.
+   버전/호환성/rollback 계약과 폐기 가능한 Linux의 정상·거부·중간 실패·재시도·불확실 호출·cleanup
+   실증이 완료 기준이다. 운영 배포·물리 장애·live backup·분산 failover·미확인 외부 rollback은 제외한다.
+   새 운영자 명령·계약·ADR-0279·관련 회귀와 실제 Linux 복구/별도 승인 재개를 로컬 검증했다.
+4. [x] **GRAPH-PERF-002 최초·변경·큰 데이터 비용** — 동일 대표 데이터·환경·반복으로 최초,
+   이력 변경 직후, 128 MiB 초과의 wall/CPU/메모리/I/O/반복 검증을 측정하고 실제 병목만 개선한다.
+   snapshot cursor·current head·변조/권한 경계와 동시 변경·stale cursor·무효화·키/설정·크기/fallback
+   회귀를 유지하며 전후 결과를 분리한다. 18개 fresh process의 동일 DB 비교에서 큰 Graph 최초
+   13.48→8.13초, 이력 변경 직후 15.65→9.20초, 128 MiB 초과 반복 20.80→0.304초를 확인했다.
+   작은 DB 반복 지연과 큰 이력 RSS 증가도 기록했다. 관련 90개 회귀 통과; 최대 크기·운영 SLO는 미측정이다.
+5. [x] **DOMAIN-RUN-002 Cloud 또는 System 실제 읽기 한 기능** — 실제 자산·인증·격리·독립 정답을
+   마련할 수 있는 도메인 하나를 선정한다. Scope→Capability/Policy/Approval/Permit→실제 provider 또는
+   인증 agent/Worker→봉인→독립 재검증→제품 조회/보고와 정상·거부·실패·cleanup을 실제 실행한다.
+   SYS-002의 실제 mTLS OS-release 읽기·별도 승인 재실행·독립 표준 parser·제품 CLI·거부/실패·cleanup을 검증했다.
+   APP-002 반복이나 일반 System 지원이 아니다. 운영 호스트·Cloud credential·유료 자원을 사용하지 않았다.
 
-각 단계는 독립 검증 가능한 기능 흐름/신뢰 경계 단위로 진행한다. 필수 결정·권한 때문에 미완료인
-부분을 명시하고, 그 결정에 의존하지 않는 다음 작업은 계속한다. 좁은 pytest부터 Ruff·Linux strict
-mypy·packaging·필요한 통합/실제 실행·전체 회귀로 확장한다. 변경 경로별 Web/Network/AI conformance는
-[정책](docs/orchestration/MEASURED-CONFORMANCE.md)을 따른다. 새로운 코드 변경에는 그 커밋의 검증을 적용한다.
-각 체크포인트에서 `HANDOFF.md`·`KNOWN_ISSUES.md`를 현재 상태로 갱신하고 비자명한 결정은 새 ADR로 남긴다.
+필수 승인·결정에 의존하는 부분만 대기하고 독립적인 다음 작업은 계속한다. 각 단계는 별도 검증 가능한
+기능 흐름/신뢰 경계이며 기존 public API/reader와 false Finding authority를 보존한다. 좁은 pytest부터
+전체 Ruff·Linux strict mypy(새 scripts 포함)·필요한 실제 모델/DB/Docker·packaging·최종 회귀로 확장한다.
+새 소스의 승인된 원격 CI/conformance는 같은 커밋의 실제 결과로만 충족한다.
 
-## 이전 완료 범위
+## 이전 목표의 완료 상태
 
-2026-09-07 검토에서 정한 순서를 유지한다. `[x]`는 아래 명시한 범위의 구현·검증 완료를 뜻한다.
-로컬 검증, 실제 모델 평가, 특정 커밋의 Docker conformance와 배포 완료는 서로 구분한다.
+이전 두 goal은 완료 상태를 유지하며 이번 목표에서 다시 구현하지 않는다.
 
-1. [x] 기본 Control Plane의 Web/Network/AI reader 구성, `--check-config`, Network/AI Console.
-   [UX-010](docs/orchestration/UX-010-measured-product-deployment-and-console.md)의 배포자 선택·digest pin·
-   재검증과 기존 Operator 인증을 유지한다. `a60395b`에 반영했다.
-2. [x] AI 실제 Docker 검증과 공통 코드 변경 시 Web/Network/AI 재검증 기준.
-   `3b9aaa0`의 일반 CI·세 Ubuntu Docker workflow·잔여 자원 검사가 통과했다.
-   이후 변경은 [재검증 정책](docs/orchestration/MEASURED-CONFORMANCE.md)에 따라 다시 확인한다.
-3. [x] [EFFECT-001](docs/benchmark/EFFECT-001-local-llm-effectiveness.md) 실제 LLM 효과 평가.
-   개발과 분리한 사례, 두 모델·두 정책·두 temperature·세 seed의 384개 응답을 측정하고
-   오탐·미탐·반복 편차·시간·토큰·비용 범위를 봉인했다. 탐지기를 평가 결과로 조정하지 않았다.
-4. [x] [UX-011](docs/orchestration/UX-011-human-review-and-remediation-report.md) 사람 검토·보고.
-   검증된 공개 근거, 영향·심각도·수정 권고, 별도 사람의 승인, 재검증 연결·재승인·보고서를
-   CP v15 이력·기본 API·Console로 연결했다. 새 Finding·SARIF·실행 권위를 만들지 않는다.
-5. [x] [OPS-001](docs/orchestration/OPS-001-single-host-recovery-and-urgent-stop.md) 단일 호스트 복구·긴급 중단.
-   CP v16 키 연속성, 보수적 예산, v3 첫 사용 등록·원래 CP 입력/source 검증, 활동 배제,
-   암호화 checkpoint·독립 pin 복원, CP 취소·Worker 관측·Console 알림을 장애 시나리오로 검증했다.
-   범위는 POSIX local SQLite다. 자동 배포 이전·재활성화와 분산 운영은 포함하지 않는다.
-6. [x] [Graph 페이지](docs/orchestration/UX-002B-current-canonical-graph-view.md)와
-   [Supervisor 입력 전송](docs/orchestration/SUP-004A-checkpoint-invocation-plan.md).
-   Snapshot cursor·Console, 4 MiB 입력의 분할·재구성과 버전형 Worker 전송을 구현했다.
-   기존 작은 입력 wire·한 호출·이중 예산을 유지하며 실제 브라우저·HTTPS 경로를 검증했다.
-7. [x] 프로파일 기반 테스트 비용 개선. code-owned taxonomy/Graph template만 캐시하고 반환값을
-   격리했다. 실측 시간 기반 CI 배치·기록과 8,171개 사례의 초기 profile을 검증했다.
-   같은 로컬 cProfile 사례는 592.67초에서 43.17초로 줄었다. 새 CI의 전체 job 실행 구간은 477초였다.
-   CI 시간 기록 24개가 동일 SHA·clean tree·exit 0과 8,171개 사례의 중복 없는 처리를 보존했다.
-8. [x] 운영 문서 정합성과 최종 통합 검증. 현재 문서·체크포인트를 정리하고 로컬 실패를 해소했다.
-   `e7c8243`의 Quality·24 shard(8,095 passed·76 opt-in skipped)와 Web/Network/AI Docker conformance가
-   모두 첫 시도에 통과했다. 실제 clean commit·이미지 ID·잔여 자원 검사까지 확인했다.
-
-3~7단계 제품·테스트·CI 변경은 논리 커밋으로 보존했으며 식별자는 `HANDOFF.md`에서 확인한다.
-새 체크포인트의 원격 검증은 사용자 승인을 받아 완료했다. 기존 커밋의 성공을 새 코드의 CI나 Docker
-검증으로 사용하지 않는다. commit·push·원격 실행의 실제 승인 범위는 `AGENTS.md`와 사용자 지시를 따른다.
+- 이전 8개 개선: 기본 measured reader/Console, AI Docker conformance 정책, EFFECT-001,
+  사람 검토·보고, OPS-001, Graph 페이지/Supervisor 입력, 테스트 비용, 통합 문서·검증을 완료했다.
+  각 버전형 계약과 기존 Git 이력이 상세 범위의 근거다.
+- 직전 5개 개선: SEC-001 의존성 수정, EFFECT-002의 새 384응답 비교, OPS-002의 선정 Linux hybrid
+  수동 cold 복원, GRAPH-PERF-001 반복 조회, APP-002 offline ELF 헤더 읽기·재실행·보고를 완료했다.
+- 최종 기준 `215d4fc`의 Quality·24 shard는 8,260 passed·기존 76 skipped이고 Web/Network/AI
+  Docker 검증도 통과했다. 상세 run/로그·완료 기록은 `HANDOFF.md`의 이전 근거 위치와 각 계약을 따른다.
+- 위 성공·승인은 해당 기존 커밋에만 적용한다. 이번 소스의 원격 검증이나 배포 완료로 재사용하지 않는다.
 
 ## 제품 목표와 현재 지원 범위
 
@@ -114,7 +73,7 @@ PAJIN은 9개 Security Domain을 하나의 Canonical Graph와 Capability authori
 | Network | 서비스 Surface·준비·증거 admission와 합성 6-case 측정 | raw socket·일반 스캔·서비스 취약점 확정 아님. [NET-002D](docs/orchestration/NET-002D-bounded-network-measurement-product-read-and-conformance.md) |
 | AI | 고정 M03 source·독립 Replay 2개·Controls 3개·product read, 별도 실제 모델 효과 평가 | 임의 모델·agent 안전성이나 일반 Finding으로 확장하지 않음. [AI-002D](docs/orchestration/AI-002D-bounded-ai-measurement-product-read-and-conformance.md) |
 | Cloud | CLOUD-001A~D의 준비·서명 증거 admission·정책 비교·fixture 요구 | 실제 provider·credential 사용 runtime, 정책 translator·live benchmark 필요. [CLOUD-001D](docs/benchmark/CLOUD-001D-fresh-credential-policy-replay-disposable-fixtures.md) |
-| System | SYS-001A~D의 host metadata 준비·서명 증거 검증·재검사 비교 | 실제 host-agent·read·isolation conformance 필요. [SYS-001D](docs/benchmark/SYS-001D-system-replay-disposable-host-fixtures.md) |
+| System | SYS-001A~D 계약과 SYS-002의 실제 mTLS OS-release 읽기·재실행·독립 확인·제품 보고 | SYS-002는 격리 container userspace 한 기능이다. 일반 host 실행과 [SYS-001D](docs/benchmark/SYS-001D-system-replay-disposable-host-fixtures.md) 전체 conformance는 별도다. |
 | Application | APP-001A~D 준비·admission과 APP-002의 승인된 offline ELF64 헤더 실행·재실행·보고 | APP-002는 POSIX custody·Linux Docker의 한 읽기 기능만 지원; 일반 parser/동적 실행은 닫힘. [APP-002](docs/orchestration/APP-002-bounded-offline-elf-header-execution.md) |
 | Mobile | MOBILE-001A~D의 package/static 분석 준비·증거 admission·비교 | 실제 parser·emulator/device·device-bound profile conformance 필요. [MOBILE-001D](docs/benchmark/MOBILE-001D-package-reanalysis-seeded-mobile-fixtures.md) |
 | Cryptography | CRYPTO-001A~D의 준비·서명된 재계산 증거 검증·중립 비교 | 실제 분석·semantic Oracle·수치 측정 필요. [CRYPTO-001D](docs/benchmark/CRYPTO-001D-independent-implementation-replay-seeded-vector-requirements.md) |
@@ -129,10 +88,11 @@ metric registry는 구현됐다. 각 registry의 false authority와 `required`/`
 이번 5개 개선의 검증 범위와 남은 제약을 기준으로 다음 독립 slice를 선정한다. 아래 항목은 이번 목표의 완료 범위를
 암묵적으로 확대하지 않으며, 새로운 실행·비용·운영 권한이 필요하면 별도로 정한다.
 
-- EFFECT-002의 남은 오탐 31개·미탐 2개와 표현 범위 밖 사례를 다루는 별도 탐지 개선·새 미사용 평가군.
-- 선정 Linux hybrid 구성의 물리 host/storage 장애, 복원 후 활성화와 실제 운영 환경의 복구 계약.
-- Graph의 최초 조회 비용과 128 MiB cache 범위 밖 크기를 새 프로파일로 측정한 뒤 같은 권한 경계에서 개선.
-- APP-002 한 기능 이후 Cloud/System 등 다음 도메인의 실제 provider·parser·sandbox와 독립 측정.
+- EFFECT-003의 정밀도 하락·2개 실행 실패를 분석하되 소비한 평가군은 개발 자료로만 사용한다.
+  다음 후보는 새 버전과 별도 미사용 평가군을 요구한다.
+- OPS-003의 제한된 복원·승인 재개 이후 물리 host/storage 장애와 실제 운영 환경의 복구 계약.
+- GRAPH-PERF-002 이후 긴 이력의 Snapshot 검증 비용, 증가한 RSS, 미측정 크기·실제 운영 부하를 별도 선정한다.
+- SYS-002 한 기능 이후 Cloud provider 또는 추가 System 기능의 인증·격리·독립 검증 범위를 별도 선정한다.
 - 단일 호스트 밖의 verifier·store fence·독립 checkpoint·credential custody와 운영 복구 계약.
 
 도메인 기본 우선순위는 Web·AI, Network·Cloud·System, Application·Mobile, Cryptography·Forensics다.
