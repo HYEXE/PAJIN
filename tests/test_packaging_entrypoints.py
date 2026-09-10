@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from packaging.requirements import Requirement
 from typer.testing import CliRunner
 
 from pajin import __version__ as package_version
@@ -225,6 +226,14 @@ def test_distribution_artifacts_work_in_a_clean_no_dependency_install(tmp_path: 
     assert packaged_python_modules == expected_python_modules
     assert not any("/__pycache__/" in member or member.endswith(".pyc") for member in wheel_members)
     assert metadata["Version"] == package_version
+    requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
+    security_floor = next(
+        requirement for requirement in requirements
+        if requirement.name == "httpx2" and requirement.marker is None
+    )
+    assert "2.7.0" not in security_floor.specifier
+    assert "2.11.0" not in security_floor.specifier
+    assert "2.12.0" in security_floor.specifier
     assert "pajin = pajin.cli:app" in entry_points
     assert "pajin-control-plane = pajin.entrypoints:control_plane_main" in entry_points
     assert (

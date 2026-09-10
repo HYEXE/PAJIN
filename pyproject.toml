@@ -13,6 +13,8 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
   "cryptography>=50,<51",
+  # Security floor for genai-prices; HTTPX2 pins the matching HTTPcore2 version.
+  "httpx2>=2.12,<3",
   "idna>=3.10,<4",
   "pydantic>=2.12,<3",
   "pydantic-ai-slim>=1.0,<2",
@@ -38,6 +40,8 @@ object-storage-minio = [
 ]
 dev = [
   "httpx>=0.28,<1",
+  # Exercise the patched optional SOCKS TLS boundary in local socket regressions.
+  "httpx2[socks]>=2.12,<3",
   "mypy>=1.15,<2",
   "pytest>=8,<10",
   "pytest-asyncio>=0.24,<2",
