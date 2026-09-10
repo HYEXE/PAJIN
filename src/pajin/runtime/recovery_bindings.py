@@ -42,6 +42,40 @@ def verify_original_run_binding(
     *,
     campaign: CampaignManifest | None = None,
 ) -> None:
+    run = connection.execute(
+        "SELECT campaign_name, input FROM cp_runs WHERE run_id = ?",
+        (binding.control_plane_run_id,),
+    ).fetchone()
+    kinds = connection.execute(
+        "SELECT DISTINCT kind FROM cp_jobs WHERE run_id = ?",
+        (binding.control_plane_run_id,),
+    ).fetchall()
+    replay_rows = (
+        connection.execute(
+            "SELECT canonical_context FROM cp_replay_execution_contexts WHERE replay_run_id = ?",
+            (binding.control_plane_run_id,),
+        ).fetchall()
+        if kinds and str(kinds[0][0]) == "internal-replay"
+        else []
+    )
+    verify_original_run_data(
+        binding,
+        original_run=None if run is None else (str(run[0]), str(run[1])),
+        job_kinds=tuple(str(row[0]) for row in kinds),
+        replay_contexts=tuple(bytes(row[0]) for row in replay_rows),
+        campaign=campaign,
+    )
+
+
+def verify_original_run_data(
+    binding: SupervisorRunBinding,
+    *,
+    original_run: tuple[str, str] | None,
+    job_kinds: tuple[str, ...],
+    replay_contexts: tuple[bytes, ...] = (),
+    campaign: CampaignManifest | None = None,
+) -> None:
+    """Apply the same original-input checks to rows read from either supported CP database."""
     from pajin.control_plane.executors import (
         CampaignJobInput,
         CapabilityGraphBatchCampaignJobInput,
@@ -56,27 +90,16 @@ def verify_original_run_binding(
     )
     from pajin.runtime.safe_files import parse_strict_json_bytes
 
-    run = connection.execute(
-        "SELECT campaign_name, input FROM cp_runs WHERE run_id = ?",
-        (binding.control_plane_run_id,),
-    ).fetchone()
-    kinds = connection.execute(
-        "SELECT DISTINCT kind FROM cp_jobs WHERE run_id = ?",
-        (binding.control_plane_run_id,),
-    ).fetchall()
-    if run is None or len(kinds) != 1:
+    run = original_run
+    if run is None or len(job_kinds) != 1:
         raise ValueError("recovery binding requires one original Control Plane Run kind")
-    kind = str(kinds[0][0])
+    kind = job_kinds[0]
     original: object
     expected_campaign: CampaignManifest | None = None
     if kind == "internal-replay":
-        rows = connection.execute(
-            "SELECT canonical_context FROM cp_replay_execution_contexts WHERE replay_run_id = ?",
-            (binding.control_plane_run_id,),
-        ).fetchall()
-        if len(rows) != 1:
+        if len(replay_contexts) != 1:
             raise ValueError("recovery binding requires the exact Replay execution context")
-        content = bytes(rows[0][0])
+        content = replay_contexts[0]
         context = ReplayExecutionContext.model_validate(
             parse_strict_json_bytes(
                 content,
@@ -120,7 +143,10 @@ def verify_original_run_binding(
 
 
 def _verify_campaign_binding(
-    binding: SupervisorRunBinding, campaign: CampaignManifest | None, *, campaign_name: str,
+    binding: SupervisorRunBinding,
+    campaign: CampaignManifest | None,
+    *,
+    campaign_name: str,
 ) -> None:
     if campaign is None:
         return

@@ -198,7 +198,10 @@ class LinuxLab:
         ]
         command(args, output=self.output / f"initialize-{role}.log")
 
-    def start(self, pg: OwnedPostgres, *, role: str, name: str, readonly: bool = False) -> str:
+    def start(
+        self, pg: OwnedPostgres, *, role: str, name: str, readonly: bool = False,
+        init_process: bool = False,
+    ) -> str:
         assert pg.container_id is not None
         identity = (
             command(
@@ -206,6 +209,7 @@ class LinuxLab:
                     "docker",
                     "run",
                     "-d",
+                    *(["--init"] if init_process else []),
                     "--pull",
                     "never",
                     "--name",
