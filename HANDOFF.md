@@ -2,10 +2,10 @@
 
 ## 현재 체크포인트 (2026-09-11)
 
-승인된 8개 추가 커밋·2회 일반 push와 동일 SHA의 여섯 원격 검증을 실행했다.
-`27127bd`의 일반 CI/Web/Network/AI/SYS는 첫 시도에 통과했고 OPS는 실제 probe 단계에서 실패했다.
-기존 goal은 완료 상태를 유지한다. 이번 goal의 남은 단계는 로컬 검증을 마친 OPS fixture 보정의
-승인된 추가 1 commit·1 push와 새 SHA 원격 재검증이다. 실패를 성공으로 처리하지 않는다.
+이번 신규 다섯 과제의 코드·테스트·문서와 정해진 범위의 실제 검증을 완료했다.
+최종 `51aeb02`의 일반 CI 및 Web/Network/AI/OPS/SYS는 모두 해당 커밋의 첫 시도에 통과했다.
+기존 `a599818`을 보존했고 승인된 9개 추가 커밋·세 번의 일반 push를 완료했다. 이전 goal은
+완료 상태를 유지한다. 검증 후 갱신한 결과 문서 8개는 로컬 변경이며 추가 commit/push하지 않았다.
 
 1. **문서 상태 수정:** SYS-002/OPS-003/GRAPH-PERF-002의 로컬·기존 원격 검증 범위를 바로잡았다.
    최초 검토한 6개 문서의 bytes·patch·manifest는 `.pajin/followup-next-five-20260911/step1-docs/`에
@@ -25,12 +25,11 @@
    완료했다. 큰 이력의 단일 reader 평균 peak RSS는 1,424.56→769.73 MiB, 독립 reader 두 개는
    1,928.19→1,278.38 MiB다. 단일 reader 변경 직후 최초 조회는 10.9536→11.1738초로 악화됐다.
    GC 후 보관량은 약 35.48 MiB로 같고 모든 측정은 실험 기준인 4 GiB 이내였다. 운영 SLO는 아니다.
-4. **OPS/SYS CI:** 별도 수동 workflow, 정확한 commit·이미지·clean tree 확인, CI 전용 실행/정리/독립
-   자원 검사 및 선택 규칙을 구현했다. 기존 Web/Network/AI 요구는 유지한다. CI 관련 회귀 55개를 통과했다.
-   최종 제품 소스의 Linux arm64 OPS 11개 확인, SYS 실제 1 passed/39.17초·Worker 4회와 독립 cleanup이
-   통과했다. OPS 최종 소요 시간은 114.33초다. 최종 source-before/after 1,552개 파일은 실행 중
-   일치했다. 별도 최종 Docker 관찰은 8개 소유 selector의 container/network/volume 부재를 확인했다.
-   원격 SYS는 실제 1개·Worker 4회와 cleanup이 통과했다. OPS 실패와 보정은 아래에 구분한다.
+4. **OPS/SYS CI:** 독립 수동 workflow, 잠금 의존성·정확한 clean commit·이미지/소스 지문,
+   실제 probe·항상 실행되는 cleanup·독립 잔여 자원 검사와 선택 규칙을 구현했다. 기존
+   Web/Network/AI 요구는 유지했다. 최종 원격 OPS 11개 검사는 170.80초, SYS 실제 1개·Worker 4회는
+   외부 실행기 44.68초에 통과했다. 두 경계 모두 container/network/volume 잔여 0개, fallback 없음이다.
+   최초 `27127bd`의 OPS 실패와 별도 재현에 근거한 fixture 보정은 아래에서 구분한다.
 5. **SYS-003 조회:** 배포자 pin·Operator subject·Campaign 제한을 유지하는 API/Console을 구현했다.
    실제 봉인 결과와 독립 reader 비교, 새 API 8개, 배포 호환성 포함 회귀 24개, JS 회귀를 통과했다.
    실제 HTTP Chromium으로 정상·빈 결과·미구성·역할/Campaign 거부·변조·잠금, 키보드 및
@@ -40,25 +39,39 @@
 
 ## Git 및 원격 검증
 
-- branch `main`, HEAD·upstream·실제 origin/main은 `27127bd1872c56c98a0ffc93cabaa834cfcc0259`다.
-  기존 `a599818`을 보존했고 승인된 추가 8개 커밋과 두 번의 일반 push를 완료했다.
+- branch `main`, HEAD·upstream·실제 origin/main은 `51aeb02721f4d914e17fc8f028f02a31a0fa21ee`다.
+  최신 커밋은 `fix(ci): Linux OPS fixture의 파일·소켓 권한 가정 제거`다. 기존 `a599818`은 조상으로
+  보존됐고 그 이후 9개 논리 커밋을 만들었다. 총 세 번의 승인된 일반 push를 완료했다.
+- push 직후 worktree는 깨끗했다. 원격 검증 후 결과를 기록한 현재 상태는 staged 0,
+  unstaged Markdown 8개, untracked 0이다. 코드·테스트·workflow·잠금 파일은 검증한 HEAD와 같다.
+  결과 문서는 `PLAN.md`, `HANDOFF.md`, `KNOWN_ISSUES.md`, ADR 0283, GRAPH-PERF-003,
+  MEASURED-CONFORMANCE, OPS-003, SYS-002다. 이 추가 결과 기록은 아직 commit/push하지 않았다.
 - [문서 CI 34563781824](https://github.com/HYEXE/PAJIN/actions/runs/34563781824)는 `bbcb72f`에서
   Quality·24 shard, 8,342 passed·76 skipped가 통과했다. 24개 artifact의 clean SHA와
   중복·누락 없는 8,418개 테스트를 확인했다.
-- 제품 `27127bd`의 모든 run은 첫 시도다. [CI 34565353026](https://github.com/HYEXE/PAJIN/actions/runs/34565353026)는
-  Quality·24 shard, 8,426 passed·76 skipped다. 24개 artifact가 같은 clean SHA·exit 0이며
-  8,502개 테스트가 로컬 collection과 같고 기존 8,418개를 모두 보존했다. Ruff·Linux mypy 475/10개도 통과했다.
-- [Web 34565392600](https://github.com/HYEXE/PAJIN/actions/runs/34565392600): 1 passed/133.81초.
-  [Network 34565395467](https://github.com/HYEXE/PAJIN/actions/runs/34565395467): 1 passed/202.33초.
-  [AI 34565397658](https://github.com/HYEXE/PAJIN/actions/runs/34565397658): 1 passed/87.50초.
-  모두 정확한 commit·이미지·실제 검사·무조건 잔여 자원 검사를 통과했다.
-- [SYS 34565402103](https://github.com/HYEXE/PAJIN/actions/runs/34565402103): 실제 1 passed·Worker 4회,
-  외부 실행기 47.01초. clean source·Linux amd64 이미지와 cleanup·독립 잔여 부재를 확인했다.
-- [OPS 34565400116](https://github.com/HYEXE/PAJIN/actions/runs/34565400116): 실제 probe 7.18초 뒤 exit 1.
-  cleanup과 독립 관찰은 zero residue로 성공했다. 공개 진단에 세부 단계가 없어 정확한 내부 실패 원인은
-  확정할 수 없다. 네 다른 conformance 성공은 이 OPS 실패를 대신하지 않는다.
-- 새 branch/worktree/subagent·이력 수정·배포는 없다. 보정은 미커밋이며 추가 1 commit·1 push와 새 SHA의
-  일반 CI 및 다섯 전용 검증을 승인받았다.
+- 최종 여섯 run은 모두 `51aeb02`의 첫 시도이며 모든 시도와 필수 job/step을 확인했다.
+
+| 검증 | 확인한 결과 |
+| --- | --- |
+| [CI 34566919945](https://github.com/HYEXE/PAJIN/actions/runs/34566919945) | Quality·24 shard, 8,441 passed·기존 76 skipped |
+| [Web 34566997794](https://github.com/HYEXE/PAJIN/actions/runs/34566997794) | 실제 1 passed / 113.87초 |
+| [Network 34566999714](https://github.com/HYEXE/PAJIN/actions/runs/34566999714) | 실제 1 passed / 334.96초 |
+| [AI 34567001711](https://github.com/HYEXE/PAJIN/actions/runs/34567001711) | 실제 1 passed / 87.34초 |
+| [OPS 34567003501](https://github.com/HYEXE/PAJIN/actions/runs/34567003501) | 실제 11개 검사 / 외부 실행기 170.80초 |
+| [SYS 34567005667](https://github.com/HYEXE/PAJIN/actions/runs/34567005667) | 실제 1 passed·Worker 4회 / 외부 실행기 44.68초 |
+
+24개 duration artifact는 동일 clean SHA·exit 0이며 8,517개 테스트가 local collection과 같다.
+이전 8,502개를 모두 보존하고 새 15개를 추가했으며 누락·중복과 skip 위치/사유/수의 변화가 없다.
+Ruff 전체·Linux strict mypy 기본 475개와 명시적 namespace scripts 10개도 통과했다. 다섯 전용
+검증의 이미지·clean commit·실제 검사·독립 잔여 검사를 확인했다. OPS/SYS의 1,469개 tracked-source
+지문은 `a9d177eb40212c790660cc4f6fad6bca9d7a9445681aefc373dff8d3e037e2ee`로 일치했고,
+공개 artifact는 각각 세 개의 제한된 요약 파일뿐이다.
+
+앞선 [OPS 34565400116](https://github.com/HYEXE/PAJIN/actions/runs/34565400116)은 `27127bd`에서
+실제 probe 7.18초 뒤 exit 1이었다. cleanup·독립 관찰은 zero residue였고 공개 진단으로 내부 실패
+단계를 확정할 수 없다. 그 SHA의 CI/Web/Network/AI/SYS 성공과 OPS 실패를 모두 보존했다.
+보정 후 새 성공을 최초 시도의 성공으로 바꾸거나 정확한 과거 원인 확인으로 확대하지 않는다.
+새 branch/worktree/subagent·이력 수정·PR·merge·배포는 없다.
 
 ## OPS fixture 보정 체크포인트
 
@@ -67,16 +80,17 @@
   파일·호스트 소켓 권한이나 target Worker 권한을 넓히지 않는다. 실패 공개 요약에는 allowlist phase/count만 추가한다.
 - 변경은 `scripts/operational_postgres.py`, `operational_linux.py`, `hybrid_operations_rehearsal.py`,
   `linux_boundary_conformance.py`와 관련 테스트 3개, 상태·계약 문서다. 제품 `src/`는 바뀌지 않았다.
-- 집중 66 passed, Ruff 전체, 관련 script Linux strict mypy 4개가 통과했다. 신규 15개로 전체 collection은
-  8,517개다. 보정 후 전체 pytest와 새 원격 CI는 아직 실행하지 않았다.
+- 집중 66 passed, Ruff 전체, 관련 script Linux strict mypy 4개가 통과했다. 승인 재개 시 집중 66개와
+  문서 4개를 다시 확인했다. 보정 후 로컬 전체 pytest는 반복하지 않았으며 새 원격 24 shard의
+  8,441 passed·기존 76 skipped로 변경 후 전체 검증을 완료했다.
 - 보정한 새 Linux arm64 이미지의 실제 OPS 11개 검사가 72.97초에 통과했다. source inventory는 유지됐고
   별도 read-only observer가 네 ownership selector의 container/network/volume 부재를 확인했다.
-- 보정 후 SYS probe 자체는 변경되지 않아 로컬 재실행하지 않았다. 새 commit에서는 정책대로 여섯 원격 검증을
-  다시 수행한다. 기존 소비된 모델 평가·완료된 Graph 비교·HTTP UI 검증은 제품 소스가 같으므로 반복하지 않는다.
+- 보정 후 SYS probe 자체는 변경되지 않아 로컬 재실행하지 않았고 새 SHA의 전용 원격 검증으로 확인했다.
+  기존 소비된 모델 평가·완료된 Graph 비교·HTTP UI 검증은 제품 소스가 같으므로 반복하지 않았다.
 
-## 최종 로컬 검증
+## 보정 전 로컬 전체 검증과 현재 결과의 구분
 
-- 기존 원격 collection 8,418개가 모두 유지됐고 신규 84개를 포함해 현재 8,502개를 수집했다.
+- 보정 전에는 기존 원격 collection 8,418개를 보존하고 신규 84개를 포함해 8,502개를 수집했다.
 - Graph 변경 전에 시작한 중간 전체 pytest는 최종 소스 검증을 대신하지 못해 6,218 passed/69 skipped에서
   SIGINT로 종료했다. 종료 시 CI 타입 검사 문자열 기대값 불일치 1개가 확인됐다. 기존 명령과 새 10개
   스크립트 명령을 모두 검사하도록 수정했고 관련 CI 회귀 55개가 통과했다. 실패/중단 로그는 보존한다.
@@ -109,7 +123,11 @@ Run 원문·private inventory를 commit하거나 공개 artifact로 내보내지
   재검증했고 독립 설치에 상속된 PYTHONPATH는 제거한 뒤 패키징 17개가 통과했다. 제품 수정은 없었다.
 - OPS 보정: `linux-permission-reproduction.json`, `ops003-portability/`, `ops003-portability-summary.json`,
   `portability-independent-cleanup.json`, `portability-source-{before,after}.json`.
-- 원격 제품 검증: `remote/27127bd1872c56c98a0ffc93cabaa834cfcc0259/`의 전체 run/jobs/logs,
+- 최종 원격: `remote/51aeb02721f4d914e17fc8f028f02a31a0fa21ee/`의 `runs.json`, 각 family의 모든
+  run/jobs/attempt/logs/artifacts, `verified-summary.json`, `source-inventory.json`, CI test IDs.
+  수집기는 `snapshot_portability_remote.py`, 대조기는 `verify_portability_remote.py`다. pytest의
+  shard별 skip 묶음은 위치/사유별 수로 합산해 비교했다. 재실행 없이 저장된 근거를 읽는다.
+- 첫 원격 제품 검증: `remote/27127bd1872c56c98a0ffc93cabaa834cfcc0259/`의 전체 run/jobs/logs,
   CI duration, SYS/OPS bounded summaries와 `verified-conformance-initial.json`.
 - 원격 문서 검증: `remote/bbcb72f/`의 run/jobs/artifact와 전체 로그, 24개 duration 및 검증 요약.
 - 패키지: `final-packaging-v2/`의 inventory와 `installed-smoke.json`; 수정 전 패키징 결과는 별도로 보존했다.
@@ -118,8 +136,9 @@ Run 원문·private inventory를 commit하거나 공개 artifact로 내보내지
 
 ## 다음 한 단계
 
-로컬 검증을 마친 fixture 보정과 실제 원격 결과의 문서 diff를 추가 논리 커밋 1개로 보존하고
-origin/main 일반 push 1회, 새 SHA의 일반 CI 및 Web/Network/AI/OPS/SYS를 실행한다. 이 범위는 승인받았다.
-이전 승인된 8개 커밋·두 push는 모두 사용했고 추가 수정은 아직 staging하지 않았다.
-같은 새 SHA에서 모든 시도의 필수 job·실제 검사·cleanup을 확인하고 결과 문서를 갱신한다.
-소비된 모델 평가나 완료된 Graph 비교는 다시 실행하지 않는다.
+다섯 과제의 구현과 필요한 원격 검증은 완료됐다. 다음 작업자는 Git 상태를 확인하고 결과 문서
+8개의 `git diff --check`와 `tests/test_documentation.py` 결과를 대조한 뒤 이 문서 diff부터 검토한다.
+추가 문서 commit/push는 완료된 1 commit·1 push 보정 승인에 포함하지 않는다. 원격에 기록하려면
+해당 Markdown-only diff와 커밋 메시지·일반 CI 영향을 준비해 별도로 승인받는다.
+소비된 모델 평가나 완료된 Graph 비교는 다시 실행하지 않는다. 남은 제품 한계는 `KNOWN_ISSUES.md`와
+각 계약에 기록돼 있으며 이번 완료 범위와 구분한다.

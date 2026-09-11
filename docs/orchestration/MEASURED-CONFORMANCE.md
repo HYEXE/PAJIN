@@ -125,13 +125,30 @@ not demonstrate physical power-loss recovery, production failover or arbitrary S
 GitHub's [runner environment variables](https://docs.github.com/en/actions/reference/workflows-and-actions/variables)
 define the dedicated-host admission input; it is checked alongside the actual platform and Git SHA.
 
-Commit `27127bd1872c56c98a0ffc93cabaa834cfcc0259` passed ordinary CI and the Web/Network/AI/SYS
-workflows. Its first OPS run failed during the actual probe, while unconditional cleanup and
-independent residue checks succeeded. A locally verified fixture portability correction remains
-uncommitted; a new source commit requires fresh ordinary CI and all five selected workflows.
-The eight commits and two pushes initially approved for this checkpoint have been completed.
-One additional correction commit, one ordinary push and all six new-commit validations are approved
-and pending execution.
+The first OPS run for `27127bd1872c56c98a0ffc93cabaa834cfcc0259` failed during the actual probe,
+while unconditional cleanup and independent residue checks succeeded. Its exact internal cause
+remains unconfirmed. Independently reproduced UID/socket-group assumptions were corrected in
+`51aeb02721f4d914e17fc8f028f02a31a0fa21ee`, which passed all six required workflows on their first
+attempts for that new commit:
+
+| Workflow | Verified result |
+| --- | --- |
+| [CI 34566919945](https://github.com/HYEXE/PAJIN/actions/runs/34566919945) | Quality and 24 shards; 8,441 passed, existing 76 skipped |
+| [Web 34566997794](https://github.com/HYEXE/PAJIN/actions/runs/34566997794) | 1 actual test passed in 113.87 s |
+| [Network 34566999714](https://github.com/HYEXE/PAJIN/actions/runs/34566999714) | 1 actual test passed in 334.96 s |
+| [AI 34567001711](https://github.com/HYEXE/PAJIN/actions/runs/34567001711) | 1 actual test passed in 87.34 s |
+| [OPS 34567003501](https://github.com/HYEXE/PAJIN/actions/runs/34567003501) | 11 actual checks passed; outer runner 170.80 s |
+| [SYS 34567005667](https://github.com/HYEXE/PAJIN/actions/runs/34567005667) | 1 actual test and 4 Worker executions; outer runner 44.68 s |
+
+All 24 duration artifacts identify the same clean SHA and exit zero. Their 8,517 unique test IDs
+match local collection, preserve the previous 8,502 IDs and add 15 tests. Existing skip locations,
+reasons and counts are unchanged. Ruff and strict Linux mypy passed for 475 source files plus the
+10 explicitly included namespace scripts. All five conformance jobs passed exact-commit/image and
+independent residue gates. OPS/SYS additionally matched tracked-source commitment
+`a9d177eb40212c790660cc4f6fad6bca9d7a9445681aefc373dff8d3e037e2ee`; cleanup and read-only audits
+found zero containers, networks and volumes without fallback removal. Their public artifacts contain
+only the three bounded summary files. These results do not certify later source changes or production
+recovery. Post-run documentation records these measured results separately from the verified commit.
 
 ## References
 

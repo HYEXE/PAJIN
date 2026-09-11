@@ -6,12 +6,12 @@
 
 ## 현재 순차 후속 목표 (2026-09-11)
 
-이번 요청의 다섯 과제를 새 goal로 관리하며 토큰 예산은 지정하지 않는다. 시작 기준은
+이번 요청의 다섯 과제는 아래 범위의 구현·로컬 실증·동일 커밋 원격 검증을 완료했다. 시작 기준은
 `main`의 `a599818c7df10e738dd044fe886eb1a6a423fc36`이다. upstream·실제 원격은
 `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a`였으며 문서 커밋 하나가 앞서 있었다.
-시작 worktree는 깨끗했다. 기존 커밋을 보존하고 승인된 8개 논리 커밋과
-두 번의 일반 push를 완료했다. 최종 `27127bd`의 CI/Web/Network/AI/SYS는 통과했고 OPS는
-실패했다. 별도 재현으로 확인한 fixture 이식성 보정은 로컬 검증을 마쳤으며 추가 원격 반영 대기다.
+시작 worktree는 깨끗했다. 기존 커밋을 보존하고 승인된 9개 논리 커밋과 세 번의 일반 push를
+완료했다. 최종 `51aeb02`의 CI/Web/Network/AI/OPS/SYS가 모두 첫 시도에 통과했다.
+`27127bd`에서 발생한 OPS 실패는 기록으로 남겼고, 별도로 재현한 fixture 이식성 가정을 보정했다.
 
 1. [x] **DOCS-FINAL-002 상태 불일치 수정** — SYS-002/GRAPH-PERF-002/OPS-003 계약의
    로컬 실증과 기존 원격 CI/Web/Network/AI 범위를 대조한다. 문서 검사·diff 검토 후
@@ -26,7 +26,7 @@
    live/retained allocation·I/O·동시 reader를 먼저 측정한다. 측정 병목만 최소 수정하고 동일 조건으로
    비교한다. 모든 과거 증거 검증·cursor/current head·권한·변조 거부·무효화/크기/fallback을 유지한다.
    실험 메모리 예산과 부하의 근거를 명시하며 운영 SLO·최대 규모 보장으로 확대하지 않는다.
-4. [ ] **OPS/SYS 전용 Linux CI** — 기존 두 실제 probe를 독립 workflow에 연결한다. 잠금 의존성·
+4. [x] **OPS/SYS 전용 Linux CI** — 기존 두 실제 probe를 독립 workflow에 연결한다. 잠금 의존성·
    정확한 clean commit·현지 빌드 이미지·PG17/TLS/mTLS·실제 실행·항상 실행되는 cleanup과 독립
    잔여 자원 검사를 요구한다. 공개 artifact는 비밀정보 없는 요약만 포함한다. 로컬 경계 검증 후
    commit/push/실행을 별도 승인받고 동일 신규 커밋의 CI/Web/Network/AI/OPS/SYS 결과를 확인한다.
@@ -51,7 +51,7 @@ SYS-002는 정해진 범위에서 완료했다. EFFECT-003의 384시도/382응�
 제품 기준 `3c66c2e`의 로컬/원격 pytest는 각각 8,342 passed·기존 76 skipped이고 원격
 Quality·24 shard·Web/Network/AI가 첫 시도에 통과했다. OPS-003/SYS-002 자체의 실제 Linux
 검증은 로컬 결과이며 당시 전용 원격 workflow는 없었다. 이번 새 workflow의
-전용 원격 실행은 승인받아 수행했고 SYS 성공·OPS 실패를 각각 기록했다. `a599818`은 기존 결과의 운영 문서
+전용 원격 실행은 승인받아 수행했고 보정한 `51aeb02`에서 OPS/SYS 모두 통과했다. `a599818`은 기존 결과의 운영 문서
 세 개만 담은 커밋으로 이번 승인된 첫 push에 포함됐다. 과거 CI를 새 소스의 결과로 사용하지 않는다.
 
 ## 제품 목표와 현재 지원 범위
@@ -124,11 +124,10 @@ positive/adversarial test, audit/evidence lineage와 benchmark 영향을 명시�
 검증했으며 고정 기준을 충족했다. 오탐 51개는 유지돼 기본 v1은 바꾸지 않는다. ③ Graph 최소 변경과
 집중 검사와 전후 각 24개 프로세스 비교를 마쳤다. 큰 이력 단일 reader RSS는 1,424.56→769.73 MiB이나
 변경 직후 최초 조회는 10.9536→11.1738초로 악화됐다. ④ 전용 workflow·선택·정리 회귀와 최종
-Linux arm64 실증을 통과했다. `27127bd`의 일반 CI/Web/Network/AI/SYS는 성공했지만 OPS는
-실패했다. UID·소켓 GID 가정을 보정한 fixture의 실제 로컬 11개 검사는 통과했다. ⑤ 실제 봉인 결과 조회,
-HTTP 브라우저, 기존 배포 JSON 호환성, 설치 wheel의 API/자산을 검증했다. 최종 전체 4 shard는
-8,426 passed·기존 76 skipped이며 8,502개 중복·누락이 없고 소스 939개가 검사 중 유지됐다.
-Ruff·Linux strict mypy 기본 475개/추가 scripts 10개도 통과했다. 원격 일반 CI도
-8,426 passed·76 skipped이며 모든 기존 테스트를 보존했다. 추가 fixture 보정의 1 commit·1 push와
-새 SHA의 CI/Web/Network/AI/OPS/SYS는 승인받았으며 실행이 남았다. 새 collection은 8,517개이며 집중 66개만
-로컬 재검증했다. 앞선 전체 회귀를 수정된 helper의 새 전체 실행으로 취급하지 않는다.
+Linux arm64 실증을 통과했다. `27127bd`의 OPS 실패 이후 fixture의 UID·소켓 GID 가정을 보정했고,
+`51aeb02`의 원격 OPS 11개·SYS 실제 1개/Worker 4회와 다섯 전용 workflow의 독립 cleanup을 확인했다.
+⑤ 실제 봉인 결과 조회, HTTP 브라우저, 기존 배포 JSON 호환성, 설치 wheel의 API/자산을 검증했다.
+보정 전 로컬 전체는 8,426 passed·기존 76 skipped다. 보정 후에는 집중 66개·문서 4개와 실제 로컬 OPS,
+새 원격 CI의 Quality·24 shard를 검증했다. 최종 원격 결과는 8,441 passed·기존 76 skipped이며
+8,517개에 누락·중복이 없고 이전 8,502개를 모두 보존했다. Ruff·Linux strict mypy 475/10개도 통과했다.
+승인된 Git/원격 작업은 완료했다. 실행 후 갱신한 결과 문서의 미커밋 상태는 `HANDOFF.md`에 기록한다.

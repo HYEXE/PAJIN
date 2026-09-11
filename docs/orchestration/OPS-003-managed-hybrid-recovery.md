@@ -174,7 +174,26 @@ only an allowlisted phase and completed-check count; private text remains exclud
 The corrected Linux arm64 rehearsal passed all eleven checks in 72.97 seconds using runtime image
 `sha256:8a6ffd655f3f73d8228eb57f5cddd0abeb4cc44fceb1aba0999e2962187779e3`.
 The source inventory stayed unchanged and a separate observer found all four fixture ownership
-selectors absent across containers, networks and volumes. This correction has not yet been committed,
-pushed or verified on the hosted Linux amd64 runner. One additional correction commit, one ordinary
-push and six new-commit validations are approved separately from the completed eight-commit/two-push
-sequence; execution remains pending.
+selectors absent across containers, networks and volumes. The correction was committed and pushed
+as `51aeb02721f4d914e17fc8f028f02a31a0fa21ee`; its hosted result follows.
+
+## Corrected dedicated remote validation
+
+[OPS run 34567003501](https://github.com/HYEXE/PAJIN/actions/runs/34567003501) passed on the first
+attempt for commit `51aeb02721f4d914e17fc8f028f02a31a0fa21ee`. The actual probe completed all eleven
+checks in 170.80 seconds on Ubuntu 24.04 with Python 3.12.14 and Linux amd64 images. This covers
+the real PG17/TLS checkpoint, separate target restore, failed restore and exact retry, current
+authorization checks, approved one-use continuation and preserved uncertain-call charge.
+
+Observed runtime, Worker and PostgreSQL image IDs were respectively:
+
+- `sha256:a26e795cbf67f38bfcd25a8d74bc6c0082fa7141d9f64542ff8390b010698c3d`
+- `sha256:18abd32f464210afca1f6bf00fe8a22ba7173295015ae3339a079481e54fe897`
+- `sha256:1bea307dfb3ee30541a7acf7de14b58bcd6948da98e5d31a04c627c4d35ec64b`
+
+The exact clean-checkout and source-before/after gates passed with tracked-source commitment
+`a9d177eb40212c790660cc4f6fad6bca9d7a9445681aefc373dff8d3e037e2ee`. Both unconditional cleanup
+and the independent read-only audit reported zero containers, networks and volumes before and after
+inspection, with no fallback removal. The public artifact contains only the three bounded summary
+files. This closes the corrected fixture's hosted validation; it does not establish the first
+attempt's exact internal cause, physical-host recovery or production failover.

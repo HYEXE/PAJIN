@@ -1,9 +1,10 @@
 # GRAPH-PERF-003: Memory and Concurrent Current-Graph Reads
 
 Status: Bounded implementation and identical-protocol local comparison complete. Commit
-`27127bd1872c56c98a0ffc93cabaa834cfcc0259` passed ordinary CI and Web/Network/AI/SYS conformance.
-OPS conformance failed during the actual probe; its fixture correction and a fresh exact-commit
-validation remain pending. These CI outcomes do not replace the local performance measurements.
+`51aeb02721f4d914e17fc8f028f02a31a0fa21ee` passed ordinary CI and Web/Network/AI/OPS/SYS conformance
+on each workflow's first attempt. The earlier OPS failure and independently reproduced fixture
+correction are retained in the [OPS contract](../orchestration/OPS-003-managed-hybrid-recovery.md).
+These CI outcomes do not replace or repeat the local performance measurements.
 
 ## Experiment
 

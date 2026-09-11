@@ -3,10 +3,10 @@
 현재 구현의 미해결 제약과 검증 공백을 기록한다. 제품 우선순위는 `PLAN.md`, 실제 실행 결과와
 Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계약이 권위다.
 
-## 현재 후속 작업의 검증 공백 (2026-09-11)
+## 현재 후속 작업의 완료 범위와 제한 (2026-09-11)
 
-- 이번 신규 다섯 과제의 로컬 구현·검증은 완료했다. ① 상태 문구 수정 `bbcb72f`와 기존 `a599818`을
-  승인받아 push했고 새 일반 CI 34563781824의 Quality·24 shard도 통과했다.
+- 이번 신규 다섯 과제의 구현·로컬 실증과 최종 `51aeb02`의 여섯 원격 검증을 완료했다.
+  ① 상태 문구 수정 `bbcb72f`와 기존 `a599818`을 승인받아 push했고 문서 CI 34563781824도 통과했다.
 - ② Worker 실패 진단과 정상/거부/실패/비노출 회귀는 통과했다. 새 EFFECT-004의 실제 고정 평가가
   완료됐고 384응답/0실패와 고정 품질 기준을 충족했다. 오탐 51개(생성 사례 47개)는 줄지 않았으며
   기본 v1은 유지한다. 개선은 6개 grouped 미탐 감소에 한정된다. 이전 두 실패 원인은 미확인이다.
@@ -17,9 +17,9 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   새 소스의 Linux arm64 OPS 11개/SYS 실제 1개·Worker 4회와 독립 자원 부재를 확인했다.
   `27127bd`의 SYS 전용 원격 검증은 통과했으나 OPS probe는 실패했다. cleanup은 zero residue였다.
   별도 Linux UID/GID 재현으로 확인한 fixture 가정을 보정했고 실제 로컬 11개 검사는 통과했다.
-  최초 원격 실패의 내부 단계는 보존된 공개 진단으로 확정하지 않는다. 보정의 추가 1 commit·1 push와
-  새 SHA의 여섯 원격 검증은 승인받았으며 실행이 남았다. `3c66c2e`의
-  Web/Network/AI 결과는 OPS 복구·System 읽기 전용 원격 근거가 아니다.
+  보정 `51aeb02`에서 OPS 11개·SYS 실제 1개/Worker 4회가 첫 시도에 통과했고 별도 cleanup과
+  독립 관찰은 잔여 container/network/volume 0개다. 최초 실패의 내부 단계는 여전히 확정하지 않는다.
+  격리 container 복구는 물리 host·정전·운영 failover 검증이 아니며 일반 System 지원으로 확대하지 않는다.
 - ⑤ SYS-003의 API/Console과 배포 pin·Operator subject·Campaign 제한 및 실제 HTTP 브라우저
   검증은 완료했다. 기존 실제 SYS-002 봉인 결과의 조회 검증이며 새 호스트 실행 검증이 아니다.
   기본 반응형·키보드는 Chromium 두 viewport로 관찰했고 다른 browser/device는 미검증이다.
@@ -33,7 +33,10 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   Linux strict mypy 기본 475개와 추가 scripts 10개도 통과했다. 76개 opt-in 검사의 일반 pytest
   미실행과 별도 실제 OPS/SYS·모델·브라우저 실증을 구분한다. 문서 push의 원격 CI는
   통과했다. 제품 `27127bd`의 원격 CI도 8,426 passed·76 skipped, Web/Network/AI/SYS 성공이다.
-  OPS 실패 보정 후 집중 66개와 새 collection 8,517개를 확인했으나 보정의 새 전체/원격 검증은 아직 없다.
+  OPS 보정 후 로컬 집중 66개·문서 4개와 새 collection 8,517개를 확인했다. 새 로컬 전체 pytest는 반복하지
+  않았고 원격 `51aeb02` CI 34566919945의 Quality·24 shard에서 8,441 passed·기존 76 skipped를 확인했다.
+  24개 artifact가 정확한 clean SHA·exit 0이며 이전 8,502개를 모두 보존하고 새 15개를 추가했다.
+  같은 SHA의 Web/Network/AI/OPS/SYS도 모두 첫 시도 성공이다. 보정 후 원격 결과를 보정 전 로컬 결과와 구분한다.
 
 - 최종 `215d4fc`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 첫 시도에 통과했다.
   Quality·24 shard의 8,260 passed·기존 76 skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.

@@ -83,8 +83,9 @@ The normalized report omits raw bytes, returns distribution fields and exact fil
 sets `findingAuthority=false` and `generalSystemSupport=false`. It does not certify a physical host.
 Commit `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a` passed ordinary remote CI and the existing
 Web/Network/AI Docker workflows. Those workflows did not execute the SYS-002 read. SYS-002 itself
-was verified locally. The dedicated `sys-002-conformance.yml` workflow now also has a verified
-remote result for commit `27127bd1872c56c98a0ffc93cabaa834cfcc0259`, recorded below.
+was verified locally. The dedicated `sys-002-conformance.yml` workflow now also has verified
+remote results for commits `27127bd1872c56c98a0ffc93cabaa834cfcc0259` and
+`51aeb02721f4d914e17fc8f028f02a31a0fa21ee`, recorded below.
 The additive [SYS-003 Operator read](SYS-003-operator-result-read.md) consumes existing sealed
 results without issuing another execution.
 
@@ -108,3 +109,14 @@ networks or volumes and required no fallback removal. The tracked-source commitm
 The bounded public artifacts contain execution and cleanup summaries only. The separate OPS
 failure does not negate this result, and this result cannot satisfy OPS recovery conformance or a
 later changed commit's gate.
+
+After the shared OPS fixture correction, [SYS run 34567005667](https://github.com/HYEXE/PAJIN/actions/runs/34567005667)
+passed on the first attempt for `51aeb02721f4d914e17fc8f028f02a31a0fa21ee`. It again recorded one
+actual passing test and four Worker executions; the outer runner took 44.68 seconds on Ubuntu 24.04
+with Python 3.12.14. The observed Linux amd64 System and proxy images were
+`sha256:c923d3e6d87cc444b33ebef64609dba9ebfbcfd09584a28b67b42fba61986637` and
+`sha256:9c2e5bf090235bf509c57c76e2d7b3bcc13b21122df5fa111d37f2a67812fdc4`.
+The clean-checkout and unchanged-source gates matched commitment
+`a9d177eb40212c790660cc4f6fad6bca9d7a9445681aefc373dff8d3e037e2ee`. Cleanup and the independent
+audit again found zero containers, networks and volumes without fallback removal; only the three
+bounded public summaries were uploaded. This is the dedicated System result for that exact commit.

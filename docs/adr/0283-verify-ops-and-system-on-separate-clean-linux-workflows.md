@@ -34,3 +34,12 @@ relaxing their permissions. Observe the daemon-side socket GID only for the alre
 controllers; target Workers never receive that socket or group authority. Reject malformed GIDs.
 Preserve an allowlisted failed phase and completed-check count without publishing command logs,
 credentials or fixture data. The corrected local rehearsal passed; hosted revalidation is pending.
+
+### Hosted revalidation result (2026-09-11)
+
+Commit `51aeb02721f4d914e17fc8f028f02a31a0fa21ee` closed that pending hosted revalidation:
+[OPS run 34567003501](https://github.com/HYEXE/PAJIN/actions/runs/34567003501) passed all eleven
+checks, and [SYS run 34567005667](https://github.com/HYEXE/PAJIN/actions/runs/34567005667) passed
+one actual test with four Worker executions. Both first attempts used the exact clean commit and
+Linux amd64 images; cleanup and independent residue checks passed without fallback removal.
+The earlier OPS failure remains recorded and its exact internal cause remains unconfirmed.
