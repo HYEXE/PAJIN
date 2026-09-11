@@ -2,34 +2,30 @@
 
 ## 현재 체크포인트 (2026-09-11)
 
-새 후속 5개 goal의 구현·로컬 검증·승인된 여섯 commit의 원격 반영·동일 커밋 검증을 완료했다.
-②는 품질 개선 미확인 결과로 보존하며 기존 기본 탐지기를 유지한다. 이전 8개 및 직전 5개
-개선 goal도 완료 상태를 유지한다. 최종 `3c66c2e`의 일반 CI와 Web/Network/AI Docker 검증은
-모두 첫 시도에 통과했다. 로컬과 원격 전체 pytest는 각각 8,342 passed·기존 76 skipped다.
-실행 중인 검증은 없다. 새 원격 결과를 반영한 운영 문서 3개는 별도로 승인받은 로컬 문서
-커밋으로 관리한다. 이 문서 커밋의 push는 승인·실행하지 않았다.
+새로운 다섯 후속 과제를 시작했다. 이번 goal은 진행 중이며 이전 모든 goal은 완료 상태다.
+① SYS-002/GRAPH-PERF-002/OPS-003의 상태 불일치를 보존된 로컬 실증 및 `3c66c2e`의
+원격 요약과 대조했다. SYS/OPS 자체의 로컬 성공, 원격 Web/Network/AI 성공, 아직 없는
+SYS/OPS 전용 원격 실증을 구분하는 문장만 수정했다. 새 로드맵은 `PLAN.md`에 기록했다.
+문서 commit/push 승인 전이며 새 원격 CI를 실행한 것으로 간주하지 않는다.
 
 ## Git 상태와 승인 경계
 
-- 시작 기준은 `main`의 `215d4fc03e1385c64ccc1e4e7fe70efd0ea4add2`다. HEAD·upstream·실제
-  origin/main이 일치했고 worktree 하나, staged/untracked/삭제 및 진행 중 Git 작업은 없었다.
-- 시작 시 `HANDOFF.md`, `KNOWN_ISSUES.md`, `PLAN.md`,
-  `docs/orchestration/OPS-002-isolated-postgres-operations.md`만 unstaged였다.
-  정확한 원본 bytes·diff·manifest·검토 결과는 `.pajin/followup-five-20260910/step1-docs/`에 보존했다.
-  해당 문서 검사 4개와 `git diff --check`를 통과했다. 원본 CI log·24 artifact·세 Docker 결과도 대조했다.
-- 검토안의 여섯 commit·일반 `origin/main` push·자동 CI·세 Docker workflow 실행은 사용자에게
-  명시적으로 승인받았다. ①의 보존 패치만 `625e53b`에 저장했고 원본 bytes와 staged bytes가 일치했다.
-- 이어 EFFECT-003 `0db2f1d`, OPS-003 `f8da370`, Graph `afe22b5`, SYS-002 `78e9a6d`,
-  상태/탐색 문서 `3c66c2e`를 저장하고 여섯 commit을 한 번의 일반 push로 반영했다.
-  각 커밋의 파일 목록과 staged bytes가 검토·실제 검증한 지문과 일치했다. private 자료는 제외했다.
-  여섯 커밋 반영 당시 HEAD·upstream·실제 origin/main은 `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a`로 일치했고
-  push 직후 worktree는 깨끗했다. 게시된 57개 파일은 승인 후 상태 문서 지문과 모두 일치했다.
-- 원격 검증 이후 `HANDOFF.md`, `KNOWN_ISSUES.md`, `PLAN.md`에 최종 결과를 추가했고,
-  사용자가 이 세 문서의 로컬 커밋을 별도로 승인했다. 메시지는
-  `docs(project): 후속 과제의 최종 원격 검증 결과 반영`이다. 이 문서 커밋의 parent와 마지막
-  확인 upstream은 `3c66c2e`이며 제품·테스트 코드는 동일하다. 커밋 식별자는 `git log -1`로 확인한다.
-  새 브랜치/worktree/서브에이전트를 만들지 않았고 원래 문서 변경을 보존했다.
-- 운영 호스트·운영 데이터·유료 외부 자원·배포는 이번 로컬 검증 범위 밖이다.
+- 시작 branch `main`, HEAD `a599818c7df10e738dd044fe886eb1a6a423fc36`, upstream 및
+  읽기 전용으로 재조회한 실제 origin/main `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a`다.
+- 문서 커밋 하나 ahead이며 worktree 하나다. 시작 staged/unstaged/untracked/삭제 파일 및
+  merge/rebase/cherry-pick/revert/bisect는 없다. 새 branch/worktree/subagent는 만들지 않았다.
+- `a599818`은 기존 승인된 로컬 문서 커밋이다. 이 커밋과 기존 제품 커밋을 수정하지 않는다.
+- 이번 변경의 commit·push·원격 workflow 실행은 별도 승인이 필요하다. 문서 변경 검토 후
+  이 커밋을 포함한 일반 push와 자동 CI 영향을 제시한다. 배포·운영 변경 승인은 포함하지 않는다.
+- 시작 시 보존된 네 원격 요약, OPS/SYS 최종 로컬 결과 디렉터리의 존재를 확인했다.
+  아래 결과는 이전 제품 소스의 근거다. 새 변경의 검증으로 재사용하지 않는다.
+
+## 다음 한 단계
+
+①의 문서 검사·diff·고정 검토안을 완료하고 문서 commit/push를 승인받는다. 승인 대기 중
+②의 Worker 오류 분류/전파 및 민감정보 비노출 회귀를 구현한다. 세부 완료 기준은 `PLAN.md`를 따른다.
+
+## 이전 검증 근거
 
 ## ② EFFECT-003: 개선 미확인
 
@@ -157,9 +153,5 @@ Web 34466552572 **136.13초**, Network 34466556691 **270.42초**, AI 34466560216
 원본·검토 결과는 `.pajin/five-improvements-remote/215d4fc03e1385c64ccc1e4e7fe70efd0ea4add2/`와
 이번 `step1-docs/`에서 확인한다. 완료한 코드를 반복하거나 새 소스 검증으로 재사용하지 않는다.
 
-요청한 다섯 과제의 필수 구현·검증·승인된 원격 작업은 완료했다. 다음 독립 과제는 `PLAN.md`의
-선정 기준을 따른다. 운영 배포·일반 System 지원·새 탐지 후보 평가는 이번 완료 범위를 넓히지 않는다.
-최종 원격 결과를 담은 세 문서의 추가 로컬 커밋은 별도 승인받았다. 문서 검사 4개와
-`git diff --check`를 통과했으며 Markdown-only 비교에는 추가 Docker workflow가 선택되지 않는다.
-이 문서 커밋을 push하면 자동 CI가 실행되므로 원격 반영은 별도 승인 범위다.
-기존 검토안은 `.pajin/followup-five-20260910/commit-review.md`다. private 근거는 Git에서 계속 제외한다.
+위 근거는 이전 완료 과제에만 적용한다. 이번 다섯 후속 과제의 현재 상태와 첫 작업은 이 문서
+상단 및 `PLAN.md`에서 확인한다. private 근거는 Git과 공개 artifact에서 계속 제외한다.

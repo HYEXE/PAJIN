@@ -38,8 +38,8 @@ malformed/oversize files and duplicate requests. Failed or ambiguous transport d
 or claim success. Target resources exist only in an explicit disposable fixture; cleanup must be
 observed independently of Worker output. In-memory agent nonce history does not survive restart.
 
-See [ADR-0281](../adr/0281-execute-one-authenticated-system-os-release-read.md). Actual commands,
-results and limitations are recorded after verification; no live success is claimed yet.
+See [ADR-0281](../adr/0281-execute-one-authenticated-system-os-release-read.md). The actual local
+commands, successful authenticated execution and limits are recorded below.
 
 ## Operator entry points and observed validation
 
@@ -81,4 +81,6 @@ TLS verification was never disabled. All failed attempts retained their results 
 
 The normalized report omits raw bytes, returns distribution fields and exact file commitment, and
 sets `findingAuthority=false` and `generalSystemSupport=false`. It does not certify a physical host.
-These local results do not substitute for separately approved same-commit remote conformance.
+Commit `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a` passed ordinary remote CI and the existing
+Web/Network/AI Docker workflows. Those workflows did not execute the SYS-002 read. SYS-002 itself
+was verified locally; a dedicated remote SYS-002 workflow has not yet been implemented or run.

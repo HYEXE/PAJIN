@@ -132,7 +132,10 @@ simulated model/mock Tool fixture, not a model-quality or target-effectiveness e
 A fresh observer confirmed all exact owned container/volume selectors and recovery controllers absent.
 Earlier fixture/readiness failures and a duration-field serialization bug were retained, diagnosed and
 corrected; the final success is not a first-attempt claim. Unit coverage accepts both public alias and
-internal budget serialization. Results are local; remote same-commit conformance remains pending.
+internal budget serialization. These recovery results are local. Commit
+`3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a` passed ordinary remote CI and the existing
+Web/Network/AI Docker workflows; those workflows did not execute the OPS-003 recovery procedure.
+A dedicated remote OPS-003 workflow has not yet been implemented or run.
 
 A final integration image containing the completed Graph and System modules repeated all eleven
 checks in 71.07 seconds, with two valid Run seals and the unknown call charge still one. A separate

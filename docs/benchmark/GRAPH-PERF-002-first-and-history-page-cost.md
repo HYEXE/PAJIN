@@ -1,6 +1,7 @@
 # GRAPH-PERF-002: First and Changed-history Graph Page Cost
 
-Status: Locally verified; same-byte before/after measurements complete. Remote conformance pending approval.
+Status: Locally verified; same-byte before/after measurements complete. Ordinary remote CI and
+Web/Network/AI conformance passed for `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a`.
 
 ## Scope and experiment
 
@@ -145,8 +146,10 @@ The profiled history warm hash work took 0.165 seconds; defensive model copies a
 The local result justifies removing duplicate prefix replay and extending bounded cache eligibility,
 with the recorded memory and small-warm-query tradeoffs. No schema, wire, cursor, public replay API
 or artifact migration is required. Correctness checks cover 90 relevant regressions; the final
-local suite passed 8,342 tests with the existing 76 opt-in skips. New remote CI/conformance remains
-separate and requires approval.
+local suite passed 8,342 tests with the existing 76 opt-in skips. The same product commit
+`3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a` passed remote Quality and all 24 shards
+(8,342 passed, 76 existing skips) and the Web/Network/AI Docker workflows. These remote checks
+are separate from the local performance measurements and do not measure remote Graph costs.
 
 Longer histories, 100,000-node limits, cold disks, network storage, multiple active readers,
 production host memory budgets and production SLOs remain unmeasured. Warm reuse still copies the

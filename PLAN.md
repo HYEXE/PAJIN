@@ -4,63 +4,51 @@
 버전형 계약, 결정 근거는 채택된 ADR, 실행 결과와 Git 상태는 `HANDOFF.md`에서 확인한다.
 과거 Phase의 상세 구현 이력은 각 계약을 참조하며 이 파일에 누적하지 않는다.
 
-## 현재 순차 후속 목표 (2026-09-10)
+## 현재 순차 후속 목표 (2026-09-11)
 
-이전 8개 및 2026-09-09의 5개 개선 goal에 이어 아래 후속 5개의 구현·검증과 승인된 원격 작업을
-완료했다. 토큰 예산은 지정하지 않았다. 시작 기준은 `main`의
-`215d4fc03e1385c64ccc1e4e7fe70efd0ea4add2`이며 시작 시 HEAD·upstream·실제 원격이 일치했다.
-기존 완료 기록 4개 문서의 diff와 bytes를 private `.pajin/followup-five-20260910/step1-docs/`에
-보존·검토했다. 여섯 commit·일반 `origin/main` push·동일 신규 커밋 CI/Web/Network/AI 실행은
-명시적으로 승인받아 실행했다. 최종 `3c66c2e`의 Quality·24 shard(8,342 passed·기존 76 skipped)와
-Web/Network/AI Docker 검증은 모두 첫 시도에 통과했다. HEAD·upstream·실제 원격이 일치했고
-push 직후 worktree는 깨끗했다. 최종 결과 운영 문서 3개는 별도 승인받은 로컬 문서 커밋으로
-관리하며 해당 문서 커밋의 push는 승인·실행하지 않았다.
-배포·운영 서비스 변경은 승인 범위 밖이다.
+이번 요청의 다섯 과제를 새 goal로 관리하며 토큰 예산은 지정하지 않는다. 시작 기준은
+`main`의 `a599818c7df10e738dd044fe886eb1a6a423fc36`이다. upstream·실제 원격은
+`3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a`이고 로컬 문서 커밋 하나가 앞서 있다.
+시작 worktree 하나는 깨끗하며 진행 중 Git 작업은 없다. 기존 커밋을 보존한다.
 
-1. [x] **DOCS-FINAL-001 이전 최종 결과 반영** — 기존 4개 문서 검토·문서 검사 4개·diff 검사 통과.
-   원본 CI/24 shard artifact/세 Docker 근거를 대조했고 정확한 기존 diff만 `625e53b`에 저장했다.
-   `625e53b`를 포함한 여섯 commit의 원격 반영과 HEAD·upstream·실제 원격·작업 트리 확인을 완료했다.
-2. [x] **EFFECT-003 탐지 품질 2차 개선** — `novel-opaque-output-v1`을 기본 baseline으로 유지한다.
-   EFFECT-002를 개발 자료로만 사용하고 정상 ID/hash·묶음 분리·표현 범위 밖 사례를 구분한다.
-   후보·독립 정답·모델/반복·새 미사용 과제·제외/성공 규칙을 실행 전에 고정한다. 동일 실제 응답의
-   TP/TN/FP/FN·정밀도/재현율·반복 편차·시간/토큰/비용을 봉인·재검증했다. 384 시도/382 응답/2 실패,
-   baseline 129/201/45/7 → 후보 135/195/51/1이다. 비교 완전성과 정밀도 기준 실패로 개선 미확인·기존 기본값 유지다.
-3. [x] **OPS-003 운영 복구 명령 제품화** — 선정 Linux 단일 호스트·PG17 CP·SQLite Graph/journal·
-   host-local RunStore를 유지한다. 제한된 사전 점검·writer 정지·전체 checkpoint·독립 pin/검증키/
-   예산/Graph/Run 검증·별도 대상 복원·결과 확인·별도 승인/현재 권한 기반 재개를 연결한다.
-   버전/호환성/rollback 계약과 폐기 가능한 Linux의 정상·거부·중간 실패·재시도·불확실 호출·cleanup
-   실증이 완료 기준이다. 운영 배포·물리 장애·live backup·분산 failover·미확인 외부 rollback은 제외한다.
-   새 운영자 명령·계약·ADR-0279·관련 회귀와 실제 Linux 복구/별도 승인 재개를 로컬 검증했다.
-4. [x] **GRAPH-PERF-002 최초·변경·큰 데이터 비용** — 동일 대표 데이터·환경·반복으로 최초,
-   이력 변경 직후, 128 MiB 초과의 wall/CPU/메모리/I/O/반복 검증을 측정하고 실제 병목만 개선한다.
-   snapshot cursor·current head·변조/권한 경계와 동시 변경·stale cursor·무효화·키/설정·크기/fallback
-   회귀를 유지하며 전후 결과를 분리한다. 18개 fresh process의 동일 DB 비교에서 큰 Graph 최초
-   13.48→8.13초, 이력 변경 직후 15.65→9.20초, 128 MiB 초과 반복 20.80→0.304초를 확인했다.
-   작은 DB 반복 지연과 큰 이력 RSS 증가도 기록했다. 관련 90개 회귀 통과; 최대 크기·운영 SLO는 미측정이다.
-5. [x] **DOMAIN-RUN-002 Cloud 또는 System 실제 읽기 한 기능** — 실제 자산·인증·격리·독립 정답을
-   마련할 수 있는 도메인 하나를 선정한다. Scope→Capability/Policy/Approval/Permit→실제 provider 또는
-   인증 agent/Worker→봉인→독립 재검증→제품 조회/보고와 정상·거부·실패·cleanup을 실제 실행한다.
-   SYS-002의 실제 mTLS OS-release 읽기·별도 승인 재실행·독립 표준 parser·제품 CLI·거부/실패·cleanup을 검증했다.
-   APP-002 반복이나 일반 System 지원이 아니다. 운영 호스트·Cloud credential·유료 자원을 사용하지 않았다.
+1. [ ] **DOCS-FINAL-002 상태 불일치 수정** — SYS-002/GRAPH-PERF-002/OPS-003 계약의
+   로컬 실증과 기존 원격 CI/Web/Network/AI 범위를 대조한다. 문서 검사·diff 검토 후
+   추가 문서 commit과 기존 `a599818`을 포함한 push를 별도 승인받고 새 일반 CI를 확인한다.
+2. [ ] **EFFECT-004 실패 진단·탐지 정밀도** — 관측한 단계/범주만 공개 가능한 고정 값으로
+   분류하고 unknown·보수적 차감·재시도/환불 금지·기존 wire/reader를 유지한다. 정상·거부·실패·
+   비노출 회귀 후 새 후보/독립 정답/미사용 과제/모델/seed/반복/성공 규칙/지문을 고정한다.
+   동일 실제 응답으로 baseline과 비교하고 표본·실패·혼동행렬·정밀도/재현율·편차·시간/토큰/비용을
+   기록한다. 개선 미확인은 그대로 보고하며 기존 기본값과 false Finding authority를 유지한다.
+3. [ ] **GRAPH-PERF-003 메모리·동시 조회** — 같은 환경/데이터/반복의 지연·CPU·peak RSS·
+   live/retained allocation·I/O·동시 reader를 먼저 측정한다. 측정 병목만 최소 수정하고 동일 조건으로
+   비교한다. 모든 과거 증거 검증·cursor/current head·권한·변조 거부·무효화/크기/fallback을 유지한다.
+   실험 메모리 예산과 부하의 근거를 명시하며 운영 SLO·최대 규모 보장으로 확대하지 않는다.
+4. [ ] **OPS/SYS 전용 Linux CI** — 기존 두 실제 probe를 독립 workflow에 연결한다. 잠금 의존성·
+   정확한 clean commit·현지 빌드 이미지·PG17/TLS/mTLS·실제 실행·항상 실행되는 cleanup과 독립
+   잔여 자원 검사를 요구한다. 공개 artifact는 비밀정보 없는 요약만 포함한다. 로컬 경계 검증 후
+   commit/push/실행을 별도 승인받고 동일 신규 커밋의 CI/Web/Network/AI/OPS/SYS 결과를 확인한다.
+5. [ ] **SYS-003 Operator API·Console 조회** — 배포자가 고정한 증거/trust/Run만 기존 독립 reader로
+   조회한다. 인증/역할/Campaign 경계·false Finding/general-System authority를 유지한다. 정상·
+   미구성·빈 결과·권한 거부·Campaign 혼합·변조·조회 실패와 기존 CLI/API를 검증한다.
+   실제 봉인 결과/독립 reader 일치, HTTP 브라우저·키보드·반응형을 확인한다. 조회는 실행을 만들지 않는다.
 
-필수 승인·결정에 의존하는 부분만 대기하고 독립적인 다음 작업은 계속한다. 각 단계는 별도 검증 가능한
-기능 흐름/신뢰 경계이며 기존 public API/reader와 false Finding authority를 보존한다. 좁은 pytest부터
-전체 Ruff·Linux strict mypy(새 scripts 포함)·필요한 실제 모델/DB/Docker·packaging·최종 회귀로 확장한다.
-새 소스의 승인된 원격 CI/conformance는 같은 커밋의 실제 결과로 충족했다. run·artifact·이미지·cleanup
-근거는 `HANDOFF.md`에 연결한다. 최종 결과 문서만의 추가 변경은 별도 문서 검사를 적용한다.
+①→②→③→④→⑤ 순서로 진행하며 승인이나 필수 외부 조건이 필요한 부분만 대기한다.
+독립적인 로컬 구현은 계속한다. main에서 작업하고 새 branch/worktree/subagent는 만들지 않는다.
+각 변경의 집중 pytest, 전체 Ruff, Linux strict mypy와 새 namespace scripts 별도 타입 검사,
+필요한 모델/DB/Docker/API/CLI/packaging/브라우저, 최종 회귀 및 diff를 검증한다.
+새 commit·push·workflow 실행·배포는 기존 승인을 재사용하지 않고 구체적 검토안으로 승인받는다.
 
 ## 이전 목표의 완료 상태
 
-이전 두 goal은 완료 상태를 유지하며 이번 목표에서 다시 구현하지 않는다.
+이전 모든 goal은 완료 상태를 유지한다. 가장 최근 문서 반영·EFFECT-003·OPS-003·GRAPH-PERF-002·
+SYS-002는 정해진 범위에서 완료했다. EFFECT-003의 384시도/382응답/2실패 및 정밀도 하락은
+기록된 실험 결과이며 이전 goal을 미완료로 돌리는 사유가 아니다. 기본 탐지기는
+`novel-opaque-output-v1`이다. 소비된 EFFECT-002/003 평가군은 개발 자료로만 사용한다.
 
-- 이전 8개 개선: 기본 measured reader/Console, AI Docker conformance 정책, EFFECT-001,
-  사람 검토·보고, OPS-001, Graph 페이지/Supervisor 입력, 테스트 비용, 통합 문서·검증을 완료했다.
-  각 버전형 계약과 기존 Git 이력이 상세 범위의 근거다.
-- 직전 5개 개선: SEC-001 의존성 수정, EFFECT-002의 새 384응답 비교, OPS-002의 선정 Linux hybrid
-  수동 cold 복원, GRAPH-PERF-001 반복 조회, APP-002 offline ELF 헤더 읽기·재실행·보고를 완료했다.
-- 최종 기준 `215d4fc`의 Quality·24 shard는 8,260 passed·기존 76 skipped이고 Web/Network/AI
-  Docker 검증도 통과했다. 상세 run/로그·완료 기록은 `HANDOFF.md`의 이전 근거 위치와 각 계약을 따른다.
-- 위 성공·승인은 해당 기존 커밋에만 적용한다. 이번 소스의 원격 검증이나 배포 완료로 재사용하지 않는다.
+제품 기준 `3c66c2e`의 로컬/원격 pytest는 각각 8,342 passed·기존 76 skipped이고 원격
+Quality·24 shard·Web/Network/AI가 첫 시도에 통과했다. OPS-003/SYS-002 자체의 실제 Linux
+검증은 로컬 결과이며 전용 원격 workflow는 아직 없다. `a599818`은 최종 원격 결과의 운영 문서
+세 개만 담은 승인된 로컬 커밋이다. 이 기록은 새 소스의 CI 또는 새 실행 승인이 아니다.
 
 ## 제품 목표와 현재 지원 범위
 
