@@ -186,6 +186,34 @@ def verify_probe(boundary: str, private: Path) -> dict[str, object]:
     return dict(actual_tests_passed=1, worker_executions=4, cleanup_observed=True)
 
 
+def failed_probe_observation(boundary: str, private: Path) -> dict[str, object]:
+    """Expose only an allowlisted OPS phase/count, never private command output."""
+    unknown: dict[str, object] = dict(observed_phase="unknown", completed_checks=None)
+    if boundary != "ops":
+        return unknown
+    from scripts.hybrid_operations_rehearsal import PHASES
+
+    try:
+        path = private / "report.json"
+        if path.stat().st_size > 65_536:
+            return unknown
+        report = json.loads(path.read_bytes())
+        if not isinstance(report, dict):
+            return unknown
+        checks, phase = report.get("checks"), report.get("phase")
+        if (
+            report.get("version") != "ops003-linux-rehearsal-v1"
+            or not isinstance(phase, str) or phase not in PHASES
+            or not isinstance(checks, list) or len(checks) > len(OPS_CHECKS)
+            or not all(isinstance(check, str) and check in OPS_CHECKS for check in checks)
+            or len(set(checks)) != len(checks)
+        ):
+            return unknown
+        return dict(observed_phase=phase, completed_checks=len(checks))
+    except (OSError, ValueError):
+        return unknown
+
+
 def run(boundary: str, state: Path, primary: str, secondary: str) -> int:
     marker = admitted(boundary, state)
     if any(
@@ -255,6 +283,7 @@ def run(boundary: str, state: Path, primary: str, secondary: str) -> int:
         summary["complete"] = True
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         summary["diagnostic"] = "actual-probe-or-evidence-failed; detail=omitted"
+        summary.update(failed_probe_observation(boundary, private))
     finally:
         summary["elapsed_seconds"] = perf_counter() - started
         write(state / "public-summary.json", summary)

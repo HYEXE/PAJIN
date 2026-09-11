@@ -15,7 +15,10 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   두 개까지 같은 process의 reader를 측정했으며 process 분산·cold disk·최대 규모·운영 SLO는 미측정이다.
 - ④ 두 전용 workflow와 실행·정리·독립 잔여 관찰 및 선택 회귀를 구현·검증했다.
   새 소스의 Linux arm64 OPS 11개/SYS 실제 1개·Worker 4회와 독립 자원 부재를 확인했다.
-  승인된 동일 커밋의 Linux amd64 원격 실행은 남았다. `3c66c2e`의
+  `27127bd`의 SYS 전용 원격 검증은 통과했으나 OPS probe는 실패했다. cleanup은 zero residue였다.
+  별도 Linux UID/GID 재현으로 확인한 fixture 가정을 보정했고 실제 로컬 11개 검사는 통과했다.
+  최초 원격 실패의 내부 단계는 보존된 공개 진단으로 확정하지 않는다. 보정의 추가 1 commit·1 push와
+  새 SHA의 여섯 원격 검증은 승인받았으며 실행이 남았다. `3c66c2e`의
   Web/Network/AI 결과는 OPS 복구·System 읽기 전용 원격 근거가 아니다.
 - ⑤ SYS-003의 API/Console과 배포 pin·Operator subject·Campaign 제한 및 실제 HTTP 브라우저
   검증은 완료했다. 기존 실제 SYS-002 봉인 결과의 조회 검증이며 새 호스트 실행 검증이 아니다.
@@ -29,7 +32,8 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   포함한 8,502개가 중복·누락 없이 처리됐으며 비문서 소스 939개가 실행 중 유지됐다. Ruff 전체,
   Linux strict mypy 기본 475개와 추가 scripts 10개도 통과했다. 76개 opt-in 검사의 일반 pytest
   미실행과 별도 실제 OPS/SYS·모델·브라우저 실증을 구분한다. 문서 push의 원격 CI는
-  통과했고 최종 제품 SHA의 원격 CI 및 다섯 전용 검증은 승인 후 실행 준비 상태다.
+  통과했다. 제품 `27127bd`의 원격 CI도 8,426 passed·76 skipped, Web/Network/AI/SYS 성공이다.
+  OPS 실패 보정 후 집중 66개와 새 collection 8,517개를 확인했으나 보정의 새 전체/원격 검증은 아직 없다.
 
 - 최종 `215d4fc`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 첫 시도에 통과했다.
   Quality·24 shard의 8,260 passed·기존 76 skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.

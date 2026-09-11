@@ -135,6 +135,26 @@ def test_ops_summary_requires_all_actual_checks_and_omits_private_fields(tmp_pat
         ci.verify_probe("ops", tmp_path)
 
 
+@pytest.mark.parametrize("change", [None, "phase", "checks", "version", "oversize"])
+def test_failed_ops_diagnostics_publish_only_observed_phase_and_count(tmp_path, change):
+    report = dict(
+        version="ops003-linux-rehearsal-v1", phase="source-postgres", checks=[],
+        stderr="PRIVATE-CREDENTIAL-NEVER-PUBLISH",
+    )
+    if change == "oversize":
+        report["stderr"] *= 5000
+    elif change is not None:
+        report[change] = "PRIVATE-CREDENTIAL-NEVER-PUBLISH"
+    (tmp_path / "report.json").write_text(json.dumps(report))
+    result = ci.failed_probe_observation("ops", tmp_path)
+    assert result == (
+        dict(observed_phase="source-postgres", completed_checks=0)
+        if change is None else dict(observed_phase="unknown", completed_checks=None)
+    )
+    assert "PRIVATE" not in json.dumps(result)
+    assert ci.failed_probe_observation("sys", tmp_path)["observed_phase"] == "unknown"
+
+
 @pytest.mark.parametrize("log", ["1 skipped in 0.01s\n", "1 passed, 1 failed in 0.01s\n", ""])
 def test_sys_cannot_promote_skipped_missing_or_failed_pytest(tmp_path, log):
     (tmp_path / "report.json").write_text(

@@ -23,3 +23,14 @@ Record every attempt and require the same new commit for ordinary CI and each se
 Disposable-container shutdown and recovery do not model physical host failure, power loss,
 production failover or arbitrary System support. Secrets, database dumps and deployment inventories
 are private evidence. New workflow definitions alone are not successful remote conformance.
+
+## Linux fixture portability addendum (2026-09-11)
+
+The first hosted OPS probe failed while its cleanup checks passed. The retained bounded diagnostic
+cannot identify its exact internal cause. A separate Linux reproduction demonstrated that the
+fixture's private bind-mount UID and group-zero Docker socket assumptions are not portable.
+Transfer the three owned PostgreSQL TLS/HBA inputs through a bounded-name stdin archive rather than
+relaxing their permissions. Observe the daemon-side socket GID only for the already trusted fixture
+controllers; target Workers never receive that socket or group authority. Reject malformed GIDs.
+Preserve an allowlisted failed phase and completed-check count without publishing command logs,
+credentials or fixture data. The corrected local rehearsal passed; hosted revalidation is pending.

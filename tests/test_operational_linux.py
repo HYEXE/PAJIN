@@ -61,3 +61,51 @@ def test_normal_writer_stop_waits_for_exit_and_rechecks_pid(tmp_path, monkeypatc
         ["docker", "stop", "--time", "3", "original"],
         ["docker", "container", "inspect", "original"],
     ]
+
+
+@pytest.mark.parametrize("value", [b"0\n", b"998\n", b"31415\n"])
+def test_fixture_reads_daemon_socket_group_without_changing_host_permissions(
+    tmp_path, monkeypatch, value
+):
+    lab = module.LinuxLab(tmp_path, IMAGE, IMAGE)
+    calls = []
+    monkeypatch.setattr(module, "command", lambda args: calls.append(args) or value)
+    assert lab.socket_group() == value.decode().strip()
+    args = calls[0]
+    assert args[:3] == ["docker", "run", "--rm"]
+    assert "/var/run/docker.sock:/var/run/docker.sock:ro" in args
+    assert args[args.index("--network") + 1] == "none"
+    assert args[args.index("--cap-drop") + 1] == "ALL"
+    assert "--cap-add" not in args and "chmod" not in args[-1]
+
+
+@pytest.mark.parametrize("value", [b"", b"-1", b"4294967295", b"0\n999", b"private text"])
+def test_fixture_socket_group_has_no_default_on_invalid_observation(tmp_path, monkeypatch, value):
+    lab = module.LinuxLab(tmp_path, IMAGE, IMAGE)
+    monkeypatch.setattr(module, "command", lambda args: value)
+    with pytest.raises(ValueError, match="numeric GID"):
+        lab.socket_group()
+
+
+def test_both_trusted_controller_paths_use_observed_nonzero_group(tmp_path, monkeypatch):
+    from scripts import hybrid_operations_rehearsal as hybrid
+    from scripts.operational_postgres import OwnedPostgres
+
+    lab = module.LinuxLab(tmp_path, IMAGE, IMAGE)
+    lab.volumes = {name: name for name in ("state-source", "control-source", "evidence")}
+    lab.envs["source"] = tmp_path / "fixture.env"
+    pg = OwnedPostgres(tmp_path)
+    pg.container_id = "owned-postgres"
+    calls = []
+    monkeypatch.setattr(lab, "socket_group", lambda: "31415")
+    monkeypatch.setattr(lab, "inspect", lambda *args: {
+        "State": {"Running": True}, "Image": IMAGE,
+    })
+    monkeypatch.setattr(module, "command", lambda args: calls.append(args) or b"owned-controller")
+    monkeypatch.setattr(hybrid, "command", lambda args: calls.append(args) or b"owned-controller")
+    lab.start(pg, role="source", name="source", init_process=True)
+    rehearsal = hybrid.Rehearsal(tmp_path, IMAGE, IMAGE)
+    rehearsal.labs.append(lab)
+    rehearsal.controller(lab, pg, "source")
+    assert len(calls) == 2
+    assert all(args[args.index("--group-add") + 1] == "31415" for args in calls)

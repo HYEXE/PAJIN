@@ -27,6 +27,11 @@ from scripts.operational_postgres import OwnedPostgres, command
 
 LABEL = "pajin.ops003-controller-owner"
 PROBE = "/app/tests/hybrid_operations_probe.py"
+PHASES = frozenset({
+    "source-postgres", "source-configuration", "source-start", "source-seed",
+    "source-preflight", "source-checkpoint", "target-postgres", "target-configuration",
+    "target-start", "target-restore", "target-resume", "complete",
+})
 
 
 class Rehearsal:
@@ -41,6 +46,7 @@ class Rehearsal:
         self.sequence = 0
         self.signer = Ed25519PrivateKey.generate()
         self.checks: list[str] = []
+        self.phase = "source-postgres"
 
     def pair(self, role: str) -> tuple[LinuxLab, OwnedPostgres, str]:
         output = self.output / role
@@ -51,12 +57,15 @@ class Rehearsal:
         pg_output.mkdir(mode=0o700)
         pg = OwnedPostgres(pg_output)
         self.databases.append(pg)
+        self.phase = f"{role}-postgres"
         url = pg.start()
         if role == "target":
             shutil.copytree(
                 self.labs[0].output / "configuration-source", output / "configuration-source"
             )
+        self.phase = f"{role}-configuration"
         lab.configure(pg, url, role="source" if role == "source" else "restored")
+        self.phase = f"{role}-start"
         host = lab.start(
             pg, role="source" if role == "source" else "restored", name=role, init_process=True
         )
@@ -81,7 +90,7 @@ class Rehearsal:
                     "--user",
                     "10001:10001",
                     "--group-add",
-                    "0",
+                    lab.socket_group(),
                     "--cap-drop",
                     "ALL",
                     "--security-opt",
@@ -238,6 +247,7 @@ class Rehearsal:
     def run(self) -> None:
         source, pg, host = self.pair("source")
         source_worker = source.start(pg, role="source", name="worker", init_process=True)
+        self.phase = "source-seed"
         source.execute(
             host,
             ["python", PROBE, "seed"],
@@ -262,6 +272,7 @@ class Rehearsal:
             "--state-root",
             "/source/host",
         ]
+        self.phase = "source-preflight"
         self.cli(controller, ["preflight", *common, "--output", "/evidence/preflight.json"])
         keyring = dict(
             active_key_id="v2",
@@ -277,6 +288,7 @@ class Rehearsal:
             "--checkpoint",
             "/evidence/cold.bin",
         ]
+        self.phase = "source-checkpoint"
         self.cli(
             controller,
             ["checkpoint", *common, *state_args, "--output", "/evidence/running-denial.json"],
@@ -295,6 +307,7 @@ class Rehearsal:
         target.stop(target_host)
         target.stop(target_worker)
         recovery = self.controller(target, restored, "target")
+        self.phase = "target-restore"
         target_plan = self.plan(target, restored, target_host, "target", seed)
         content = json.dumps(target_plan).encode()
         self.write(recovery, "/evidence/target.json", content)
@@ -357,6 +370,7 @@ class Rehearsal:
             ]
         )
         report = self.read_json(recovery, "/evidence/verified.json")
+        self.phase = "target-resume"
         command(["docker", "start", target_host])
         command(
             [
@@ -447,6 +461,7 @@ class Rehearsal:
                 "unacknowledged-call-charge-preserved",
             ]
         )
+        self.phase = "complete"
 
     def _close_controller(self, identity: str) -> bool:
         item = json.loads(command(["docker", "inspect", identity]))[0]
@@ -510,6 +525,7 @@ def run(output: Path, runtime: str, worker: str) -> None:
         finally:
             report.update(
                 checks=exercise.checks,
+                phase=exercise.phase if exercise.phase in PHASES else "unknown",
                 finished_at=datetime.now(UTC).isoformat(),
                 code_sha256=implementation_digest(),
             )

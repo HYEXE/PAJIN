@@ -8,6 +8,7 @@ admit a production deployment or claim atomic recovery of SQLite/Run stores.
 from __future__ import annotations
 
 import argparse
+import io
 import ipaddress
 import json
 import os
@@ -16,6 +17,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tarfile
 import time
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -87,6 +89,19 @@ def tls_files(directory: Path) -> None:
         file.chmod(0o600)
 
 
+def _tls_archive(directory: Path) -> bytes:
+    """Transfer the three owned files without depending on bind-mount UID translation."""
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w") as archive:
+        for name in ("server.crt", "server.key", "pg_hba.conf"):
+            content = (directory / name).read_bytes()
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            member.mode = 0o600
+            archive.addfile(member, io.BytesIO(content))
+    return output.getvalue()
+
+
 class OwnedPostgres:
     def __init__(self, output: Path) -> None:
         self.output = output
@@ -112,6 +127,7 @@ class OwnedPostgres:
                 "docker",
                 "run",
                 "--rm",
+                "-i",
                 "--pull",
                 "never",
                 "--network",
@@ -135,15 +151,14 @@ class OwnedPostgres:
                 "0.5",
                 "-v",
                 f"{self.volume}:/state",
-                "-v",
-                f"{self.output}:/input:ro",
                 "--entrypoint",
                 "sh",
                 IMAGE,
                 "-ec",
-                "mkdir /state/data /state/tls; cp /input/server.crt /input/server.key "
-                "/input/pg_hba.conf /state/tls/; chmod 700 /state/data; chown -R 70:70 /state",
+                "mkdir /state/data /state/tls; tar -xf - -C /state/tls; "
+                "chmod 700 /state/data /state/tls; chown -R 70:70 /state",
             ],
+            stdin=_tls_archive(self.output),
             output=self.output / "init.log",
         )
         self.container_id = (

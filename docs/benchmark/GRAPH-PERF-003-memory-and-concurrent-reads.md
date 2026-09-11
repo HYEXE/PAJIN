@@ -1,7 +1,9 @@
 # GRAPH-PERF-003: Memory and Concurrent Current-Graph Reads
 
-Status: Bounded implementation and the identical-protocol local comparison complete; remote
-validation of the final new commit is approved and remains pending.
+Status: Bounded implementation and identical-protocol local comparison complete. Commit
+`27127bd1872c56c98a0ffc93cabaa834cfcc0259` passed ordinary CI and Web/Network/AI/SYS conformance.
+OPS conformance failed during the actual probe; its fixture correction and a fresh exact-commit
+validation remain pending. These CI outcomes do not replace the local performance measurements.
 
 ## Experiment
 

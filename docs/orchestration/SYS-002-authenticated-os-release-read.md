@@ -83,8 +83,8 @@ The normalized report omits raw bytes, returns distribution fields and exact fil
 sets `findingAuthority=false` and `generalSystemSupport=false`. It does not certify a physical host.
 Commit `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a` passed ordinary remote CI and the existing
 Web/Network/AI Docker workflows. Those workflows did not execute the SYS-002 read. SYS-002 itself
-was verified locally. A dedicated `sys-002-conformance.yml` workflow is now implemented; its new
-remote dispatch is approved and observed results for the final new commit remain pending.
+was verified locally. The dedicated `sys-002-conformance.yml` workflow now also has a verified
+remote result for commit `27127bd1872c56c98a0ffc93cabaa834cfcc0259`, recorded below.
 The additive [SYS-003 Operator read](SYS-003-operator-result-read.md) consumes existing sealed
 results without issuing another execution.
 
@@ -95,3 +95,16 @@ The final integration test passed in 39.17 seconds, with four Worker executions,
 independent cleanup. The new CI wrapper accepted its actual report and pytest result. A separate
 read-only Docker observer confirmed the exact four execution labels and agent ownership label
 had no containers, networks or volumes. This local result does not establish remote CI success.
+
+## Observed dedicated remote validation
+
+[SYS run 34565402103](https://github.com/HYEXE/PAJIN/actions/runs/34565402103) passed on the first
+attempt for commit `27127bd1872c56c98a0ffc93cabaa834cfcc0259`. Ubuntu 24.04, Python 3.12.14 and
+source-built Linux amd64 images passed the clean-checkout and identity gates. The actual probe
+recorded one passing test and four Worker executions; the outer runner took 47.01 seconds.
+Both unconditional cleanup and the independent read-only audit observed no remaining containers,
+networks or volumes and required no fallback removal. The tracked-source commitment was
+`cc39ff363468cba71ebe883218aae24c4e07c4a006c2fe450dd62c923af90355`.
+The bounded public artifacts contain execution and cleanup summaries only. The separate OPS
+failure does not negate this result, and this result cannot satisfy OPS recovery conformance or a
+later changed commit's gate.

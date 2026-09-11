@@ -1,10 +1,47 @@
 from __future__ import annotations
 
+import io
+import tarfile
 from hashlib import sha256
 
 import pytest
 
 from scripts.operational_postgres import OwnedPostgres, require_checkpoint, run
+
+
+def test_private_tls_transfer_does_not_depend_on_host_file_ownership(tmp_path, monkeypatch):
+    import scripts.operational_postgres as module
+
+    expected = {name: f"private-{name}".encode() for name in (
+        "server.crt", "server.key", "pg_hba.conf"
+    )}
+
+    def tls_files(directory):
+        for name, content in expected.items():
+            (directory / name).write_bytes(content)
+            (directory / name).chmod(0o600)
+
+    commands = []
+
+    def command(args, **kwargs):
+        commands.append((args, kwargs))
+        if args[:3] == ["docker", "run", "-d"]:
+            raise RuntimeError("stop before database startup")
+        return b""
+
+    monkeypatch.setattr(module, "tls_files", tls_files)
+    monkeypatch.setattr(module, "command", command)
+    with pytest.raises(RuntimeError, match="stop before"):
+        OwnedPostgres(tmp_path).start()
+    args, options = commands[1]
+    assert "-i" in args and not any("/input" in value for value in args)
+    assert [args[i + 1] for i, value in enumerate(args) if value == "--cap-add"] == ["CHOWN"]
+    assert args[args.index("--network") + 1] == "none"
+    with tarfile.open(fileobj=io.BytesIO(options["stdin"])) as archive:
+        assert archive.getnames() == list(expected)
+        for member in archive.getmembers():
+            assert member.uid == member.gid == 0 and member.mode == 0o600
+            assert archive.extractfile(member).read() == expected[member.name]
 
 
 @pytest.mark.parametrize("changed", ["db.dump", "state.json"])

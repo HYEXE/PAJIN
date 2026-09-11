@@ -125,8 +125,13 @@ not demonstrate physical power-loss recovery, production failover or arbitrary S
 GitHub's [runner environment variables](https://docs.github.com/en/actions/reference/workflows-and-actions/variables)
 define the dedicated-host admission input; it is checked alongside the actual platform and Git SHA.
 
-Writing these workflows is implementation evidence only. Commit, push and manual dispatch have
-been approved for this checkpoint; exact-commit remote results remain pending.
+Commit `27127bd1872c56c98a0ffc93cabaa834cfcc0259` passed ordinary CI and the Web/Network/AI/SYS
+workflows. Its first OPS run failed during the actual probe, while unconditional cleanup and
+independent residue checks succeeded. A locally verified fixture portability correction remains
+uncommitted; a new source commit requires fresh ordinary CI and all five selected workflows.
+The eight commits and two pushes initially approved for this checkpoint have been completed.
+One additional correction commit, one ordinary push and all six new-commit validations are approved
+and pending execution.
 
 ## References
 

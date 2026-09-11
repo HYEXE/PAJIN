@@ -135,8 +135,8 @@ corrected; the final success is not a first-attempt claim. Unit coverage accepts
 internal budget serialization. These recovery results are local. Commit
 `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a` passed ordinary remote CI and the existing
 Web/Network/AI Docker workflows; those workflows did not execute the OPS-003 recovery procedure.
-A dedicated `ops-003-conformance.yml` workflow is now implemented and its dispatch approved;
-observed results for the final new commit remain pending.
+The dedicated `ops-003-conformance.yml` workflow is implemented. Its first exact-commit result
+and the subsequent local portability correction are recorded below.
 
 A final integration image containing the completed Graph and System modules repeated all eleven
 checks in 71.07 seconds, with two valid Run seals and the unknown call charge still one. A separate
@@ -153,3 +153,28 @@ Source inventory was
 unchanged during execution. The new CI wrapper's report verifier accepted all eleven checks;
 a separate read-only Docker observer found no resources under the three OPS ownership labels.
 This validates the reused local probe and report projection, not the new clean Linux amd64 remote gate.
+
+## First remote attempt and fixture portability correction
+
+[OPS run 34565400116](https://github.com/HYEXE/PAJIN/actions/runs/34565400116) on commit
+`27127bd1872c56c98a0ffc93cabaa834cfcc0259` failed with exit 1 during the actual probe after
+7.18 seconds. The observed Linux amd64 images and tracked-source commitment matched that checkout.
+Cleanup and the separate read-only audit both found zero containers, networks and volumes, with no
+fallback removal. The retained public diagnostic cannot establish the exact internal failure phase;
+do not label this remote attempt successful or reconstruct its private logs.
+
+A separate disposable Linux reproduction confirmed two nonportable fixture assumptions: a root
+initializer with only CHOWN cannot read another UID's 0600 bind-mounted files, and supplementary
+group 0 does not admit a socket owned by another group. The fixture now sends only its three generated
+TLS/HBA files in a mode-0600 stdin archive and observes the daemon-side socket's numeric GID for its
+trusted administrative controllers. Host socket modes and target Worker permissions are unchanged.
+An invalid group observation fails instead of assuming a default. A failed probe additionally exports
+only an allowlisted phase and completed-check count; private text remains excluded.
+
+The corrected Linux arm64 rehearsal passed all eleven checks in 72.97 seconds using runtime image
+`sha256:8a6ffd655f3f73d8228eb57f5cddd0abeb4cc44fceb1aba0999e2962187779e3`.
+The source inventory stayed unchanged and a separate observer found all four fixture ownership
+selectors absent across containers, networks and volumes. This correction has not yet been committed,
+pushed or verified on the hosted Linux amd64 runner. One additional correction commit, one ordinary
+push and six new-commit validations are approved separately from the completed eight-commit/two-push
+sequence; execution remains pending.

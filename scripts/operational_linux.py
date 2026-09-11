@@ -117,6 +117,24 @@ class LinuxLab:
         self.inspect("volume", name)
         return name
 
+    def socket_group(self) -> str:
+        """Observe the daemon-side socket GID only for this trusted fixture controller."""
+        value = command(
+            [
+                "docker", "run", "--rm", "--pull", "never", "--network", "none",
+                "--label", f"{LABEL}={self.owner}", "--read-only", "--user", "0:0",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                "--pids-limit", "16", "--memory", "64m",
+                "-v", "/var/run/docker.sock:/var/run/docker.sock:ro",
+                self.runtime, "python", "-c",
+                "import os,stat; s=os.stat('/var/run/docker.sock'); "
+                "assert stat.S_ISSOCK(s.st_mode); print(s.st_gid)",
+            ]
+        ).decode().strip()
+        if not value.isascii() or not value.isdecimal() or not 0 <= int(value) < 2**32 - 1:
+            raise ValueError("fixture Docker socket group is not a numeric GID")
+        return str(int(value))
+
     def configure(self, pg: OwnedPostgres, url: str, *, role: str) -> None:
         directory = self.output / ("configuration-" + role)
         directory.mkdir(mode=0o700)
@@ -221,8 +239,7 @@ class LinuxLab:
                     "--read-only",
                     "--user",
                     "10001:10001",
-                    "--group-add",
-                    "0",
+                    *([] if readonly else ["--group-add", self.socket_group()]),
                     "--cap-drop",
                     "ALL",
                     "--security-opt",
