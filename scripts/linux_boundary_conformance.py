@@ -1,4 +1,4 @@
-"""CI-only OPS execution and independent residue audit on a fresh hosted Linux runner.
+"""CI-only OPS/SYS execution and independent residue audit on a fresh hosted Linux runner.
 
 Private probe outputs never become public artifacts. Cleanup is authorized only after a
 clean, empty, dedicated-runner preflight; this is not a local-machine cleanup command.
@@ -25,6 +25,7 @@ LABELS = {
         "pajin.ops-002-owner",
         "pajin.execution-id",
     ),
+    "sys": ("pajin.sys002-owner", "pajin.execution-id"),
 }
 KINDS = ("container", "network", "volume")
 OPS_CHECKS = {
@@ -154,18 +155,35 @@ def verify_probe(boundary: str, private: Path) -> dict[str, object]:
     report = json.loads((private / "report.json").read_text())
     if not isinstance(report, dict) or report.get("complete") is not True:
         raise ValueError("actual probe is incomplete")
-    checks = report.get("checks")
+    if boundary == "ops":
+        checks = report.get("checks")
+        if (
+            report.get("checks_passed") is not True
+            or report.get("cleanup") != "observed-absent"
+            or not isinstance(checks, list)
+            or not all(isinstance(check, str) for check in checks)
+            or len(checks) != 11
+            or len(set(checks)) != 11
+            or set(checks) != OPS_CHECKS
+        ):
+            raise ValueError("OPS actual checks or cleanup are incomplete")
+        return dict(actual_checks=11, cleanup_observed=True)
+    cleanup = report.get("cleanup", {})
     if (
-        report.get("checks_passed") is not True
-        or report.get("cleanup") != "observed-absent"
-        or not isinstance(checks, list)
-        or not all(isinstance(check, str) for check in checks)
-        or len(checks) != 11
-        or len(set(checks)) != 11
-        or set(checks) != OPS_CHECKS
+        not isinstance(cleanup, dict)
+        or type(report.get("exitCode")) is not int
+        or report.get("exitCode") != 0
+        or report.get("sourceUnchanged") is not True
+        or cleanup.get("ownedAgentContainersAbsent") is not True
+        or cleanup.get("workerAndProxyResourcesAbsent") is not True
+        or cleanup.get("independentObserver") is not True
+        or cleanup.get("observedWorkerExecutions") != 4
     ):
-        raise ValueError("OPS actual checks or cleanup are incomplete")
-    return dict(actual_checks=11, cleanup_observed=True)
+        raise ValueError("SYS actual execution or cleanup is incomplete")
+    log = (private / "pytest.log").read_text()
+    if re.search(r"(?m)^1 passed in [0-9.]+s(?: \([^\n]+\))?\s*$", log) is None:
+        raise ValueError("SYS actual pytest success is missing or skipped")
+    return dict(actual_tests_passed=1, worker_executions=4, cleanup_observed=True)
 
 
 def run(boundary: str, state: Path, primary: str, secondary: str) -> int:
@@ -182,20 +200,31 @@ def run(boundary: str, state: Path, primary: str, secondary: str) -> int:
     if source_digest() != marker["source_sha256"]:
         raise ValueError("conformance source changed after clean-commit gate")
     images = [image_record(primary), image_record(secondary)]
-    from scripts.operational_postgres import IMAGE
+    if boundary == "ops":
+        from scripts.operational_postgres import IMAGE
 
-    images.append(
-        image_record(command("docker", "image", "inspect", IMAGE, "--format", "{{.Id}}"))
-    )
+        images.append(
+            image_record(command("docker", "image", "inspect", IMAGE, "--format", "{{.Id}}"))
+        )
     private = state / "private-probe"
-    args = [
-        "-m",
-        "scripts.hybrid_operations_rehearsal",
-        "--runtime-image",
-        primary,
-        "--worker-image",
-        secondary,
-    ]
+    args = (
+        [
+            "-m",
+            "scripts.hybrid_operations_rehearsal",
+            "--runtime-image",
+            primary,
+            "--worker-image",
+            secondary,
+        ]
+        if boundary == "ops"
+        else [
+            "scripts/operational_system_read.py",
+            "--image-id",
+            primary,
+            "--proxy-image-id",
+            secondary,
+        ]
+    )
     summary: dict[str, object] = dict(
         boundary=boundary,
         head=marker["head"],

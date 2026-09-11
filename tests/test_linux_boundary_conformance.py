@@ -66,7 +66,7 @@ def test_independent_audit_never_removes_resources(tmp_path, monkeypatch):
     )
     removed = []
     monkeypatch.setattr(ci, "command", lambda *args: removed.append(args) or "")
-    assert ci.cleanup("ops", tmp_path, audit_only=True) == 1
+    assert ci.cleanup("sys", tmp_path, audit_only=True) == 1
     assert removed == []
     assert not json.loads((tmp_path / "public-residue.json").read_text())["complete"]
 
@@ -82,7 +82,7 @@ def test_removed_fallback_residue_still_fails_conformance(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(ci, "residue", lambda family: next(observations))
     monkeypatch.setattr(ci, "command", lambda *args: "")
-    assert ci.cleanup("ops", tmp_path, audit_only=False) == 1
+    assert ci.cleanup("sys", tmp_path, audit_only=False) == 1
     public = json.loads((tmp_path / "public-cleanup.json").read_text())
     assert public["resources_absent"] is True and public["complete"] is False
     assert public["fallback_needed"] is True
@@ -92,13 +92,13 @@ def test_repeated_execution_cannot_reuse_admitted_attempt(tmp_path, monkeypatch)
     monkeypatch.setattr(ci, "admitted", lambda *args: {})
     (tmp_path / "private-runner.log").touch()
     with pytest.raises(ValueError, match="fresh workflow"):
-        ci.run("ops", tmp_path, "a" * 64, "b" * 64)
+        ci.run("sys", tmp_path, "a" * 64, "b" * 64)
 
 
 @pytest.mark.parametrize(
     "report", [[], None, {"complete": True, "checks": [{}]}, {"complete": True, "cleanup": None}]
 )
-@pytest.mark.parametrize("boundary", ["ops"])
+@pytest.mark.parametrize("boundary", ["ops", "sys"])
 def test_malformed_reports_remain_bounded_failures(tmp_path, report, boundary):
     (tmp_path / "report.json").write_text(json.dumps(report))
     with pytest.raises(ValueError, match="incomplete"):
@@ -135,7 +135,31 @@ def test_ops_summary_requires_all_actual_checks_and_omits_private_fields(tmp_pat
         ci.verify_probe("ops", tmp_path)
 
 
-@pytest.mark.parametrize("family,number", [("ops", "003")])
+@pytest.mark.parametrize("log", ["1 skipped in 0.01s\n", "1 passed, 1 failed in 0.01s\n", ""])
+def test_sys_cannot_promote_skipped_missing_or_failed_pytest(tmp_path, log):
+    (tmp_path / "report.json").write_text(
+        json.dumps(
+            dict(
+                complete=True,
+                exitCode=0,
+                sourceUnchanged=True,
+                cleanup=dict(
+                    ownedAgentContainersAbsent=True,
+                    workerAndProxyResourcesAbsent=True,
+                    independentObserver=True,
+                    observedWorkerExecutions=4,
+                ),
+            )
+        )
+    )
+    (tmp_path / "pytest.log").write_text(log)
+    with pytest.raises(ValueError, match="pytest"):
+        ci.verify_probe("sys", tmp_path)
+    (tmp_path / "pytest.log").write_text("1 passed in 32.19s\n")
+    assert ci.verify_probe("sys", tmp_path)["actual_tests_passed"] == 1
+
+
+@pytest.mark.parametrize("family,number", [("ops", "003"), ("sys", "002")])
 def test_workflows_bind_commit_and_always_cleanup_without_exporting_raw_runs(family, number):
     path = Path(f".github/workflows/{family}-{number}-conformance.yml")
     workflow = yaml.safe_load(path.read_text())
@@ -166,9 +190,10 @@ def test_workflows_bind_commit_and_always_cleanup_without_exporting_raw_runs(fam
     [
         (["PLAN.md"], ()),
         (["containers/ai-target/server.py"], ()),
-        (["src/pajin/operations/hybrid.py"], ("ops",)),
-        (["scripts/linux_boundary_conformance.py"], ("ops",)),
+        (["src/pajin/operations/hybrid.py"], ("ops", "sys")),
+        (["scripts/linux_boundary_conformance.py"], ("ops", "sys")),
         ([".github/workflows/ops-003-conformance.yml"], ("ops",)),
+        ([".github/workflows/sys-002-conformance.yml"], ("sys",)),
     ],
 )
 def test_operational_workflows_are_additive_to_existing_domain_requirements(paths, expected):
@@ -179,4 +204,4 @@ def test_operational_workflows_are_additive_to_existing_domain_requirements(path
             "network",
             "ai",
         )
-    assert selector.required_operational_boundaries([], complete_comparison=False) == ("ops",)
+    assert selector.required_operational_boundaries([], complete_comparison=False) == ("ops", "sys")

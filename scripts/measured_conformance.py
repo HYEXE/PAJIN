@@ -11,6 +11,7 @@ DOMAINS = ("web", "network", "ai")
 WORKFLOWS = {domain: f".github/workflows/{domain}-002d-conformance.yml" for domain in DOMAINS}
 OPERATIONAL_WORKFLOWS = {
     "ops": ".github/workflows/ops-003-conformance.yml",
+    "sys": ".github/workflows/sys-002-conformance.yml",
 }
 TARGET_CONTEXTS = {
     "containers/bug-bounty-target/": "web",
@@ -56,7 +57,7 @@ def required_operational_boundaries(
     *,
     complete_comparison: bool,
 ) -> tuple[str, ...]:
-    """Add the OPS gate without changing the legacy domain report or its requirements."""
+    """Add OPS/SYS gates without changing the legacy domain report or its requirements."""
     if not complete_comparison:
         return tuple(OPERATIONAL_WORKFLOWS)
     required: set[str] = set()

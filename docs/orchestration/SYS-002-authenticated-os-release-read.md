@@ -83,4 +83,13 @@ The normalized report omits raw bytes, returns distribution fields and exact fil
 sets `findingAuthority=false` and `generalSystemSupport=false`. It does not certify a physical host.
 Commit `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a` passed ordinary remote CI and the existing
 Web/Network/AI Docker workflows. Those workflows did not execute the SYS-002 read. SYS-002 itself
-was verified locally; a dedicated remote SYS-002 workflow has not yet been implemented or run.
+was verified locally. A dedicated `sys-002-conformance.yml` workflow is now implemented; its new
+remote run still requires explicit approval and observed results for the same new commit.
+
+The 2026-09-11 follow-up reran the actual source/replay/denial/failure probe against the current
+local package and freshly verified Linux arm64 agent image
+`sha256:a7c99ac3c2733324952d269275109f5e77605933b984eedb1de0f8675821e301`.
+The final integration test passed in 39.17 seconds, with four Worker executions, unchanged source inventory and
+independent cleanup. The new CI wrapper accepted its actual report and pytest result. A separate
+read-only Docker observer confirmed the exact four execution labels and agent ownership label
+had no containers, networks or volumes. This local result does not establish remote CI success.

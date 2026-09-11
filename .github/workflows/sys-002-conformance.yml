@@ -1,0 +1,107 @@
+name: SYS-002 real-Linux conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_sys_002_conformance:
+        description: Run the exact SYS-002 authenticated OS-release read
+        required: true
+        default: false
+        type: boolean
+      expected_commit:
+        description: Approved full commit SHA to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sys-002-conformance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  conformance:
+    name: Ubuntu 24.04 / exact SYS-002 boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Require explicit confirmation and approved commit
+        env:
+          CONFIRM: ${{ inputs.confirm_sys_002_conformance }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          test "$CONFIRM" = "true"
+          test "$GITHUB_SHA" = "$EXPECTED_COMMIT"
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.28
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-extras
+
+      - name: Record runtime context
+        run: |
+          git rev-parse HEAD
+          python --version
+          docker version
+          printf 'github_sha=%s\n' "$GITHUB_SHA"
+          printf 'runner_image_os=%s\n' "${ImageOS:-unknown}"
+          printf 'runner_image_version=%s\n' "${ImageVersion:-unknown}"
+
+      - name: Build exact repository images
+        run: |
+          set -euo pipefail
+          docker build --pull --platform linux/amd64 --tag pajin-sys002:ci --file containers/system-agent/Dockerfile .
+          docker build --pull --platform linux/amd64 --tag pajin-egress-proxy:ci containers/egress-proxy
+
+      - name: Record exact image identities
+        run: |
+          docker image inspect pajin-sys002:ci pajin-egress-proxy:ci --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
+
+      - name: Require exact clean commit and empty dedicated runner
+        run: uv run --locked python -m scripts.linux_boundary_conformance preflight --boundary sys --state .pajin/ci-sys
+
+      - name: Run SYS-002 actual Linux probe
+        run: |
+          set -euo pipefail
+          primary_image="$(docker image inspect pajin-sys002:ci --format '{{.Id}}')"
+          secondary_image="$(docker image inspect pajin-egress-proxy:ci --format '{{.Id}}')"
+          uv run --locked python -m scripts.linux_boundary_conformance run \
+            --boundary sys --state .pajin/ci-sys \
+            --primary-image "$primary_image" --secondary-image "$secondary_image"
+
+      - name: Clean admitted owned resources even after failure
+        if: ${{ always() }}
+        run: uv run --locked python -m scripts.linux_boundary_conformance cleanup --boundary sys --state .pajin/ci-sys
+
+      - name: Independently require zero residue
+        if: ${{ always() }}
+        run: uv run --locked python -m scripts.linux_boundary_conformance audit --boundary sys --state .pajin/ci-sys
+
+      - name: Retain bounded public evidence only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sys-002-evidence-attempt-${{ github.run_attempt }}
+          path: |
+            .pajin/ci-sys/public-summary.json
+            .pajin/ci-sys/public-cleanup.json
+            .pajin/ci-sys/public-residue.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
