@@ -2,6 +2,39 @@
 
 from __future__ import annotations
 
+import re
+
+_WORKER_FAILURE_RECORD = re.compile(
+    r"pajin-worker-failure-v1 stage=(worker-input|worker-action|provider-request|"
+    r"provider-open|provider-read|provider-normalize) category=(subprocess-timeout|"
+    r"timeout|tls-verification|tls|http-response|http-protocol|connection|io|runtime|invalid-data|"
+    r"transport-unknown|unknown)\n"
+)
+
+
+def audit_safe_worker_failure(
+    stderr: str,
+    *,
+    exit_code: int | None,
+    truncated: bool = False,
+) -> str:
+    """Project a complete allowlisted Worker report, never infer execution or retry safety."""
+    stage, category = "unknown", "unknown"
+    prefix = {65: "invalid worker input or response\n", 70: "worker action failed\n"}
+    expected = prefix.get(exit_code) if type(exit_code) is int else None
+    if (
+        not truncated
+        and type(stderr) is str
+        and len(stderr) <= 256
+        and expected is not None
+        and stderr.startswith(expected)
+    ):
+        match = _WORKER_FAILURE_RECORD.fullmatch(stderr[len(expected) :])
+        if match is not None:
+            stage, category = match.groups()
+    return f"worker-report-v1; stage={stage}; category={category}; detail=omitted"
+
+
 _SAFE_AUDIT_STAGES = frozenset(
     {
         "deterministic-worker-input",

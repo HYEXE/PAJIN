@@ -289,7 +289,10 @@ def test_worker_main_omits_validation_exception_messages(
 
     assert worker.main() == 65
     error = capsys.readouterr().err
-    assert error == "invalid worker input or response\n"
+    assert error == (
+        "invalid worker input or response\n"
+        "pajin-worker-failure-v1 stage=worker-action category=invalid-data\n"
+    )
     assert _SECRET not in error
     assert "\x1b" not in error
 

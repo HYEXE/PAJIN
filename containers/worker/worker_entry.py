@@ -11,16 +11,17 @@ import sys
 import time
 from base64 import b64encode, urlsafe_b64encode
 from collections.abc import Callable, Iterator
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from hmac import compare_digest
-from http.client import HTTPResponse, HTTPSConnection
+from http.client import HTTPException, HTTPResponse, HTTPSConnection
 from ipaddress import ip_address
 from re import fullmatch
 from threading import Thread
-from typing import IO, Any, BinaryIO, TextIO
+from typing import IO, Any, BinaryIO, Protocol, TextIO, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
@@ -50,6 +51,54 @@ _MCP_STREAM_CHUNK_BYTES = 65_536
 _MCP_READER_JOIN_SECONDS = 5
 _MCP_PROCESS_REAP_SECONDS = 5
 _TLS_UNIQUE_BINDING_DOMAIN = b"pajin.replay.target-tls-unique-binding/v1\0"
+_OBSERVED_FAILURE: ContextVar[tuple[str, str] | None] = ContextVar(
+    "worker_observed_failure", default=None,
+)
+
+
+def _failure_category(error: BaseException) -> str:
+    """Only classify observed exception types; never inspect messages or response bodies."""
+    if type(error) is URLError:
+        reason = error.reason
+        return (
+            _failure_category(reason)
+            if isinstance(reason, OSError) and not isinstance(reason, URLError)
+            else "transport-unknown"
+        )
+    categories: tuple[tuple[type[BaseException], str], ...] = (
+        (subprocess.TimeoutExpired, "subprocess-timeout"),
+        (TimeoutError, "timeout"),
+        (ssl.SSLCertVerificationError, "tls-verification"),
+        (ssl.SSLError, "tls"),
+        (HTTPError, "http-response"),
+        (HTTPException, "http-protocol"),
+        (ConnectionError, "connection"),
+        (OSError, "io"),
+        (RuntimeError, "runtime"),
+        (KeyError, "invalid-data"),
+        (TypeError, "invalid-data"),
+        (AttributeError, "invalid-data"),
+        (ValueError, "invalid-data"),
+    )
+    return next((category for kind, category in categories if isinstance(error, kind)), "unknown")
+
+
+@contextmanager
+def _failure_stage(stage: str) -> Iterator[None]:
+    try:
+        yield
+    except (KeyError, TypeError, AttributeError, ValueError,
+            OSError, RuntimeError, HTTPException, subprocess.TimeoutExpired) as error:
+        if _OBSERVED_FAILURE.get() is None:
+            _OBSERVED_FAILURE.set((stage, _failure_category(error)))
+        raise
+
+
+def _print_failure(error: BaseException, *, fallback_stage: str, exit_code: int) -> None:
+    stage, category = _OBSERVED_FAILURE.get() or (fallback_stage, _failure_category(error))
+    print("invalid worker input or response" if exit_code == 65 else "worker action failed",
+          file=sys.stderr)
+    print(f"pajin-worker-failure-v1 stage={stage} category={category}", file=sys.stderr)
 
 
 def _reject_json_constant(value: str) -> None:
@@ -141,7 +190,7 @@ class _NoRedirectHandler(HTTPRedirectHandler):
         return None
 
 
-def _tls_leaf_spki_sha256(certificate_der: bytes) -> str:
+def _tls_leaf_spki_sha256(certificate_der: object) -> str:
     if not isinstance(certificate_der, bytes) or not 1 <= len(certificate_der) <= 64 * 1024:
         raise ValueError("TLS peer leaf certificate is missing or exceeds its byte limit")
     try:
@@ -168,6 +217,11 @@ def _tls_unique_binding_sha256(peer_socket: ssl.SSLSocket) -> str | None:
     return sha256(_TLS_UNIQUE_BINDING_DOMAIN + binding).hexdigest()
 
 
+class _TLSResponseObservations(Protocol):
+    pajin_tls_peer_leaf_spki_sha256: str
+    pajin_tls_session_binding_sha256: str | None
+
+
 class _ObservingHTTPSConnection(HTTPSConnection):
     """Attach endpoint and channel observations before the socket can be released."""
 
@@ -178,12 +232,15 @@ class _ObservingHTTPSConnection(HTTPSConnection):
         peer_leaf_spki_sha256 = _tls_leaf_spki_sha256(certificate_der)
         tls_session_binding_sha256 = _tls_unique_binding_sha256(self.sock)
         response = super().getresponse()
-        response.pajin_tls_peer_leaf_spki_sha256 = peer_leaf_spki_sha256
-        response.pajin_tls_session_binding_sha256 = tls_session_binding_sha256
+        observations = cast(_TLSResponseObservations, response)
+        observations.pajin_tls_peer_leaf_spki_sha256 = peer_leaf_spki_sha256
+        observations.pajin_tls_session_binding_sha256 = tls_session_binding_sha256
         return response
 
 
 class _ObservingHTTPSHandler(HTTPSHandler):
+    _context: ssl.SSLContext | None
+
     def https_open(self, request: Request) -> Any:
         return self.do_open(
             _ObservingHTTPSConnection,
@@ -1704,19 +1761,22 @@ def openai_chat_completion(
     secrets: dict[str, str],
     *, large_request: bool = False,
 ) -> dict[str, Any]:
-    credential = _provider_credential(secrets)
-    provider_id, target, provider_request, stream = _provider_dispatch_payload(
-        payload, large_request=large_request,
-    )
-    request = _provider_http_request(
-        target,
-        provider_request,
-        stream=stream,
-        credential=credential,
-        large_request=large_request,
-    )
+    with _failure_stage("provider-request"):
+        credential = _provider_credential(secrets)
+        provider_id, target, provider_request, stream = _provider_dispatch_payload(
+            payload, large_request=large_request,
+        )
+        request = _provider_http_request(
+            target,
+            provider_request,
+            stream=stream,
+            credential=credential,
+            large_request=large_request,
+        )
     try:
-        with _open_http(request, timeout=30) as response:
+        with _failure_stage("provider-open"):
+            response_context = _open_http(request, timeout=30)
+        with _failure_stage("provider-read"), response_context as response:
             if stream:
                 return _normalize_stream_provider(
                     response,
@@ -1729,14 +1789,15 @@ def openai_chat_completion(
         raise ValueError(f"provider returned HTTP {exc.code}") from exc
     except URLError as exc:
         raise ValueError("provider request failed") from exc
-    if len(body) > 1_000_000:
-        raise ValueError("provider response exceeded byte limit")
-    parsed = _strict_json_object(body, label="provider response")
-    return _normalize_nonstream_provider(
-        parsed,
-        provider_id=provider_id,
-        target=target,
-    )
+    with _failure_stage("provider-normalize"):
+        if len(body) > 1_000_000:
+            raise ValueError("provider response exceeded byte limit")
+        parsed = _strict_json_object(body, label="provider response")
+        return _normalize_nonstream_provider(
+            parsed,
+            provider_id=provider_id,
+            target=target,
+        )
 
 
 def direct_network_check(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2227,6 +2288,7 @@ def _supported_action(action: str) -> bool:
 
 
 def main() -> int:
+    _OBSERVED_FAILURE.set(None)
     if len(sys.argv) != 2:
         print("unsupported worker action", file=sys.stderr)
         return 64
@@ -2234,21 +2296,23 @@ def main() -> int:
     if not _supported_action(action):
         print("unsupported worker action", file=sys.stderr)
         return 64
+    stage = "worker-input"
     try:
         payload, secrets = _unwrap_worker_envelope(_read_worker_input(
             sys.stdin, large_provider=action == _LARGE_PROVIDER_ACTION,
         ))
+        stage = "worker-action"
         result = _dispatch_action(action, payload, secrets)
     except (
         KeyError,
         TypeError,
         AttributeError,
         ValueError,
-    ):
-        print("invalid worker input or response", file=sys.stderr)
+    ) as error:
+        _print_failure(error, fallback_stage=stage, exit_code=65)
         return 65
-    except (OSError, RuntimeError, subprocess.TimeoutExpired):
-        print("worker action failed", file=sys.stderr)
+    except (OSError, RuntimeError, HTTPException, subprocess.TimeoutExpired) as error:
+        _print_failure(error, fallback_stage=stage, exit_code=70)
         return 70
     json.dump(result, sys.stdout, separators=(",", ":"))
     sys.stdout.write("\n")

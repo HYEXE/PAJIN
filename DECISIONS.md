@@ -5,6 +5,8 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0282](docs/adr/0282-report-bounded-worker-failures-and-freeze-a-fresh-precision-comparison.md): 비밀정보를 제외한 Worker 실패 진단과 새 고정 정밀도 평가.
+
 - [ADR-0280: Verify Historical Graph Projections with One Exact Replay](docs/adr/0280-verify-historical-graph-projections-with-one-exact-replay.md) — 채택; 동일 데이터의 지연 감소와 메모리 비용 검증
 
 - [ADR-0279: Separate Managed Hybrid Recovery from Execution Activation](docs/adr/0279-separate-managed-hybrid-recovery-from-execution-activation.md) — 채택

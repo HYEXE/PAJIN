@@ -38,7 +38,7 @@ from pajin.runtime.control import (
     DualModelUsageReservation,
     ModelUsageReservation,
 )
-from pajin.runtime.error_safety import audit_safe_exception_type
+from pajin.runtime.error_safety import audit_safe_exception_type, audit_safe_worker_failure
 from pajin.runtime.store import RunStore
 from pajin.tools.gateway import GatewayOutcome, ToolGateway
 
@@ -392,7 +392,13 @@ class PolicyBoundProviderPort(StructuredModelPort):
             raise ModelCallFailure(error)
         self._commit_model_usage_reservation(call.reservation)
         if not outcome.result.success:
-            error = "provider model call failed"
+            worker = outcome.worker_result
+            diagnostic = audit_safe_worker_failure(
+                worker.stderr if worker is not None else "",
+                exit_code=worker.exit_code if worker is not None else None,
+                truncated=worker.stderr_truncated if worker is not None else False,
+            )
+            error = f"provider model call failed; {diagnostic}"
             self._record_failed_call(call, error=error, evidence=outcome.result.evidence)
             raise ModelCallFailure(error)
         validated = self._validated_provider_result(call, outcome)
