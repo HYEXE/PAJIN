@@ -1,5 +1,6 @@
 "use strict";
 
+import { createSystemProductPanel } from "./system-product.js";
 import { createMeasuredProductPanels } from "./measured-products.js";
 import { createMeasuredReviews } from "./measured-reviews.js";
 import { createUrgentStops } from "./urgent-stops.js";
@@ -295,6 +296,10 @@ const measuredProductPanels = createMeasuredProductPanels({
   authEpoch: () => session.authEpoch,
   announce,
 });
+const systemProductPanel = createSystemProductPanel({
+  document, request: apiRequest, isOperator: () => session.canOperate,
+  authEpoch: () => session.authEpoch, announce,
+});
 const measuredReviews = createMeasuredReviews({
   document, request: apiRequest,
   requestReport: (path) => apiRequest(path, {}, "markdown"),
@@ -359,6 +364,7 @@ function setConnected(connected, roles = [], subject = null) {
   session.canApprove = connected && session.roles.has("approver");
   session.canSubmit = session.canOperate;
   measuredProductPanels.updateAccess();
+  systemProductPanel.updateAccess();
   measuredReviews.updateAccess();
   urgentStops.updateAccess();
   elements.connectionState.classList.toggle("connected", connected);
@@ -884,6 +890,7 @@ function replaceCredential(token) {
   session.webMeasuredProductRequestId += 1;
   session.webMeasuredProductLoading = false;
   measuredProductPanels.clear();
+  systemProductPanel.clear();
   measuredReviews.clear();
   urgentStops.clear();
   session.reviewQueueRequestId += 1;

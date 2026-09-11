@@ -20,6 +20,7 @@ from pajin.control_plane.measured_product_sources import (
     NetworkProductRecipe,
     _RecipeModel,
 )
+from pajin.control_plane.system_product import SystemProductReader, SystemProductRecipe
 from pajin.control_plane.web_measured_product_deployment import WebProductRecipe
 from pajin.runtime.safe_files import (
     atomic_write_text_no_follow,
@@ -62,10 +63,11 @@ class MeasuredProductDeployment(_RecipeModel):
     web: WebProductRecipe | None = None
     network: NetworkProductRecipe | None = None
     ai: AIProductRecipe | None = None
+    system: SystemProductRecipe | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def require_selection(self) -> Self:
-        if self.web is None and self.network is None and self.ai is None:
+        if self.web is None and self.network is None and self.ai is None and self.system is None:
             raise ValueError("measured product deployment requires at least one product")
         return self
 
@@ -75,12 +77,17 @@ class MeasuredProductReaders:
     web: WebMeasuredProductReader | None = None
     network: NetworkMeasuredProductReader | None = None
     ai: AIMeasuredProductReader | None = None
+    system: SystemProductReader | None = None
 
     def diagnostic(self) -> dict[str, str]:
-        return {
+        result = {
             domain: "verified" if getattr(self, domain) is not None else "not-configured"
             for domain in ("web", "network", "ai")
         }
+        # Preserve the legacy diagnostic shape for existing deployments.
+        if self.system is not None:
+            result["system"] = "verified"
+        return result
 
 
 def _paths(value: object) -> Iterator[Path]:
@@ -159,6 +166,7 @@ def load_measured_product_readers(path: Path | None, digest: str | None) -> Meas
         web = None
         network = None
         ai = None
+        system = None
         if deployment.web is not None:
             stage = "web-reconstruction"
             web = deployment.web.build_reader(deployment_id=deployment.deployment_id)
@@ -198,7 +206,12 @@ def load_measured_product_readers(path: Path | None, digest: str | None) -> Meas
             )
             stage = "ai-verification"
             ai.read()
-        return MeasuredProductReaders(web=web, network=network, ai=ai)
+        if deployment.system is not None:
+            stage = "system-reconstruction"
+            system = SystemProductReader(deployment.system)
+            stage = "system-verification"
+            system.preflight()
+        return MeasuredProductReaders(web=web, network=network, ai=ai, system=system)
     except Exception:
         raise MeasuredProductDeploymentError(
             f"measured product startup failed at {stage}; "

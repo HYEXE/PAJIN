@@ -164,7 +164,8 @@ def _read(root: Path, reference: SystemRunReference, names: tuple[str, ...]) -> 
 
 
 def read_system_run(
-    root: Path, reference: SystemRunReference, trust: SystemReportTrust
+    root: Path, reference: SystemRunReference, trust: SystemReportTrust,
+    *, expected_campaign: str | None = None,
 ) -> dict[str, object]:
     """Recompute bindings and authenticated output without a agent credentials, Worker or signer."""
     inputs = _read(
@@ -178,6 +179,8 @@ def read_system_run(
     receipt = ActionApprovalConsumptionReceipt.model_validate(authorization["approvalReceipt"])
     request = ToolRequest.model_validate(authorization["request"])
     campaign = CampaignManifest.model_validate(authorization["campaign"])
+    if expected_campaign is not None and campaign.metadata.name != expected_campaign:
+        raise ValueError("System Run differs from the deployment-pinned Campaign")
     grant = CapabilityGrant.model_validate(authorization["grant"])
     if json.loads(inputs["sys-002-plan-reservation.json"]) != {
         "request": request.model_dump(mode="json"),
@@ -342,11 +345,13 @@ def read_system_run(
 
 
 def compare_system_runs(
-    root: Path, source: SystemRunReference, replay: SystemRunReference, trust: SystemReportTrust
+    root: Path, source: SystemRunReference, replay: SystemRunReference, trust: SystemReportTrust,
+    *, expected_campaign: str | None = None,
 ) -> dict[str, object]:
     if source.run_id == replay.run_id or source.root_digest == replay.root_digest:
         raise ValueError("System re-execution requires separately sealed fresh Runs")
-    left, right = read_system_run(root, source, trust), read_system_run(root, replay, trust)
+    left = read_system_run(root, source, trust, expected_campaign=expected_campaign)
+    right = read_system_run(root, replay, trust, expected_campaign=expected_campaign)
     if left["scopeDigest"] != right["scopeDigest"] or left["rulesDigest"] != right["rulesDigest"]:
         raise ValueError("System re-execution changed the approved Scope or rules")
     for coordinate in ("requestId", "approvalId", "permitId", "executionId"):

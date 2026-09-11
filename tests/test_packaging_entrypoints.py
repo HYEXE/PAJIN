@@ -216,6 +216,7 @@ def test_distribution_artifacts_work_in_a_clean_no_dependency_install(tmp_path: 
     assert "pajin/control_plane/web/measured-product-contracts.js" in wheel_members
     assert "pajin/control_plane/web/measured-reviews.js" in wheel_members
     assert "pajin/control_plane/web/urgent-stops.js" in wheel_members
+    assert "pajin/control_plane/web/system-product.js" in wheel_members
     assert "pajin/control_plane/web/render.js" in wheel_members
     expected_python_modules = {
         path.relative_to("src").as_posix() for path in Path("src/pajin").rglob("*.py")
@@ -246,6 +247,9 @@ def test_distribution_artifacts_work_in_a_clean_no_dependency_install(tmp_path: 
     assert not any("/tests/" in member for member in members)
     assert not any("/.pajin/" in member for member in members)
     assert any(member.endswith("/src/pajin/py.typed") for member in members)
+    assert any(
+        member.endswith("/src/pajin/control_plane/web/system-product.js") for member in members
+    )
 
     environment = tmp_path / "wheel-install"
     created = subprocess.run(

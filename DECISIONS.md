@@ -7,6 +7,7 @@
 
 - [ADR-0285](docs/adr/0285-validate-all-graph-history-with-bounded-current-snapshot-retention.md): 모든 이력을 검증하면서 현재 조회의 동시 Snapshot 보관량을 제한한다.
 
+- [ADR-0284](docs/adr/0284-read-pinned-system-results-with-operator-campaign-admission.md): 배포자 고정 System 증거에 대한 Operator·Campaign 조회 경계.
 - [ADR-0283](docs/adr/0283-verify-ops-and-system-on-separate-clean-linux-workflows.md): OPS/SYS 전용 Linux 검증과 시도별 자원 정리·독립 관찰.
 - [ADR-0282](docs/adr/0282-report-bounded-worker-failures-and-freeze-a-fresh-precision-comparison.md): 비밀정보를 제외한 Worker 실패 진단과 새 고정 정밀도 평가.
 

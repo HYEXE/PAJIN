@@ -100,6 +100,8 @@ const selectors = [
     "decision-form", "retest-form", "domain", "load-source", "refresh", "more", "lookup-form",
     "lookup-id", "title", "steps", "add-step", "workspace", "history", "history-load", "download",
     "decision-help"].map((name) => `#measured-review-${name}`),
+  "#system-product-panel", "#system-product-form", "#system-product-campaign",
+  "#system-product-load", "#system-product-status", "#system-product-result",
   "#network-measured-panel", "#network-measured-load", "#network-measured-status", "#network-measured-result",
   "#ai-measured-panel", "#ai-measured-load", "#ai-measured-status", "#ai-measured-result",
   "#token-form",
@@ -2209,6 +2211,69 @@ assert.doesNotMatch(elements.get("#status-message").textContent, /Run submission
 assert.equal(elements.get("#status-message").classList.contains("success"), false);
 assert.equal(elements.get("#run-form").attributes.get("aria-busy"), "false");
 assert.equal(elements.get("#submit-button").disabled, false);
+
+// SYS-003 checks transport state independently from execution success.
+const systemProtocol = await import(new URL("./system-product.js", applicationUrl).href);
+const systemRun = {
+  run: { run_id: "run_20260911T000000Z_1234abcd", root_digest: "a".repeat(64) },
+  workerExecuted: true, distribution: null, cleanup: "unknown", complete: false,
+};
+const systemView = {
+  version: "pajin.sys-003.operator-read/v1", campaignId: "sys-002-run", state: "incomplete",
+  source: systemRun, replay: null, distributionMatch: null, evidenceVerified: true,
+  findingAuthority: false, generalSystemSupport: false, executionAuthorized: false, readOnly: true,
+};
+assert.equal(systemProtocol.validateSystemProduct(systemView, "sys-002-run"), systemView);
+for (const patch of [ { campaignId: "other-campaign" }, { findingAuthority: true },
+  { generalSystemSupport: true }, { executionAuthorized: true }, { state: "verified" },
+  { evidenceVerified: false }, { replay: systemRun } ]) {
+  assert.throws(() => systemProtocol.validateSystemProduct({ ...systemView, ...patch }, "sys-002-run"));
+}
+enqueueConnection("operator");
+await submitToken("system-operator-test-token-at-least-32-characters");
+const systemCampaign = elements.get("#system-product-campaign");
+const systemForm = elements.get("#system-product-form");
+const systemResult = elements.get("#system-product-result");
+const systemStatus = elements.get("#system-product-status");
+const systemEndpoint = "/v1/campaigns/sys-002-run/products/system-os-release";
+systemCampaign.value = "sys-002-run";
+enqueueFetch(systemEndpoint, (_url, options) => {
+  assert.equal(options.body, undefined);
+  return jsonResponse(systemView);
+});
+await systemForm.dispatch("submit");
+assert.equal(systemResult.hidden, false, systemStatus.textContent);
+assert.match(systemStatus.textContent, /integrity verified.*incomplete/);
+assert.equal(elements.get("#system-product-load").disabled, false);
+for (const [code, detail] of [[409, "System evidence is not integrity-valid"],
+  [503, "System result is not configured"], [404, "No System result is visible for this Campaign"]]) {
+  enqueueFetch(systemEndpoint, () => jsonResponse({ detail }, code));
+  await systemForm.dispatch("submit");
+  assert.equal(systemResult.hidden, true);
+  assert.match(systemStatus.textContent, new RegExp(detail));
+}
+enqueueFetch(systemEndpoint, () => jsonResponse({ ...systemView, state: "empty", source: null, evidenceVerified: false }));
+await systemForm.dispatch("submit");
+assert.equal(systemResult.hidden, true);
+assert.match(systemStatus.textContent, /No retained System result/);
+const staleSystem = deferred();
+enqueueFetch(systemEndpoint, () => staleSystem.promise);
+const pendingSystem = systemForm.dispatch("submit");
+await settle();
+systemCampaign.value = "other-campaign";
+await systemCampaign.dispatch("input");
+staleSystem.resolve(jsonResponse(systemView));
+await pendingSystem;
+assert.equal(systemResult.hidden, true);
+assert.doesNotMatch(systemStatus.textContent, /incomplete/);
+assert.equal(elements.get("#system-product-panel").attributes.get("aria-busy"), "false");
+await elements.get("#lock-button").dispatch("click");
+assert.equal(elements.get("#system-product-load").disabled, true);
+assert.equal(systemResult.hidden, true);
+assert.equal(fetchHandlers.length, 0);
+
+enqueueConnection("operator");
+await submitToken("operator-after-system-tests-at-least-32-characters");
 
 const urgentAlert = {
   alertId: `event_${"a".repeat(32)}`,

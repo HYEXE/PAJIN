@@ -154,6 +154,7 @@ from pajin.target_attestation import (
 )
 
 if TYPE_CHECKING:
+    from pajin.control_plane.system_product import SystemProductReader
     from pajin.runtime.host_recovery import StoreEnrollment
     from pajin.workflow.ai_measured_product_reader import AIMeasuredProductReader
     from pajin.workflow.network_measured_product_reader import NetworkMeasuredProductReader
@@ -2161,6 +2162,7 @@ def create_app(
     ai_measured_product_reader: "AIMeasuredProductReader | None" = None,
     network_measured_product_reader: "NetworkMeasuredProductReader | None" = None,
     web_measured_product_reader: "WebMeasuredProductReader | None" = None,
+    system_product_reader: "SystemProductReader | None" = None,
 ) -> FastAPI:
     from pajin.runtime.host_gate import runtime_activity
 
@@ -2171,7 +2173,7 @@ def create_app(
         injected_runtime=any(value is not None for value in (
             pentest_recon_runtime, pentest_replay_runtime, pentest_workflow_runtime,
             pentest_workflow_coordination_runtime, ai_measured_product_reader,
-            network_measured_product_reader, web_measured_product_reader,
+            network_measured_product_reader, web_measured_product_reader, system_product_reader,
         )),
     ):
         return _create_admitted_app(
@@ -2183,6 +2185,7 @@ def create_app(
             ai_measured_product_reader=ai_measured_product_reader,
             network_measured_product_reader=network_measured_product_reader,
             web_measured_product_reader=web_measured_product_reader,
+            system_product_reader=system_product_reader,
         )
 
 
@@ -2196,6 +2199,7 @@ def _create_admitted_app(
     ai_measured_product_reader: "AIMeasuredProductReader | None",
     network_measured_product_reader: "NetworkMeasuredProductReader | None",
     web_measured_product_reader: "WebMeasuredProductReader | None",
+    system_product_reader: "SystemProductReader | None",
 ) -> FastAPI:
     from pajin.control_plane.measured_product_deployment import load_measured_product_readers
 
@@ -2205,6 +2209,7 @@ def _create_admitted_app(
             web_measured_product_reader,
             network_measured_product_reader,
             ai_measured_product_reader,
+            system_product_reader,
         )
     ):
         raise ValueError(
@@ -2217,6 +2222,7 @@ def _create_admitted_app(
     web_measured_product_reader = web_measured_product_reader or configured_readers.web
     network_measured_product_reader = network_measured_product_reader or configured_readers.network
     ai_measured_product_reader = ai_measured_product_reader or configured_readers.ai
+    system_product_reader = system_product_reader or configured_readers.system
     logging.getLogger(__name__).info(
         "Measured product deployment: %s",
         configured_readers.diagnostic()
@@ -2280,4 +2286,7 @@ def _create_admitted_app(
         pentest_workflow_coordination_runtime=(selected_pentest_workflow_coordination_runtime),
         dependencies=dependencies,
     )
+    from pajin.control_plane.system_product_routes import register_system_product_route
+
+    register_system_product_route(app, reader=system_product_reader, dependencies=dependencies)
     return app

@@ -421,6 +421,7 @@ def test_web_console_shell_and_assets_are_public_but_hardened(tmp_path: Path) ->
             "protocol-js": client.get("/ui/assets/protocol.js"),
             "render-js": client.get("/ui/assets/render.js"),
             "urgent-stops-js": client.get("/ui/assets/urgent-stops.js"),
+            "system-product-js": client.get("/ui/assets/system-product.js"),
         }
         for response in responses.values():
             assert response.status_code == 200
@@ -440,6 +441,7 @@ def test_web_console_shell_and_assets_are_public_but_hardened(tmp_path: Path) ->
         assert responses["js"].headers["content-type"].startswith("text/javascript")
         assert responses["protocol-js"].headers["content-type"].startswith("text/javascript")
         assert responses["render-js"].headers["content-type"].startswith("text/javascript")
+        assert responses["system-product-js"].headers["content-type"].startswith("text/javascript")
         policy = responses["html"].headers["content-security-policy"]
         for directive in (
             "default-src 'none'",

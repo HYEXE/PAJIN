@@ -222,6 +222,10 @@ def register_health_and_ui_routes(
     def web_console_render_helpers() -> Response:
         return console_asset_response("render.js")
 
+    @app.get("/ui/assets/system-product.js", include_in_schema=False)
+    def system_product_asset() -> Response:
+        return console_asset_response("system-product.js")
+
     @app.get("/ui/assets/measured-products.js", include_in_schema=False)
     def web_console_measured_products() -> Response:
         return console_asset_response("measured-products.js")

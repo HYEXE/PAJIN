@@ -973,6 +973,20 @@
           </article>
         </div>
       </section>
+      <section id="system-product-panel" class="panel" aria-labelledby="system-product-heading" aria-busy="false">
+        <div class="section-heading"><div>
+          <p class="section-kicker">SYSTEM / RETAINED EVIDENCE</p>
+          <h2 id="system-product-heading">Linux distribution read</h2>
+        </div></div>
+        <p class="panel-intro">Read the retained result for one approved /usr/lib/os-release request in an isolated Linux container. This view does not start an execution or grant approval, and does not establish a vulnerability or general System support.</p>
+        <form id="system-product-form" class="compact-form">
+          <label for="system-product-campaign">Campaign</label>
+          <input id="system-product-campaign" type="text" pattern="[a-z0-9](?:[a-z0-9]|-){2,79}" maxlength="80" autocomplete="off" required disabled>
+          <button id="system-product-load" type="submit" class="button button-primary" disabled>Load System result</button>
+        </form>
+        <p id="system-product-status" role="status" aria-live="polite">Connect with an Operator credential to view this result.</p>
+        <div id="system-product-result" class="system-product-result" hidden></div>
+      </section>
       <section id="measured-review-panel" class="panel measured-review-panel" aria-labelledby="measured-review-heading" aria-busy="false">
         <div class="section-heading">
           <div>

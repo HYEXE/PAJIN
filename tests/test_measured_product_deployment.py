@@ -211,6 +211,9 @@ def test_network_deployment_restores_public_lifecycle_and_verifies_source(
         network=recipe,
     )
     assert MeasuredProductDeployment.model_validate_json(deployment.model_dump_json()) == deployment
+    assert set(deployment.model_dump(mode="json", by_alias=True)) == {
+        "apiVersion", "kind", "deploymentId", "evidenceRoot", "web", "network", "ai",
+    }
     delegate = _FakeDocker()
 
     def run(_self: SubprocessNetworkDockerCommandRunner, arguments: Any) -> Any:

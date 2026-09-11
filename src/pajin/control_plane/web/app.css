@@ -1537,3 +1537,13 @@ footer {
 .urgent-stops-panel > p, .urgent-stop-card p { line-height: 1.6; }
 .urgent-stop-card { border: 1px solid var(--line); border-radius: 0.75rem; padding: 1rem; overflow-wrap: anywhere; }
 .urgent-stop-card h3 { margin-top: 0; }
+
+.system-product-result { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+#system-product-panel { margin-top: 1.5rem; padding: clamp(1.15rem, 2.5vw, 2rem); scroll-margin-top: 152px; }
+.system-product-result[hidden] { display: none; }
+.system-product-result p { overflow-wrap: anywhere; }
+.system-product-result > p { grid-column: 1 / -1; }
+.system-product-result article { min-width: 0; padding: 1.25rem; border: 1px solid var(--line); border-radius: var(--radius); }
+#system-product-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+#system-product-campaign { min-width: 0; width: min(100%, 22rem); }
+@media (max-width: 760px) { .system-product-result { grid-template-columns: minmax(0, 1fr); } }
