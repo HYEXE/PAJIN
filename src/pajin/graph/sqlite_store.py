@@ -1234,6 +1234,7 @@ def _verified_current_snapshot_from_connection(
         connection,
         campaign_id=campaign_id,
         projections=projections,
+        retain_snapshot_id=snapshot_id,
     )
     current = projections[max(projections)]
     expected_event_head = events[-1].event_digest if events else None
@@ -3820,9 +3821,7 @@ def _verified_projections(
 ) -> dict[int, GraphProjection]:
     projection_rows = connection.execute(
         "SELECT * FROM graph_projections ORDER BY revision"
-    ).fetchall()
-    if not projection_rows:
-        raise SQLiteGraphStoreError("SQLite Graph backup has no genesis projection")
+    )
     projections: dict[int, GraphProjection] = {}
     # All callers obtained these events through _events_from_connection, which validates
     # canonical bytes, model/index identities and the complete hash chain. Replay that
@@ -3868,10 +3867,11 @@ def _verified_snapshots(
     *,
     campaign_id: str,
     projections: dict[int, GraphProjection],
+    retain_snapshot_id: str | None = None,
 ) -> tuple[dict[str, GraphSnapshot], str | None]:
     snapshot_rows = connection.execute(
         "SELECT * FROM graph_snapshots ORDER BY ordinal"
-    ).fetchall()
+    )
     snapshots: dict[str, GraphSnapshot] = {}
     previous_snapshot: str | None = None
     for ordinal, row in enumerate(snapshot_rows, start=1):
@@ -3886,7 +3886,10 @@ def _verified_snapshots(
             raise SQLiteGraphStoreError(
                 "SQLite Graph backup Snapshot differs from its published Projection"
             )
-        snapshots[snapshot.snapshot_id] = snapshot
+        # Current-page reads need one object, but every historical row, projection
+        # binding and chain link must still pass the same verification.
+        if retain_snapshot_id is None or snapshot.snapshot_id == retain_snapshot_id:
+            snapshots[snapshot.snapshot_id] = snapshot
         previous_snapshot = snapshot.snapshot_digest
     return snapshots, previous_snapshot
 

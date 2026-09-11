@@ -1,11 +1,20 @@
 """Historical replay remains exact even when stored rows are independently canonical."""
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from test_graph_snapshot_cache import _fixture, _load, _tamper
 
-from pajin.graph import GraphProjection, GraphProjector, GraphSnapshotReason, SQLiteGraphStoreError
+from pajin.graph import (
+    GraphObservation,
+    GraphProjection,
+    GraphProjector,
+    GraphSnapshotError,
+    GraphSnapshotReason,
+    SQLiteGraphStoreError,
+    load_verified_graph_snapshot_history,
+)
 from pajin.graph.sqlite_store import (
     _events_from_connection,
     _projection_bytes,
@@ -90,3 +99,56 @@ def test_inclusive_size_boundary_and_immediate_fallback(tmp_path, monkeypatch, k
     setattr(cache, attribute, limit - 1)
     assert _load(cache, snapshot) == _load(cache, snapshot) == snapshot
     assert len(calls) == 3 and cache._snapshot is None
+
+
+def test_current_reads_preserve_complete_independent_history_views(tmp_path):
+    path, _store, authority, initial, cache = _fixture(tmp_path)
+    successors = [authority.capture(GraphSnapshotReason.REPLAN) for _ in range(5)]
+    current = successors[-1]
+    assert _load(cache, current) == current
+    history = load_verified_graph_snapshot_history(path, campaign_id=current.campaign_id)
+    assert history[-6:] == (initial, *successors)
+    # Historical results remain independent objects, and reading them cannot alter the cache.
+    observation = next(
+        node for node in history[-2].projection.nodes if isinstance(node, GraphObservation)
+    )
+    observation.summary = "caller changed one historical result"
+    assert history[-1] == current
+    assert _load(cache, current) == current
+    with pytest.raises(GraphSnapshotError, match="current"):
+        _load(cache, initial)
+
+
+@pytest.mark.parametrize("requested", ["current", "missing"])
+@pytest.mark.parametrize("row", ["first", "middle"])
+def test_discarded_snapshot_corruption_is_checked_before_any_current_result(
+    tmp_path, requested, row
+):
+    path, _store, authority, initial, cache = _fixture(tmp_path)
+    snapshots = [initial, *(authority.capture(GraphSnapshotReason.REPLAN) for _ in range(5))]
+    current = snapshots[-1]
+    assert _load(cache, current) == current
+    old = snapshots[0 if row == "first" else 2]
+    _tamper(
+        path,
+        "graph_snapshots",
+        "UPDATE graph_snapshots SET snapshot_json = ? WHERE snapshot_id = ?",
+        (b"{}", old.snapshot_id),
+    )
+    selected = current.snapshot_id if requested == "current" else "graph-snapshot_" + "0" * 64
+    with pytest.raises((GraphSnapshotError, SQLiteGraphStoreError)):
+        cache.load(campaign_id=current.campaign_id, snapshot_id=selected)
+    with pytest.raises((GraphSnapshotError, SQLiteGraphStoreError)):
+        load_verified_graph_snapshot_history(path, campaign_id=current.campaign_id)
+
+
+def test_concurrent_stale_and_current_requests_cannot_exchange_snapshot_results(tmp_path):
+    _path, _store, authority, initial, cache = _fixture(tmp_path)
+    current = authority.capture(GraphSnapshotReason.REPLAN)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stale = pool.submit(_load, cache, initial)
+        fresh = pool.submit(_load, cache, current)
+        with pytest.raises(GraphSnapshotError, match="current"):
+            stale.result(timeout=10)
+        assert fresh.result(timeout=10) == current
+    assert _load(cache, current) == current

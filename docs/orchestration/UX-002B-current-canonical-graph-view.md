@@ -88,6 +88,13 @@ comparison. [GRAPH-PERF-002](../benchmark/GRAPH-PERF-002-first-and-history-page-
 [ADR-0280](../adr/0280-verify-historical-graph-projections-with-one-exact-replay.md) record this additive
 implementation change, same-byte measurements and increased memory cost. These limits do not bound RSS.
 
+[GRAPH-PERF-003](../benchmark/GRAPH-PERF-003-memory-and-concurrent-reads.md) streams persisted rows and
+retains only the requested snapshot during current reads. Every historical snapshot and projection
+still receives full verification, including when the requested ID does not exist. Public history,
+backup and recovery readers retain complete history; cursor, head, hash, authorization and defensive
+copy contracts are unchanged. The new quiet performance comparison is recorded separately from
+the initial allocation diagnosis.
+
 Malformed/mixed cursors and invalid limits return `422`; advancing the Graph makes the old
 Snapshot return `409`. A cursor cannot resume historical state. The legacy full endpoint still
 returns `413` above its original limits. See [ADR-0271](../adr/0271-page-the-verified-current-graph-with-snapshot-bound-cursors.md).
