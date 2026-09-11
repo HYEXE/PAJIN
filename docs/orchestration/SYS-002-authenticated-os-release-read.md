@@ -84,7 +84,7 @@ sets `findingAuthority=false` and `generalSystemSupport=false`. It does not cert
 Commit `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a` passed ordinary remote CI and the existing
 Web/Network/AI Docker workflows. Those workflows did not execute the SYS-002 read. SYS-002 itself
 was verified locally. A dedicated `sys-002-conformance.yml` workflow is now implemented; its new
-remote run still requires explicit approval and observed results for the same new commit.
+remote dispatch is approved and observed results for the final new commit remain pending.
 The additive [SYS-003 Operator read](SYS-003-operator-result-read.md) consumes existing sealed
 results without issuing another execution.
 

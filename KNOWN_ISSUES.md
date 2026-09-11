@@ -5,27 +5,37 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
 
 ## 현재 후속 작업의 검증 공백 (2026-09-11)
 
-- 이번 신규 다섯 과제는 진행 중이다. ① 계약 세 개의 상태 문구를 검토했으며 새 문서 commit·
-  기존 `a599818`을 포함한 push·그 push의 일반 CI는 별도 승인/실행 전이다.
-- ② Worker exit 70의 세부 실패 진단과 새 미사용 평가군의 탐지 개선은 아직 검증 전이다.
-  이전 EFFECT-003의 두 실패 원인은 미확인이며 정밀도 하락 결과와 기존 기본 탐지기를 보존한다.
-- ③ Graph의 기존 큰 이력 RSS 증가와 작은 DB 반복 지연은 관측된 제약이다.
-  이번 live/retained 메모리·동시 reader의 새 전후 비교는 아직 실행하지 않았다.
-- ④ OPS-003/SYS-002 자체의 실제 Linux 검증은 로컬 완료다. `3c66c2e`의 원격
-  Web/Network/AI 성공은 OPS 복구·System 읽기의 전용 원격 실행 근거가 아니다.
-  두 전용 workflow 구현·로컬 검증·승인된 동일 커밋 원격 실증이 남아 있다.
-- ⑤ SYS-002 CLI의 봉인 결과를 배포 pin과 기존 인증/Campaign 경계로 API/Console에 연결하는
-  구현·실제 HTTP 브라우저 검증이 남아 있다. 임의 호스트/파일·일반 System 실행으로 확대하지 않는다.
+- 이번 신규 다섯 과제의 로컬 구현·검증은 완료했다. ① 상태 문구 수정 `bbcb72f`와 기존 `a599818`을
+  승인받아 push했고 새 일반 CI 34563781824의 Quality·24 shard도 통과했다.
+- ② Worker 실패 진단과 정상/거부/실패/비노출 회귀는 통과했다. 새 EFFECT-004의 실제 고정 평가가
+  완료됐고 384응답/0실패와 고정 품질 기준을 충족했다. 오탐 51개(생성 사례 47개)는 줄지 않았으며
+  기본 v1은 유지한다. 개선은 6개 grouped 미탐 감소에 한정된다. 이전 두 실패 원인은 미확인이다.
+- ③ 동일 조건의 전후 측정에서 큰 이력 단일 reader RSS는 1,424.56→769.73 MiB로 감소했다.
+  변경 직후 최초 조회는 10.9536→11.1738초로 악화됐고 post-GC 보관량은 약 35.48 MiB로 같다.
+  두 개까지 같은 process의 reader를 측정했으며 process 분산·cold disk·최대 규모·운영 SLO는 미측정이다.
+- ④ 두 전용 workflow와 실행·정리·독립 잔여 관찰 및 선택 회귀를 구현·검증했다.
+  새 소스의 Linux arm64 OPS 11개/SYS 실제 1개·Worker 4회와 독립 자원 부재를 확인했다.
+  승인된 동일 커밋의 Linux amd64 원격 실행은 남았다. `3c66c2e`의
+  Web/Network/AI 결과는 OPS 복구·System 읽기 전용 원격 근거가 아니다.
+- ⑤ SYS-003의 API/Console과 배포 pin·Operator subject·Campaign 제한 및 실제 HTTP 브라우저
+  검증은 완료했다. 기존 실제 SYS-002 봉인 결과의 조회 검증이며 새 호스트 실행 검증이 아니다.
+  기본 반응형·키보드는 Chromium 두 viewport로 관찰했고 다른 browser/device는 미검증이다.
 - 이전 모든 goal은 완료 상태다. EFFECT-003의 불완전 비교/품질 개선 미확인은 기록된 결과이며
   이전 goal을 다시 여는 사유가 아니다. 이후 내용의 이전 결과는 새 소스 검증을 대신하지 않는다.
 
 ## 기존 검증과 이번 변경의 구분
 
+- 이번 최종 로컬 4 shard는 8,426 passed·기존 76 skipped다. 이전 8,418개를 보존했고 신규 84개를
+  포함한 8,502개가 중복·누락 없이 처리됐으며 비문서 소스 939개가 실행 중 유지됐다. Ruff 전체,
+  Linux strict mypy 기본 475개와 추가 scripts 10개도 통과했다. 76개 opt-in 검사의 일반 pytest
+  미실행과 별도 실제 OPS/SYS·모델·브라우저 실증을 구분한다. 문서 push의 원격 CI는
+  통과했고 최종 제품 SHA의 원격 CI 및 다섯 전용 검증은 승인 후 실행 준비 상태다.
+
 - 최종 `215d4fc`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 첫 시도에 통과했다.
   Quality·24 shard의 8,260 passed·기존 76 skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.
   24개 duration artifact의 동일 SHA·clean tree·8,336개 중복 없는 테스트와 기존 항목 보존을 대조했다.
   이후 변경은 [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에 따라 재검증한다.
-- 이번 제품·테스트의 전체 로컬 회귀와 `3c66c2e`의 원격 CI는 각각 8,342 passed·기존 76 skipped다.
+- 이전 제품·테스트의 전체 로컬 회귀와 `3c66c2e`의 원격 CI는 각각 8,342 passed·기존 76 skipped다.
   새 CI 34493304521의 24개 artifact에서 동일 SHA·clean tree·exit 0·중복 없는 8,418개 테스트와
   기존 8,336개 보존·새 82개 추가를 확인했다. Web 34493387107(133.92초), Network 34493428264
   (340.94초), AI 34493435878(84.89초)는 각각 실제 1 passed와 별도 잔여 자원 검사를 통과했다.
@@ -101,7 +111,9 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   5,002 node / 10,000 edge 최초 13.48→8.13초, 변경 직후 15.65→9.20초이며 큰 이력 반복은
   20.80→0.304초다. 작은 DB 반복은 소폭 느려졌고 history RSS는 평균 1,313→1,618 MiB로 늘었다.
   이력 전체 검증·defensive copy·hash 비용은 남는다. 크기 초과/플랫폼 fallback은 전체 검증이며
-  더 긴 이력·동시 reader·cold disk·최대 크기·실제 운영 메모리/SLO는 미측정이다.
+  이후 [GRAPH-PERF-003](docs/benchmark/GRAPH-PERF-003-memory-and-concurrent-reads.md)은 같은 process의
+  reader 두 개까지 측정하고 RSS 감소·지연 악화를 기록했다. 더 긴 이력·별도 process 동시성·
+  cold disk·최대 크기·실제 운영 메모리/SLO는 미측정이다.
 - UX-003A ranking은 최대 500개로 제한되고 confidence는 위험도·검증 진실이 아니다.
   UX-003B Decision audit도 최대 500개이며 off-host anchor·historical browsing·compaction이 없다.
 - UX-004A KISA와 UX-004B WALK 비교는 각각의 증거 경계를 유지한다. semantic diff나 새 validation·

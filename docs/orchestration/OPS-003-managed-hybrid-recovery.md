@@ -135,8 +135,8 @@ corrected; the final success is not a first-attempt claim. Unit coverage accepts
 internal budget serialization. These recovery results are local. Commit
 `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a` passed ordinary remote CI and the existing
 Web/Network/AI Docker workflows; those workflows did not execute the OPS-003 recovery procedure.
-A dedicated `ops-003-conformance.yml` workflow is now implemented; its new remote run still
-requires explicit approval and observed results for the same new commit.
+A dedicated `ops-003-conformance.yml` workflow is now implemented and its dispatch approved;
+observed results for the final new commit remain pending.
 
 A final integration image containing the completed Graph and System modules repeated all eleven
 checks in 71.07 seconds, with two valid Run seals and the unknown call charge still one. A separate

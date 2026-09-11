@@ -1,7 +1,7 @@
 # GRAPH-PERF-003: Memory and Concurrent Current-Graph Reads
 
 Status: Bounded implementation and the identical-protocol local comparison complete; remote
-validation of a new commit remains approval-dependent.
+validation of the final new commit is approved and remains pending.
 
 ## Experiment
 

@@ -8,18 +8,20 @@
 
 이번 요청의 다섯 과제를 새 goal로 관리하며 토큰 예산은 지정하지 않는다. 시작 기준은
 `main`의 `a599818c7df10e738dd044fe886eb1a6a423fc36`이다. upstream·실제 원격은
-`3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a`이고 로컬 문서 커밋 하나가 앞서 있다.
-시작 worktree 하나는 깨끗하며 진행 중 Git 작업은 없다. 기존 커밋을 보존한다.
+`3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a`였으며 문서 커밋 하나가 앞서 있었다.
+시작 worktree는 깨끗했다. 기존 커밋을 보존하고 승인된 8개 논리 커밋·2회 일반 push와
+동일 최종 SHA의 일반 CI/Web/Network/AI/OPS/SYS 검증을 진행한다. 첫 문서 push는 완료했다.
 
-1. [ ] **DOCS-FINAL-002 상태 불일치 수정** — SYS-002/GRAPH-PERF-002/OPS-003 계약의
+1. [x] **DOCS-FINAL-002 상태 불일치 수정** — SYS-002/GRAPH-PERF-002/OPS-003 계약의
    로컬 실증과 기존 원격 CI/Web/Network/AI 범위를 대조한다. 문서 검사·diff 검토 후
-   추가 문서 commit과 기존 `a599818`을 포함한 push를 별도 승인받고 새 일반 CI를 확인한다.
-2. [ ] **EFFECT-004 실패 진단·탐지 정밀도** — 관측한 단계/범주만 공개 가능한 고정 값으로
+   추가 문서 `bbcb72f`와 기존 `a599818`을 승인받아 push했다. 새 CI 34563781824의
+   Quality·24 shard와 8,342 passed·기존 76 skipped를 확인했다.
+2. [x] **EFFECT-004 실패 진단·탐지 정밀도** — 관측한 단계/범주만 공개 가능한 고정 값으로
    분류하고 unknown·보수적 차감·재시도/환불 금지·기존 wire/reader를 유지한다. 정상·거부·실패·
    비노출 회귀 후 새 후보/독립 정답/미사용 과제/모델/seed/반복/성공 규칙/지문을 고정한다.
    동일 실제 응답으로 baseline과 비교하고 표본·실패·혼동행렬·정밀도/재현율·편차·시간/토큰/비용을
    기록한다. 개선 미확인은 그대로 보고하며 기존 기본값과 false Finding authority를 유지한다.
-3. [ ] **GRAPH-PERF-003 메모리·동시 조회** — 같은 환경/데이터/반복의 지연·CPU·peak RSS·
+3. [x] **GRAPH-PERF-003 메모리·동시 조회** — 같은 환경/데이터/반복의 지연·CPU·peak RSS·
    live/retained allocation·I/O·동시 reader를 먼저 측정한다. 측정 병목만 최소 수정하고 동일 조건으로
    비교한다. 모든 과거 증거 검증·cursor/current head·권한·변조 거부·무효화/크기/fallback을 유지한다.
    실험 메모리 예산과 부하의 근거를 명시하며 운영 SLO·최대 규모 보장으로 확대하지 않는다.
@@ -27,7 +29,7 @@
    정확한 clean commit·현지 빌드 이미지·PG17/TLS/mTLS·실제 실행·항상 실행되는 cleanup과 독립
    잔여 자원 검사를 요구한다. 공개 artifact는 비밀정보 없는 요약만 포함한다. 로컬 경계 검증 후
    commit/push/실행을 별도 승인받고 동일 신규 커밋의 CI/Web/Network/AI/OPS/SYS 결과를 확인한다.
-5. [ ] **SYS-003 Operator API·Console 조회** — 배포자가 고정한 증거/trust/Run만 기존 독립 reader로
+5. [x] **SYS-003 Operator API·Console 조회** — 배포자가 고정한 증거/trust/Run만 기존 독립 reader로
    조회한다. 인증/역할/Campaign 경계·false Finding/general-System authority를 유지한다. 정상·
    미구성·빈 결과·권한 거부·Campaign 혼합·변조·조회 실패와 기존 CLI/API를 검증한다.
    실제 봉인 결과/독립 reader 일치, HTTP 브라우저·키보드·반응형을 확인한다. 조회는 실행을 만들지 않는다.
@@ -47,8 +49,9 @@ SYS-002는 정해진 범위에서 완료했다. EFFECT-003의 384시도/382응�
 
 제품 기준 `3c66c2e`의 로컬/원격 pytest는 각각 8,342 passed·기존 76 skipped이고 원격
 Quality·24 shard·Web/Network/AI가 첫 시도에 통과했다. OPS-003/SYS-002 자체의 실제 Linux
-검증은 로컬 결과이며 전용 원격 workflow는 아직 없다. `a599818`은 최종 원격 결과의 운영 문서
-세 개만 담은 승인된 로컬 커밋이다. 이 기록은 새 소스의 CI 또는 새 실행 승인이 아니다.
+검증은 로컬 결과이며 당시 전용 원격 workflow는 없었다. 이번 새 workflow의
+원격 실행은 별도 승인됐으며 최종 SHA 검증은 남았다. `a599818`은 기존 결과의 운영 문서
+세 개만 담은 커밋으로 이번 승인된 첫 push에 포함됐다. 과거 CI를 새 소스의 결과로 사용하지 않는다.
 
 ## 제품 목표와 현재 지원 범위
 
@@ -65,7 +68,7 @@ PAJIN은 9개 Security Domain을 하나의 Canonical Graph와 Capability authori
 | Network | 서비스 Surface·준비·증거 admission와 합성 6-case 측정 | raw socket·일반 스캔·서비스 취약점 확정 아님. [NET-002D](docs/orchestration/NET-002D-bounded-network-measurement-product-read-and-conformance.md) |
 | AI | 고정 M03 source·독립 Replay 2개·Controls 3개·product read, 별도 실제 모델 효과 평가 | 임의 모델·agent 안전성이나 일반 Finding으로 확장하지 않음. [AI-002D](docs/orchestration/AI-002D-bounded-ai-measurement-product-read-and-conformance.md) |
 | Cloud | CLOUD-001A~D의 준비·서명 증거 admission·정책 비교·fixture 요구 | 실제 provider·credential 사용 runtime, 정책 translator·live benchmark 필요. [CLOUD-001D](docs/benchmark/CLOUD-001D-fresh-credential-policy-replay-disposable-fixtures.md) |
-| System | SYS-001A~D 계약과 SYS-002의 실제 mTLS OS-release 읽기·재실행·독립 확인·제품 보고 | SYS-002는 격리 container userspace 한 기능이다. 일반 host 실행과 [SYS-001D](docs/benchmark/SYS-001D-system-replay-disposable-host-fixtures.md) 전체 conformance는 별도다. |
+| System | SYS-001A~D 계약, SYS-002의 실제 mTLS OS-release 읽기·재실행·독립 확인과 SYS-003 Operator API/Console의 고정 결과 조회 | SYS-002는 격리 container userspace 한 기능이다. 일반 host 실행과 [SYS-001D](docs/benchmark/SYS-001D-system-replay-disposable-host-fixtures.md) 전체 conformance는 별도다. |
 | Application | APP-001A~D 준비·admission과 APP-002의 승인된 offline ELF64 헤더 실행·재실행·보고 | APP-002는 POSIX custody·Linux Docker의 한 읽기 기능만 지원; 일반 parser/동적 실행은 닫힘. [APP-002](docs/orchestration/APP-002-bounded-offline-elf-header-execution.md) |
 | Mobile | MOBILE-001A~D의 package/static 분석 준비·증거 admission·비교 | 실제 parser·emulator/device·device-bound profile conformance 필요. [MOBILE-001D](docs/benchmark/MOBILE-001D-package-reanalysis-seeded-mobile-fixtures.md) |
 | Cryptography | CRYPTO-001A~D의 준비·서명된 재계산 증거 검증·중립 비교 | 실제 분석·semantic Oracle·수치 측정 필요. [CRYPTO-001D](docs/benchmark/CRYPTO-001D-independent-implementation-replay-seeded-vector-requirements.md) |
@@ -80,10 +83,11 @@ metric registry는 구현됐다. 각 registry의 false authority와 `required`/`
 이번 5개 개선의 검증 범위와 남은 제약을 기준으로 다음 독립 slice를 선정한다. 아래 항목은 이번 목표의 완료 범위를
 암묵적으로 확대하지 않으며, 새로운 실행·비용·운영 권한이 필요하면 별도로 정한다.
 
-- EFFECT-003의 정밀도 하락·2개 실행 실패를 분석하되 소비한 평가군은 개발 자료로만 사용한다.
-  다음 후보는 새 버전과 별도 미사용 평가군을 요구한다.
+- EFFECT-004에서 남은 오탐 51개와 증가한 탐지 CPU 비용을 독립 후속 목표로 선정한다. 소비된
+  EFFECT-002/003/004 평가군은 개발 자료이며 다음 후보는 새 버전과 별도 미사용 평가군을 요구한다.
 - OPS-003의 제한된 복원·승인 재개 이후 물리 host/storage 장애와 실제 운영 환경의 복구 계약.
-- GRAPH-PERF-002 이후 긴 이력의 Snapshot 검증 비용, 증가한 RSS, 미측정 크기·실제 운영 부하를 별도 선정한다.
+- GRAPH-PERF-003의 메모리 감소 이후 남은 최초 조회 지연, 별도 process 동시성·cold disk·최대 크기와
+  실제 운영 부하를 별도 선정한다.
 - SYS-002 한 기능 이후 Cloud provider 또는 추가 System 기능의 인증·격리·독립 검증 범위를 별도 선정한다.
 - 단일 호스트 밖의 verifier·store fence·독립 checkpoint·credential custody와 운영 복구 계약.
 
@@ -112,3 +116,14 @@ positive/adversarial test, audit/evidence lineage와 benchmark 영향을 명시�
 - 관련 pytest, Ruff, Linux strict mypy, 필요한 packaging·실제 사용자 경로를 검증한다.
 - 최종 통합은 같은 소스의 전체 회귀와 변경 경로별 conformance를 확인한다.
 - 미실행 검증·환경 제한·미커밋 변경을 `HANDOFF.md`와 `KNOWN_ISSUES.md`에 정확히 남긴다.
+
+## 현재 실행 체크포인트
+
+① 문서 `bbcb72f`의 승인된 commit/push와 일반 CI를 완료했다. ② 새 384응답/0실패 평가와 동결 reader를
+검증했으며 고정 기준을 충족했다. 오탐 51개는 유지돼 기본 v1은 바꾸지 않는다. ③ Graph 최소 변경과
+집중 검사와 전후 각 24개 프로세스 비교를 마쳤다. 큰 이력 단일 reader RSS는 1,424.56→769.73 MiB이나
+변경 직후 최초 조회는 10.9536→11.1738초로 악화됐다. ④ 전용 workflow·선택·정리 회귀와 최종
+Linux arm64 실증을 통과했으며 승인된 동일 커밋의 원격 실행은 남았다. ⑤ 실제 봉인 결과 조회,
+HTTP 브라우저, 기존 배포 JSON 호환성, 설치 wheel의 API/자산을 검증했다. 최종 전체 4 shard는
+8,426 passed·기존 76 skipped이며 8,502개 중복·누락이 없고 소스 939개가 검사 중 유지됐다.
+Ruff·Linux strict mypy 기본 475개/추가 scripts 10개도 통과했다. 남은 단계는 승인된 최종 제품 push와 동일 SHA의 CI/Web/Network/AI/OPS/SYS다.
