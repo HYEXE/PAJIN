@@ -9,6 +9,9 @@ from pathlib import Path
 
 DOMAINS = ("web", "network", "ai")
 WORKFLOWS = {domain: f".github/workflows/{domain}-002d-conformance.yml" for domain in DOMAINS}
+OPERATIONAL_WORKFLOWS = {
+    "ops": ".github/workflows/ops-003-conformance.yml",
+}
 TARGET_CONTEXTS = {
     "containers/bug-bounty-target/": "web",
     "containers/benchmark-worker/": "web",
@@ -16,8 +19,13 @@ TARGET_CONTEXTS = {
     "containers/ai-target/": "ai",
 }
 ROOT_DOCUMENTS = {
-    "AGENTS.md", "PLAN.md", "HANDOFF.md", "DECISIONS.md", "KNOWN_ISSUES.md",
-    "README.md", "LICENSE",
+    "AGENTS.md",
+    "PLAN.md",
+    "HANDOFF.md",
+    "DECISIONS.md",
+    "KNOWN_ISSUES.md",
+    "README.md",
+    "LICENSE",
 }
 
 
@@ -43,6 +51,31 @@ def required_domains(paths: list[str], *, complete_comparison: bool) -> tuple[st
     return tuple(domain for domain in DOMAINS if domain in required)
 
 
+def required_operational_boundaries(
+    paths: list[str],
+    *,
+    complete_comparison: bool,
+) -> tuple[str, ...]:
+    """Add the OPS gate without changing the legacy domain report or its requirements."""
+    if not complete_comparison:
+        return tuple(OPERATIONAL_WORKFLOWS)
+    required: set[str] = set()
+    for path in paths:
+        if path in ROOT_DOCUMENTS or (path.startswith("docs/") and path.endswith(".md")):
+            continue
+        selected = next(
+            (name for name, workflow in OPERATIONAL_WORKFLOWS.items() if path == workflow),
+            None,
+        )
+        if selected is not None:
+            required.add(selected)
+        elif path not in WORKFLOWS.values() and not any(
+            path.startswith(prefix) for prefix in TARGET_CONTEXTS
+        ):
+            required.update(OPERATIONAL_WORKFLOWS)
+    return tuple(name for name in OPERATIONAL_WORKFLOWS if name in required)
+
+
 def _git(root: Path, *arguments: str) -> bytes:
     return subprocess.run(
         ["git", "-C", str(root), *arguments],
@@ -53,9 +86,11 @@ def _git(root: Path, *arguments: str) -> bytes:
 
 
 def _commit(root: Path, reference: str) -> str:
-    return _git(
-        root, "rev-parse", "--verify", "--end-of-options", f"{reference}^{{commit}}"
-    ).decode().strip()
+    return (
+        _git(root, "rev-parse", "--verify", "--end-of-options", f"{reference}^{{commit}}")
+        .decode()
+        .strip()
+    )
 
 
 def _paths(raw: bytes) -> list[str]:
@@ -77,16 +112,31 @@ def build_plan(
             base_commit = None
     paths: list[str] = []
     if base_commit is not None:
-        paths.extend(_paths(_git(
-            root, "diff", "--no-renames", "--name-only", "-z", base_commit, head_commit, "--"
-        )))
+        paths.extend(
+            _paths(
+                _git(
+                    root,
+                    "diff",
+                    "--no-renames",
+                    "--name-only",
+                    "-z",
+                    base_commit,
+                    head_commit,
+                    "--",
+                )
+            )
+        )
     if include_working_tree:
-        paths.extend(_paths(_git(
-            root, "diff", "--no-renames", "--name-only", "-z", head_commit, "--"
-        )))
+        paths.extend(
+            _paths(_git(root, "diff", "--no-renames", "--name-only", "-z", head_commit, "--"))
+        )
         paths.extend(_paths(_git(root, "ls-files", "--others", "--exclude-standard", "-z")))
     paths = sorted(set(paths))
     domains = required_domains(paths, complete_comparison=base_commit is not None)
+    operational = required_operational_boundaries(
+        paths,
+        complete_comparison=base_commit is not None,
+    )
     return {
         "schemaVersion": 1,
         "kind": "MeasuredConformanceRequirements",
@@ -98,6 +148,8 @@ def build_plan(
         "changedPaths": paths,
         "requiredDomains": list(domains),
         "requiredWorkflows": [WORKFLOWS[domain] for domain in domains],
+        "requiredOperationalBoundaries": list(operational),
+        "requiredOperationalWorkflows": [OPERATIONAL_WORKFLOWS[name] for name in operational],
         "verificationStatus": "not-executed",
         "dispatchAuthorized": False,
     }
@@ -118,11 +170,16 @@ def _summary(plan: dict[str, object]) -> str:
         lines.extend(f"- `{WORKFLOWS[domain]}`" for domain in domains)
     else:
         lines.append("No measured Docker rerun required by this path comparison.")
-    lines.extend([
-        "",
-        "This is a requirements report, not conformance evidence or dispatch authorization.",
-        "Required workflows must pass for this exact clean commit, including residue checks.",
-    ])
+    operational = plan["requiredOperationalWorkflows"]
+    assert isinstance(operational, list)
+    lines.extend(f"- `{workflow}`" for workflow in operational)
+    lines.extend(
+        [
+            "",
+            "This is a requirements report, not conformance evidence or dispatch authorization.",
+            "Required workflows must pass for this exact clean commit, including residue checks.",
+        ]
+    )
     if plan["workingTreeIncluded"] and not plan["workingTreeClean"]:
         lines.append(
             "Commit these changes and recompute requirements before exact-commit validation."

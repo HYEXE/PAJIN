@@ -135,7 +135,8 @@ corrected; the final success is not a first-attempt claim. Unit coverage accepts
 internal budget serialization. These recovery results are local. Commit
 `3c66c2e3824d86c0a38bb82fbe69e8cb52ce320a` passed ordinary remote CI and the existing
 Web/Network/AI Docker workflows; those workflows did not execute the OPS-003 recovery procedure.
-A dedicated remote OPS-003 workflow has not yet been implemented or run.
+A dedicated `ops-003-conformance.yml` workflow is now implemented; its new remote run still
+requires explicit approval and observed results for the same new commit.
 
 A final integration image containing the completed Graph and System modules repeated all eleven
 checks in 71.07 seconds, with two valid Run seals and the unknown call charge still one. A separate
@@ -143,3 +144,12 @@ observer again verified the eight exact container/volume selectors and recovery-
 The fixture is invoked as `python -m scripts.hybrid_operations_rehearsal`; direct script invocation
 without the repository package path is unsupported. Runtime timing is a local observation, not a
 recovery-time objective or physical-failure estimate. Serialized bounds do not measure peak RSS.
+
+The 2026-09-11 follow-up repeated the actual eleven checks on Linux arm64 with current local
+product digest `4f9f9fcbaf0fbad134f172b5ad88ae7a39930e9a1f9ccdb76e988cfd3f629ce3` and runtime image
+`sha256:d5a104f4a5fff0b3ecb6751e3900e1454835cdaa2a24b8f39ace8b67b1da65ad`.
+Its final integration repetition completed in 114.33 seconds while other local verification was active.
+Source inventory was
+unchanged during execution. The new CI wrapper's report verifier accepted all eleven checks;
+a separate read-only Docker observer found no resources under the three OPS ownership labels.
+This validates the reused local probe and report projection, not the new clean Linux amd64 remote gate.

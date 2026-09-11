@@ -192,9 +192,21 @@ def test_main_ci_workflow_separates_quality_from_twenty_four_test_shards() -> No
     assert quality_steps["Lint"]["run"] == (
         "uv run --locked ruff check src tests containers scripts"
     )
-    assert quality_steps["Type check"]["run"] == (
-        "uv run --locked mypy src scripts/measured_conformance.py scripts/ci_sharding.py"
-    )
+    type_commands = quality_steps["Type check"]["run"].replace("\\\n", "").splitlines()
+    assert [command.split() for command in type_commands] == [
+        [
+            "uv", "run", "--locked", "mypy", "--platform", "linux", "src",
+            "scripts/measured_conformance.py", "scripts/ci_sharding.py",
+        ],
+        [
+            "uv", "run", "--locked", "mypy", "--platform", "linux", "--explicit-package-bases",
+            "scripts/profile_graph_memory.py", "scripts/profile_graph_history.py",
+            "scripts/profile_graph_pages.py", "scripts/linux_boundary_conformance.py",
+            "scripts/hybrid_operations_rehearsal.py", "scripts/operational_system_read.py",
+            "scripts/operations_cold_checkpoint.py", "containers/system-agent/agent.py",
+            "containers/system-agent/client.py", "containers/worker/worker_entry.py",
+        ],
+    ]
     assert quality_steps["Check out repository"]["with"] == {"fetch-depth": "2"}
     report = quality_steps["Report measured conformance requirements"]
     assert report["env"] == {

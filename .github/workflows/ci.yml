@@ -45,7 +45,13 @@ jobs:
         run: uv run --locked ruff check src tests containers scripts
 
       - name: Type check
-        run: uv run --locked mypy src scripts/measured_conformance.py scripts/ci_sharding.py
+        run: |
+          uv run --locked mypy --platform linux src scripts/measured_conformance.py scripts/ci_sharding.py
+          uv run --locked mypy --platform linux --explicit-package-bases \
+            scripts/profile_graph_memory.py scripts/profile_graph_history.py scripts/profile_graph_pages.py \
+            scripts/linux_boundary_conformance.py scripts/hybrid_operations_rehearsal.py \
+            scripts/operational_system_read.py scripts/operations_cold_checkpoint.py \
+            containers/system-agent/agent.py containers/system-agent/client.py containers/worker/worker_entry.py
 
       - name: Report measured conformance requirements
         env:
