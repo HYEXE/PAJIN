@@ -1,7 +1,7 @@
 # PAJIN 현재 인수인계
 
 체크포인트: 2026-09-12. 직전 다섯 slice의 로컬 구현·통합 검증을 바탕으로 새 네 후속 항목을 시작했다.
-기존 완료분의 승인된 commit/push·동일 SHA 원격 검증을 먼저 진행한다.
+기존 완료분을 push했고 OPS 원격 실증의 재개 단계 실패를 보완 중이다.
 
 ## 목표와 승인 범위
 
@@ -16,7 +16,7 @@ main에서 작업하며 branch/worktree/subagent는 없다.
 - 기준 SHA의 CI 34670400044 첫 시도 성공은 확인했다. 이전 코드의 8,566 passed·76 skipped와
   Web/Network/AI/OPS/SYS 검증은 이번 미커밋 변경의 결과로 사용하지 않는다.
 - 구현·테스트·계약은 다섯 로컬 커밋 `22b0e6f`, `7555b31`, `0769472`, `045eb46`, `9d4a325`로 보존했다.
-  운영 문서를 함께 확정한 뒤 승인된 push와 동일 SHA 원격 검증을 수행한다. 배포는 없다.
+  문서 커밋을 포함한 `dd039ef3c261224f529d07f431dab2cbf7f8cbc9`를 push했다. 배포는 없다.
   기준·원본 실패·최종 결과는 아래 private 디렉터리에 보존한다.
 
 ## 구현과 확인된 결과
@@ -81,7 +81,7 @@ main에서 작업하며 branch/worktree/subagent는 없다.
   이미지 안의 구현·probe·rehearsal bytes, 두 보고서의 code pin과 전체 source inventory를 대조했다.
 - 최종 read-only 관찰에서 OPS 소유 container/network/volume, source 확인 container와 Graph 측정
   container가 모두 없었다. 임시 API listener도 없다. 증거·fixture·검증 이미지는 재현용으로 보존했다.
-- 문서 검사 4개와 `git diff --check`를 통과했다. 기존 소스의 로컬 커밋을 완료했고 원격 CI·push·배포는 아직 실행하지 않았다.
+- 문서 검사 4개와 `git diff --check`를 통과했다. 기존 소스를 commit/push했고 아래 원격 결과를 확인했다. 배포는 없다.
 
 ### 검증 명령
 
@@ -105,12 +105,24 @@ Private 작업 근거는 `.pajin/continuation-three-20260912/`에 있다. `basel
 `current-final-wheel-verification.json`, `output/playwright/`를 먼저 확인한다.
 실제 자격증명·private 원문은 출력하지 않는다.
 
-## 다음 한 단계
+## 현재 원격 검증과 다음 한 단계
 
-Git과 위 검증 inventory를 다시 확인했다. 원격 main은 기준 SHA와 같고 비문서 987개는 변경되지 않았다.
-기존 diff를 논리적 변경 단위로 commit/push하고 동일 SHA의 원격 CI·다섯 전용 검증을 확인한다.
-개발 후속은 오탐 62건의 실패 원인에 대한 새 가설을 개발 자료로 검토하는 것부터 시작한다.
-개선 확인은 소비된 corpus와 겹치지 않는 새 동결 평가에서 해야 한다.
+- `dd039ef`의 CI 34695320503은 첫 시도 quality·24 shard 모두 통과했다. 24개 artifact의
+  clean SHA·exit 0과 고유 8,747개 ID를 확인했고 실제 로그는 8,671 passed·기존 76 skipped다.
+- Web 34695348325, Network 34695349598, AI 34695350838, SYS 34695353359도 첫 시도 성공했다.
+  실제 test와 clean commit·image·독립 residue gate를 확인했다. SYS source digest는 로컬
+  tracked bytes와 같은 `a854bfa0adc87b40d3e88e20c0e7acafdc00805911baccfb705a236cb82f2d8b`다.
+- OPS 34695351995는 기존 11개·추가 15개를 통과했지만 witness의 15/21 검사 뒤
+  `target-resume`에서 실패했다. 원격 private 명령 상세는 공개 artifact에 없어 원인은 미확정이다.
+  별도 cleanup·독립 관찰은 자원 0·fallback 없음이다. 실패 원문/요약을 private으로 보존했다.
+- 독립 스트레스가 5분 승인 유효기간을 소모하는 순서를 별도 회귀에서 재현했다. 32회 검사를
+  실제 승인된 재개 뒤로 옮겼고 개별 제한·만료 거부·모든 검사·cleanup은 유지한다.
+  재개 단계는 고정된 public-safe 하위 phase로 구분한다. 관련 101개·Ruff·Linux mypy를 통과했다.
+  새 소유 Linux 실증도 187.20초에 21개 검사·32회 새 process를 통과했고 독립 9회 조회에서 자원은 0개다.
+- 현재 수정한 복구 script·회귀·문서의 로컬 검증을 완료했다. 승인된 수정
+  commit/push와 새 SHA의 일반 CI·다섯 실증을 수행한다. 새 후보 구현은 그 체크포인트부터 이어간다.
+- 새 작업 근거는 `.pajin/four-followups-20260912/`에 있다. 탐지 가설의 개발용 prototype은
+  그 private 디렉터리에만 있으며, 원본 EFFECT-006을 미사용 평가로 재사용하지 않는다.
 
 ## 유지되는 운영 경계
 

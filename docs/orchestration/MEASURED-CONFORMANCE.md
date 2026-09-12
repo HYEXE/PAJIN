@@ -120,6 +120,12 @@ additional probes retain separate private directories, logs and bounded public c
 success of the original probe alone cannot complete the workflow. The SYS workflow builds
 and pins a separate ASLR image. Its cleanup admission includes both agent ownership labels.
 The unchanged confirmation input names explicitly describe all covered profiles.
+OPS-005 performs its independent crash/restart stress after the approved application
+continuation, using its own temporary state and signing keys. The stress can take longer
+than an application approval intent; it must not consume that intent's existing validity
+window. All 32 cycles, their individual bounds, expiry denials and the final cleanup gate
+remain required. A late stress failure still fails the complete workflow. Public failure
+summaries expose only allowlisted phase names and completed-check counts.
 The unconditional cleanup step removes only resources admitted on
 that fresh dedicated runner; finding fallback residue still fails conformance even if removal
 succeeds. A separate unconditional, read-only audit requires zero remaining containers, networks
@@ -134,6 +140,16 @@ GitHub's [runner environment variables](https://docs.github.com/en/actions/refer
 define the dedicated-host admission input; it is checked alongside the actual platform and Git SHA.
 
 ## Verified expanded checkpoint
+
+The later implementation checkpoint `dd039ef3c261224f529d07f431dab2cbf7f8cbc9` passed
+ordinary CI (quality and 24 shards, 8,671 passed and 76 existing skipped), Web, Network,
+AI and SYS on their first attempts. OPS run 34695351995 failed in `target-resume` after
+15 of its 21 witness checks; the original 11 and additional 15 OPS checks had passed.
+Cleanup and the independent residue audit both found zero owned resources without fallback.
+The bounded public report does not identify the exact failed private command. A separate
+regression reproduced independent stress consuming the five-minute approval window. The
+probe scheduling correction above preserves expiry enforcement and awaits fresh verification
+at its own commit. The earlier full checkpoint below remains historical evidence only.
 
 Commit `1fd37d16d05887f9ff7956ccea4986b77cd4fe6c` passed ordinary CI and all five required
 conformance families on their first attempts, including both newly added operational paths:

@@ -30,7 +30,10 @@ PROBE = "/app/tests/hybrid_operations_probe.py"
 PHASES = frozenset({
     "source-postgres", "source-configuration", "source-start", "source-seed",
     "source-preflight", "source-checkpoint", "target-postgres", "target-configuration",
-    "target-start", "target-restore", "target-resume", "complete",
+    "target-start", "target-restore", "target-resume", "target-resume-ready",
+    "target-resume-expired-denial", "target-resume-unapproved-denial",
+    "target-resume-approval", "target-resume-approved", "target-continuation",
+    "witness-process-crash", "complete",
 })
 
 
@@ -341,8 +344,10 @@ class Rehearsal:
                 "/app/tests/operational_linux_probe.py", "server", "v2",
             ]
         )
+        self.phase = "target-resume-ready"
         target.execute(target_host, ["python", PROBE, "ready"], log="api-ready")
         self.resume_target(recovery, target_common, restore_args, report, seed, target_host)
+        self.phase = "target-continuation"
         command(["docker", "start", target_worker])
         result = target.execute(
             target_host,
@@ -435,6 +440,7 @@ class Rehearsal:
             "--operator-ca",
             "/control/api/server.crt",
         ]
+        self.phase = "target-resume-expired-denial"
         self.grant(recovery, report, seed, expired=True)
         self.cli(
             recovery,
@@ -448,6 +454,7 @@ class Rehearsal:
             succeeds=False,
             error="recovery resume authorization is expired",
         )
+        self.phase = "target-resume-unapproved-denial"
         self.grant(recovery, report, seed)
         self.cli(
             recovery,
@@ -461,12 +468,14 @@ class Rehearsal:
             succeeds=False,
             error="current Control Plane authentication, approval or resume policy denied",
         )
+        self.phase = "target-resume-approval"
         self.labs[1].execute(
             target_host,
             ["python", PROBE, "approve"],
             log="approval",
             stdin=json.dumps(seed).encode(),
         )
+        self.phase = "target-resume-approved"
         self.cli(
             recovery,
             [

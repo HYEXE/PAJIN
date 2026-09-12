@@ -81,3 +81,14 @@ Source and immutable runtime image evidence are retained with the private result
 No physical separate host, actual power loss, production deployment, automatic failover or
 long-duration availability guarantee follows from these bounded checks. Simultaneous
 rollback of anchor and witness remains indistinguishable from the old valid state.
+
+The independent crash fixture runs after the approved application continuation so its 32 fresh
+processes cannot consume the application's existing approval-intent window. It uses separate
+temporary state and signing keys; approval expiry and per-process limits are unchanged. All
+21 checks and independent cleanup remain necessary, including when the final stress phase fails.
+The first remote attempt at `dd039ef` reached `target-resume` with 15 witness checks before
+failing; its exact private-command cause is not available in the public report. Independent
+cleanup succeeded. A deterministic regression separately reproduced the scheduling risk; the
+corrected local Linux run passed all 21 checks and 32 fresh-process cycles in 187.20 seconds.
+Nine independent resource queries found no owned containers, networks or volumes. The corrected
+commit still requires fresh measured conformance.

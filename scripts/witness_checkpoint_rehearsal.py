@@ -23,6 +23,15 @@ class WitnessedRehearsal(AnchoredRehearsal):
         self.witness_volume: str | None = None
         self.witness_publisher = Ed25519PrivateKey.generate()
 
+    def run(self) -> None:
+        # The independent crash fixture has its own keys/state and can outlast a
+        # product approval intent. Complete the unchanged approved continuation
+        # before stressing those unrelated fresh processes; both remain required.
+        super().run()
+        self.phase = "witness-process-crash"
+        self.check_process_crash(self.controllers[-1])
+        self.phase = "complete"
+
     def controller_mounts(self, role: str) -> list[str]:
         if self.witness_volume is None:
             raise ValueError("owned witness must precede recovery controllers")
@@ -213,6 +222,14 @@ class WitnessedRehearsal(AnchoredRehearsal):
                 "else: raise AssertionError('recovery witness is writable')\n",
             ],
         )
+        self.checks.extend(
+            [
+                "recovery-witness-read-only-without-publisher-key",
+                "application-writers-have-no-witness-mount",
+            ]
+        )
+
+    def check_process_crash(self, recovery: str) -> None:
         # The probe has 35 bounded child processes, each with its own 30-second limit.
         # Keep those limits while allowing their cumulative work and durable publication.
         probe = command(
@@ -231,8 +248,6 @@ class WitnessedRehearsal(AnchoredRehearsal):
         (self.output / "process-crash.json").write_bytes(probe)
         self.checks.extend(
             [
-                "recovery-witness-read-only-without-publisher-key",
-                "application-writers-have-no-witness-mount",
                 "sigkill-after-witness-fsync-refused-and-explicitly-restored",
                 "32-fresh-process-head-verification-cycles",
             ]

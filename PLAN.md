@@ -105,6 +105,7 @@ positive/adversarial test, audit/evidence lineage와 benchmark 영향을 명시�
   마지막 네 파일 수정 뒤 관련 121개·Ruff·strict mypy·설치 패키지를 검증했다. Linux 복구는 강제 종료
   probe의 총 예산을 보정하고 최신 이미지에서 OPS-005 21개·32회 새 process와 OPS-003 11개 검사를 통과했다.
 - 실제 Console·Linux 복구·모델·Graph 측정과 최종 독립 cleanup 근거를 보존했다.
-  기존 구현은 다섯 로컬 커밋으로 보존했고 새 원격 CI·push·배포는 아직 실행하지 않았다.
+  기존 구현은 `dd039ef`까지 push했다. 같은 SHA의 일반 CI·Web·Network·AI·SYS는 성공했고
+  OPS의 witness 재개 단계 실패를 보완 중이다. 운영 배포는 하지 않았다.
 - 이전 코드의 CI 8,566 passed·기존 76 skipped와 Web/Network/AI/OPS/SYS 실증은 기준점이다.
 - private 작업 근거는 `.pajin/continuation-three-20260912/`에 보존한다.
