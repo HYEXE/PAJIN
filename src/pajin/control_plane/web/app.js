@@ -3,6 +3,7 @@
 import { createSystemProductPanel } from "./system-product.js";
 import { createMeasuredProductPanels } from "./measured-products.js";
 import { createMeasuredReviews } from "./measured-reviews.js";
+import { createGraphBrowser } from "./graph-browser.js";
 import { createUrgentStops } from "./urgent-stops.js";
 
 import {
@@ -308,6 +309,10 @@ const measuredReviews = createMeasuredReviews({
   authEpoch: () => session.authEpoch,
   announce,
 });
+const graphBrowser = createGraphBrowser({
+  document, request: apiRequest, isOperator: () => session.canOperate,
+  authEpoch: () => session.authEpoch,
+});
 const urgentStops = createUrgentStops({
   document, request: apiRequest,
   access: () => ({ connected: session.connected, operator: session.canOperate }),
@@ -366,6 +371,7 @@ function setConnected(connected, roles = [], subject = null) {
   measuredProductPanels.updateAccess();
   systemProductPanel.updateAccess();
   measuredReviews.updateAccess();
+  graphBrowser.updateAccess();
   urgentStops.updateAccess();
   elements.connectionState.classList.toggle("connected", connected);
   elements.connectionLabel.textContent = connected
@@ -892,6 +898,7 @@ function replaceCredential(token) {
   measuredProductPanels.clear();
   systemProductPanel.clear();
   measuredReviews.clear();
+  graphBrowser.clear();
   urgentStops.clear();
   session.reviewQueueRequestId += 1;
   session.reviewQueueLoading = false;

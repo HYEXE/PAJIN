@@ -43,12 +43,7 @@ class _Cursor(StrictModel):
         return base64.urlsafe_b64encode(self.model_dump_json().encode()).decode().rstrip("=")
 
 
-class VerifiedCanonicalGraphPage(StrictModel):
-    api_version: Literal["pajin.control-plane/verified-canonical-graph-page/v1"] = Field(
-        default="pajin.control-plane/verified-canonical-graph-page/v1",
-        alias="apiVersion",
-    )
-    kind: Literal["VerifiedCanonicalGraphPage"] = "VerifiedCanonicalGraphPage"
+class CanonicalGraphPageContent(StrictModel):
     campaign_id: str = Field(alias="campaignId", pattern=r"^[a-z0-9][a-z0-9-]{2,79}$")
     snapshot: CanonicalGraphSnapshotView
     projection: CanonicalGraphProjectionView
@@ -59,7 +54,6 @@ class VerifiedCanonicalGraphPage(StrictModel):
     nodes: list[CanonicalGraphNodeView] = Field(max_length=500)
     edges: list[CanonicalGraphEdgeView] = Field(max_length=500)
     next_cursor: str | None = Field(alias="nextCursor", max_length=2048)
-    authority_boundary: CanonicalGraphViewAuthorityBoundary = Field(alias="authorityBoundary")
 
     @model_validator(mode="after")
     def require_complete_page(self) -> Self:
@@ -73,6 +67,15 @@ class VerifiedCanonicalGraphPage(StrictModel):
         ):
             raise ValueError("Graph page bounds or completeness differ")
         return self
+
+
+class VerifiedCanonicalGraphPage(CanonicalGraphPageContent):
+    api_version: Literal["pajin.control-plane/verified-canonical-graph-page/v1"] = Field(
+        default="pajin.control-plane/verified-canonical-graph-page/v1",
+        alias="apiVersion",
+    )
+    kind: Literal["VerifiedCanonicalGraphPage"] = "VerifiedCanonicalGraphPage"
+    authority_boundary: CanonicalGraphViewAuthorityBoundary = Field(alias="authorityBoundary")
 
 
 def _decode_cursor(value: str) -> _Cursor:
@@ -94,12 +97,12 @@ def _decode_cursor(value: str) -> _Cursor:
         raise GraphPageCursorError("Graph page cursor is invalid") from exc
 
 
-def build_graph_page(
+def build_graph_page_content(
     snapshot: GraphSnapshot,
     *,
     limit: int = 100,
     cursor: str | None = None,
-) -> VerifiedCanonicalGraphPage:
+) -> CanonicalGraphPageContent:
     if type(limit) is not int or not 1 <= limit <= 500:
         raise GraphPageCursorError("Graph page size must be an integer from 1 to 500")
     identity = dict(
@@ -124,7 +127,7 @@ def build_graph_page(
         if offset + limit < total
         else None
     )
-    return VerifiedCanonicalGraphPage(
+    return CanonicalGraphPageContent(
         campaignId=snapshot.campaign_id,
         snapshot=_snapshot_view(snapshot),
         projection=_projection_view(snapshot),
@@ -135,5 +138,19 @@ def build_graph_page(
         nodes=[_node_view(node) for node in projection.nodes[offset : offset + limit]],
         edges=[_edge_view(edge) for edge in projection.edges[offset : offset + limit]],
         nextCursor=next_cursor,
-        authorityBoundary=CanonicalGraphViewAuthorityBoundary(),
+    )
+
+
+def build_graph_page(
+    snapshot: GraphSnapshot,
+    *,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> VerifiedCanonicalGraphPage:
+    content = build_graph_page_content(snapshot, limit=limit, cursor=cursor)
+    return VerifiedCanonicalGraphPage.model_validate(
+        {
+            **content.model_dump(by_alias=True),
+            "authorityBoundary": CanonicalGraphViewAuthorityBoundary(),
+        }
     )

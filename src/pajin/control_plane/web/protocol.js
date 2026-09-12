@@ -466,7 +466,20 @@ export function validateCanonicalGraphView(value, campaignName, snapshotId) {
 export function validateCanonicalGraphPage(
   value, campaignName, snapshotId, { offset = 0, limit = 100, previous = null } = {},
 ) {
-  const page = validateGraphView(value, campaignName, snapshotId, true);
+  return validateGraphPage(value, campaignName, snapshotId, { offset, limit, previous }, false);
+}
+
+export function validateHistoricalGraphPage(value, campaignName, snapshotId, options) {
+  const page = validateGraphPage(value, campaignName, snapshotId, options, true);
+  if (page.historicalReadOnly !== true || typeof page.isCurrent !== "boolean"
+    || !SHA256_PATTERN.test(page.stateDigest) || page.stateDigest !== options.state
+    || (options.previous && (page.stateDigest !== options.previous.stateDigest
+      || page.isCurrent !== options.previous.isCurrent))) protocolFailure("Historical Graph page");
+  return page;
+}
+
+function validateGraphPage(value, campaignName, snapshotId, { offset = 0, limit = 100, previous = null }, historical) {
+  const page = validateGraphView(value, campaignName, snapshotId, true, historical);
   const total = Math.max(page.nodeCount, page.edgeCount);
   if (!Number.isSafeInteger(page.pageOffset) || page.pageOffset !== offset
     || !Number.isSafeInteger(page.pageSize) || page.pageSize !== limit
@@ -495,12 +508,12 @@ export function validateCanonicalGraphPage(
   return page;
 }
 
-function validateGraphView(value, campaignName, snapshotId, paginated) {
+function validateGraphView(value, campaignName, snapshotId, paginated, historical = false) {
   const view = expectRecord(value, "Canonical Graph view");
-  if (view.apiVersion !== (paginated
+  if (view.apiVersion !== (historical ? "pajin.control-plane/historical-graph-page/v1" : paginated
     ? "pajin.control-plane/verified-canonical-graph-page/v1"
     : "pajin.control-plane/verified-canonical-graph-view/v1alpha1")
-    || view.kind !== (paginated ? "VerifiedCanonicalGraphPage" : "VerifiedCanonicalGraphView")
+    || view.kind !== (historical ? "HistoricalGraphPage" : paginated ? "VerifiedCanonicalGraphPage" : "VerifiedCanonicalGraphView")
     || view.campaignId !== campaignName
     || !/^[a-z0-9][a-z0-9-]{2,79}$/.test(view.campaignId)) {
     protocolFailure("Canonical Graph view");
@@ -568,7 +581,7 @@ function validateGraphView(value, campaignName, snapshotId, paginated) {
   }
   const boundary = expectRecord(view.authorityBoundary, "Canonical Graph view");
   if (boundary.canonicalGraphSnapshotVerified !== true
-    || boundary.currentSnapshotVerified !== true
+    || boundary.currentSnapshotVerified !== !historical
     || boundary.contentRedacted !== true
     || boundary.viewAuthorizesAdmission !== false
     || boundary.viewGrantsCapability !== false

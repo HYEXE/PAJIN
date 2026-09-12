@@ -936,6 +936,7 @@ class ControlPlaneSettings:
     campaign_draft_root: Path | None = None
     discovery_run_root: Path | None = None
     graph_database: Path | None = None
+    graph_campaign_databases: Mapping[str, Path] = field(default_factory=dict)
     graph_decision_audit_database: Path | None = None
     validation_evidence_root: Path | None = None
     replay_executor_profiles: dict[str, frozenset[str]] = field(default_factory=dict)
@@ -1556,11 +1557,14 @@ class ControlPlaneSettings:
                 "Replay Worker subject"
             )
         measured_deployment_path = os.environ.get(MEASURED_PRODUCT_DEPLOYMENT_PATH_ENV)
+        from pajin.control_plane.graph_browser import campaign_databases
+
         return cls(
             database_url=os.environ.get(
                 "PAJIN_CP_DATABASE_URL", "sqlite:///./.pajin/control-plane.db"
             ),
             credentials=credentials,
+            graph_campaign_databases=campaign_databases(os.environ.get("PAJIN_CP_GRAPH_CAMPAIGNS")),
             checkpoint_keys=checkpoint_keys_from_environment(
                 active_key_id=key_id,
                 active_key=checkpoint_key,
@@ -2289,4 +2293,13 @@ def _create_admitted_app(
     from pajin.control_plane.system_product_routes import register_system_product_route
 
     register_system_product_route(app, reader=system_product_reader, dependencies=dependencies)
+    from pajin.control_plane.graph_browser import (
+        GraphCampaignBrowser,
+        register_graph_browser_routes,
+    )
+
+    register_graph_browser_routes(
+        app, browser=GraphCampaignBrowser(resolved.graph_campaign_databases),
+        dependencies=dependencies,
+    )
     return app

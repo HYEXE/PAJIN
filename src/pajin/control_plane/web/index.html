@@ -441,6 +441,28 @@
         </div>
       </section>
 
+      <section id="graph-browser-panel" class="panel graph-panel" aria-labelledby="graph-browser-heading" aria-busy="false">
+        <div class="section-heading">
+          <div><p class="section-kicker">CAMPAIGN HISTORY</p><h2 id="graph-browser-heading">Browse Campaigns and past Snapshots</h2></div>
+          <button id="graph-browser-refresh" class="button button-quiet" type="button" disabled>Load registered Campaigns</button>
+        </div>
+        <p class="panel-intro">Choose a Campaign registered by this deployment, then inspect its retained Graph history. Every page verifies the complete history and shows redacted content.</p>
+        <div class="graph-form">
+          <div class="field field-grow"><label for="graph-browser-campaign">Registered Campaign</label><select id="graph-browser-campaign" disabled><option value="">Choose a registered Campaign</option></select></div>
+          <button id="graph-browser-reload" class="button button-quiet" type="button" disabled>Reload history</button>
+          <button id="graph-browser-older" class="button button-quiet" type="button" disabled>Older Snapshots</button>
+        </div>
+        <p id="graph-browser-status" role="status" aria-live="polite">Connect as an Operator to browse registered Campaigns.</p>
+        <ol id="graph-browser-list" class="review-list" aria-label="Stored Snapshots"></ol>
+        <div id="graph-browser-result" hidden>
+          <div class="authority-strip"><span>Historical read only</span><span>Content redacted</span><span>No execution authority</span></div>
+          <p id="graph-browser-summary" tabindex="-1"></p>
+          <p id="graph-browser-identity" class="review-digest"></p>
+          <nav class="event-heading" aria-label="Historical Graph pages"><button id="graph-browser-previous" class="button button-quiet" type="button" disabled>Previous page</button><button id="graph-browser-next" class="button button-quiet" type="button" disabled>Next page</button></nav>
+          <div class="graph-grid"><section aria-label="Historical nodes"><h3>Nodes</h3><ol id="graph-browser-nodes" class="graph-node-list"></ol></section><section aria-label="Historical relationships"><h3>Relationships</h3><ol id="graph-browser-edges" class="graph-edge-list"></ol></section></div>
+        </div>
+      </section>
+
       <section
         id="graph-panel"
         class="panel graph-panel"

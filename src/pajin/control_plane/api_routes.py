@@ -238,6 +238,10 @@ def register_health_and_ui_routes(
     def web_console_measured_reviews() -> Response:
         return console_asset_response("measured-reviews.js")
 
+    @app.get("/ui/assets/graph-browser.js", include_in_schema=False)
+    def web_console_graph_browser() -> Response:
+        return console_asset_response("graph-browser.js")
+
     @app.get("/ui/assets/urgent-stops.js", include_in_schema=False)
     def web_console_urgent_stops() -> Response:
         return console_asset_response("urgent-stops.js")

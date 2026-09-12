@@ -8,7 +8,7 @@ import sqlite3
 import stat
 import tempfile
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -3868,6 +3868,7 @@ def _verified_snapshots(
     campaign_id: str,
     projections: dict[int, GraphProjection],
     retain_snapshot_id: str | None = None,
+    observe: Callable[[int, GraphSnapshot], None] | None = None,
 ) -> tuple[dict[str, GraphSnapshot], str | None]:
     snapshot_rows = connection.execute(
         "SELECT * FROM graph_snapshots ORDER BY ordinal"
@@ -3896,6 +3897,8 @@ def _verified_snapshots(
         # binding and chain link must still pass the same verification.
         if retain_snapshot_id is None or snapshot.snapshot_id == retain_snapshot_id:
             snapshots[snapshot.snapshot_id] = snapshot
+        if observe is not None:
+            observe(ordinal, snapshot)
         previous_snapshot = snapshot.snapshot_digest
     return snapshots, previous_snapshot
 

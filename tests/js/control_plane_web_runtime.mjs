@@ -96,6 +96,7 @@ class FakeElement {
 }
 
 const selectors = [
+  ...["panel", "refresh", "campaign", "reload", "older", "status", "list", "result", "summary", "identity", "previous", "next", "nodes", "edges"].map((name) => `#graph-browser-${name}`),
   ...["panel", "status", "detail", "list", "source", "open-form", "assessment-form",
     "decision-form", "retest-form", "domain", "load-source", "refresh", "more", "lookup-form",
     "lookup-id", "title", "steps", "add-step", "workspace", "history", "history-load", "download",

@@ -17,6 +17,7 @@ type ConsoleAsset = Literal[
     "measured-products.js",
     "measured-product-contracts.js",
     "measured-reviews.js",
+    "graph-browser.js",
     "urgent-stops.js",
     "system-product.js",
 ]
@@ -24,6 +25,7 @@ type ConsolePublicAsset = Literal[
     "app.css", "app.js", "protocol.js", "render.js", "measured-products.js",
     "measured-product-contracts.js",
     "measured-reviews.js",
+    "graph-browser.js",
     "urgent-stops.js",
     "system-product.js",
 ]
@@ -36,6 +38,7 @@ _PUBLIC_ASSET_MEDIA_TYPES: dict[ConsolePublicAsset, str] = {
     "measured-products.js": "text/javascript",
     "measured-product-contracts.js": "text/javascript",
     "measured-reviews.js": "text/javascript",
+    "graph-browser.js": "text/javascript",
     "urgent-stops.js": "text/javascript",
     "system-product.js": "text/javascript",
 }

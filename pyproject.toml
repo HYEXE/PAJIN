@@ -63,7 +63,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "pajin" = ["py.typed"]
-"pajin.control_plane.web" = ["index.html", "app.css", "app.js", "protocol.js", "render.js", "measured-products.js", "measured-product-contracts.js", "measured-reviews.js", "urgent-stops.js", "system-product.js"]
+"pajin.control_plane.web" = ["index.html", "app.css", "app.js", "protocol.js", "render.js", "measured-products.js", "measured-product-contracts.js", "measured-reviews.js", "graph-browser.js", "urgent-stops.js", "system-product.js"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
