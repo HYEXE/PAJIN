@@ -5,6 +5,11 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0293](docs/adr/0293-version-review-assignments-with-personal-in-app-acknowledgments.md): v2 review journal의 배정과 개인별 앱 내부 알림 확인; 승인·실행 권위는 유지.
+- [ADR-0292](docs/adr/0292-browse-verified-history-without-current-graph-authority.md): 등록 Campaign의 전체 검증 이력을 별도 읽기 계약으로 탐색.
+- [ADR-0291](docs/adr/0291-require-a-separate-witness-before-publishing-recovery-heads.md): 별도 witness의 선행 fsync와 한쪽 rollback 거부; 새 anchor로만 명시적 재구성.
+- [ADR-0290](docs/adr/0290-derive-only-exact-public-text-before-disclosure-scoring.md): 공개 JSON 문자열·해시의 정확한 재계산과 새 미사용 평가군의 탐지 품질·CPU 비교.
+
 - [ADR-0289](docs/adr/0289-reuse-matching-projections-only-within-current-graph-verification.md): 동일 트랜잭션에서 검증한 Projection의 전체 내용 일치를 확인하는 현재 Graph 조회 최적화.
 
 - [ADR-0288](docs/adr/0288-isolate-an-approved-kernel-aslr-read-from-os-release-authority.md): 기존 OS-release 권한 지문을 보존하는 별도 ASLR 고정 읽기·증거·CLI 경계.

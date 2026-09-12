@@ -710,6 +710,16 @@ inventory. Run `pajin-control-plane --check-config` before starting the server; 
 [measured product deployment and Console contract](docs/orchestration/UX-010-measured-product-deployment-and-console.md)
 for environment settings, inventory preparation, and retained-evidence requirements.
 
+The same Console can browse deployment-registered Campaigns and verified Snapshot history;
+configure `PAJIN_CP_GRAPH_CAMPAIGNS` using the
+[history browsing contract](docs/orchestration/UX-012-registered-campaign-and-snapshot-history.md).
+Operators can assign measured human reviews to configured human identities. Recipients can
+read and acknowledge notices in the Console's personal inbox; see
+[review assignment and internal notifications](docs/orchestration/UX-013-review-assignment-and-internal-notifications.md).
+Update all review readers and recovery controllers before the first assignment: the new journal
+records use v2 and cannot be read by older software. Historical views and work assignments do
+not grant execution or Finding authority.
+
 ## Verification
 
 ```powershell
