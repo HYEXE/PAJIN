@@ -3879,7 +3879,13 @@ def _verified_snapshots(
             raise SQLiteGraphStoreError(
                 "SQLite Graph backup Snapshot ordinals are not contiguous"
             )
-        snapshot = _snapshot_from_row(row, campaign_id=campaign_id)
+        snapshot = _snapshot_from_row(
+            row,
+            campaign_id=campaign_id,
+            verified_projection=(
+                projections.get(row["revision"]) if retain_snapshot_id is not None else None
+            ),
+        )
         if snapshot.previous_snapshot_digest != previous_snapshot:
             raise SQLiteGraphStoreError("SQLite Graph backup Snapshot chain is not contiguous")
         if projections.get(snapshot.revision) != snapshot.projection:
@@ -5536,10 +5542,21 @@ def _snapshot_from_row(
     row: sqlite3.Row,
     *,
     campaign_id: str,
+    verified_projection: GraphProjection | None = None,
 ) -> GraphSnapshot:
     raw = _required_bytes(row, "snapshot_json")
+    payload = _decode_json(raw, label="GraphSnapshot")
+    if verified_projection is not None:
+        # Only current reads supply a projection fully verified in this same transaction.
+        # Match all embedded fields before reusing its nodes/edges; the complete Snapshot
+        # model, canonical original bytes, row indexes and chain still need verification.
+        if not isinstance(payload, dict) or payload.get("projection") != (
+            verified_projection.model_dump(mode="json", by_alias=True)
+        ):
+            raise GraphSnapshotError("stored Graph Snapshot differs from its verified Projection")
+        payload["projection"] = verified_projection
     try:
-        snapshot = GraphSnapshot.model_validate(_decode_json(raw, label="GraphSnapshot"))
+        snapshot = GraphSnapshot.model_validate(payload)
     except ValidationError as exc:
         raise GraphSnapshotError("stored Graph Snapshot is invalid") from exc
     if raw != _snapshot_bytes(snapshot):

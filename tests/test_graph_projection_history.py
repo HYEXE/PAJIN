@@ -1,5 +1,6 @@
 """Historical replay remains exact even when stored rows are independently canonical."""
 
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
@@ -10,6 +11,7 @@ from pajin.graph import (
     GraphObservation,
     GraphProjection,
     GraphProjector,
+    GraphSnapshot,
     GraphSnapshotError,
     GraphSnapshotReason,
     SQLiteGraphStoreError,
@@ -19,6 +21,7 @@ from pajin.graph.sqlite_store import (
     _events_from_connection,
     _projection_bytes,
     _readonly_connection,
+    _snapshot_bytes,
     _verified_projections,
 )
 
@@ -152,3 +155,59 @@ def test_concurrent_stale_and_current_requests_cannot_exchange_snapshot_results(
             stale.result(timeout=10)
         assert fresh.result(timeout=10) == current
     assert _load(cache, current) == current
+
+
+@pytest.mark.parametrize("mutation", ["equal-float", "duplicate-projection", "extra-field"])
+def test_equal_decoded_projection_still_requires_original_canonical_bytes(tmp_path, mutation):
+    path, _store, authority, initial, cache = _fixture(tmp_path)
+    current = authority.capture(GraphSnapshotReason.REPLAN)
+    payload = initial.model_dump(mode="json", by_alias=True)
+    if mutation == "equal-float":
+        payload["projection"]["revision"] = float(initial.revision)
+        assert payload["projection"] == initial.projection.model_dump(mode="json", by_alias=True)
+    elif mutation == "extra-field":
+        payload["projection"]["untrustedExtra"] = None
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    if mutation == "duplicate-projection":
+        raw = raw.replace(b'"projection":{', b'"projection":{},"projection":{', 1)
+        assert json.loads(raw) == payload
+    _tamper(
+        path, "graph_snapshots",
+        "UPDATE graph_snapshots SET snapshot_json=? WHERE snapshot_id=?",
+        (raw, initial.snapshot_id),
+    )
+    with pytest.raises((GraphSnapshotError, SQLiteGraphStoreError)):
+        _load(cache, current)
+    assert cache._snapshot is None and cache._key is None
+
+
+def test_valid_snapshot_cannot_substitute_another_canonical_projection(tmp_path):
+    path, _store, authority, initial, cache = _fixture(tmp_path)
+    current = authority.capture(GraphSnapshotReason.REPLAN)
+    projection = GraphProjection(
+        campaignId=initial.campaign_id, revision=initial.revision,
+        eventLogHeadDigest=initial.event_log_head_digest, nodes=(), edges=(),
+    )
+    payload = initial.model_dump(mode="json", by_alias=True)
+    payload.update({
+        "projection": projection.model_dump(mode="json", by_alias=True),
+        "projectionId": projection.projection_id,
+        "projectionDigest": projection.projection_digest,
+        "nodeProjectionDigest": projection.node_projection_digest,
+        "edgeProjectionDigest": projection.edge_projection_digest,
+        "snapshotId": "", "snapshotDigest": "",
+    })
+    forged = GraphSnapshot.model_validate(payload)
+    assert GraphSnapshot.model_validate_json(_snapshot_bytes(forged)) == forged
+    _tamper(
+        path, "graph_snapshots",
+        "UPDATE graph_snapshots SET snapshot_id=?, snapshot_digest=?, projection_digest=?, "
+        "snapshot_json=? WHERE snapshot_id=?",
+        (
+            forged.snapshot_id, forged.snapshot_digest, forged.projection_digest,
+            _snapshot_bytes(forged), initial.snapshot_id,
+        ),
+    )
+    with pytest.raises(GraphSnapshotError, match="differs from its verified Projection"):
+        _load(cache, current)
+    assert cache._snapshot is None and cache._key is None
