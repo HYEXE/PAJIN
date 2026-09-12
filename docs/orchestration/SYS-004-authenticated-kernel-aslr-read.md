@@ -93,6 +93,17 @@ execution evidence. Normal reads use the actual kernel file without redirection.
 Both attempts and cleanup observations are retained separately; the product
 image, permissions and fixed public input were unchanged.
 
+The first attempt of [SYS conformance 34669912227](https://github.com/HYEXE/PAJIN/actions/runs/34669912227)
+passed both the original SYS-002 and additional SYS-004 probes at clean commit
+`1fd37d16d05887f9ff7956ccea4986b77cd4fe6c` on Ubuntu 24.04, Linux/amd64, Python
+3.12.14. Each probe passed one actual test with four Worker lifecycles; the combined
+outer runner took 86.51 seconds. The ASLR gate additionally verified the independent
+GNU observation and fresh CLI reconstruction. The tracked-source commitment matched
+`6326d2448a5a40dbe415e553aca8e2386dd2c15edc6e7635f0c59c8c18f84e4f`.
+Cleanup and a separate read-only audit found no owned containers, networks or
+volumes, with no fallback removal. The artifacts contain only three bounded public
+summary files. These results cover this fixed profile and preserve all limits below.
+
 ## Compatibility and validation limits
 
 SYS-002 inputs, source files, receipts, approvals and SYS-003 readers remain

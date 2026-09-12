@@ -3,50 +3,34 @@
 현재 구현의 미해결 제약과 검증 공백을 기록한다. 제품 우선순위는 `PLAN.md`, 실제 실행 결과와
 Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계약이 권위다.
 
-## 현재 후속 작업의 완료 범위와 제한 (2026-09-11)
+## 현재 후속 목표의 한계와 남은 검증
 
-- 이번 신규 다섯 과제의 구현·로컬 실증과 최종 `51aeb02`의 여섯 원격 검증을 완료했다.
-  ① 상태 문구 수정 `bbcb72f`와 기존 `a599818`을 승인받아 push했고 문서 CI 34563781824도 통과했다.
-- ② Worker 실패 진단과 정상/거부/실패/비노출 회귀는 통과했다. 새 EFFECT-004의 실제 고정 평가가
-  완료됐고 384응답/0실패와 고정 품질 기준을 충족했다. 오탐 51개(생성 사례 47개)는 줄지 않았으며
-  기본 v1은 유지한다. 개선은 6개 grouped 미탐 감소에 한정된다. 이전 두 실패 원인은 미확인이다.
-- ③ 동일 조건의 전후 측정에서 큰 이력 단일 reader RSS는 1,424.56→769.73 MiB로 감소했다.
-  변경 직후 최초 조회는 10.9536→11.1738초로 악화됐고 post-GC 보관량은 약 35.48 MiB로 같다.
-  두 개까지 같은 process의 reader를 측정했으며 process 분산·cold disk·최대 규모·운영 SLO는 미측정이다.
-- ④ 두 전용 workflow와 실행·정리·독립 잔여 관찰 및 선택 회귀를 구현·검증했다.
-  새 소스의 Linux arm64 OPS 11개/SYS 실제 1개·Worker 4회와 독립 자원 부재를 확인했다.
-  `27127bd`의 SYS 전용 원격 검증은 통과했으나 OPS probe는 실패했다. cleanup은 zero residue였다.
-  별도 Linux UID/GID 재현으로 확인한 fixture 가정을 보정했고 실제 로컬 11개 검사는 통과했다.
-  보정 `51aeb02`에서 OPS 11개·SYS 실제 1개/Worker 4회가 첫 시도에 통과했고 별도 cleanup과
-  독립 관찰은 잔여 container/network/volume 0개다. 최초 실패의 내부 단계는 여전히 확정하지 않는다.
-  격리 container 복구는 물리 host·정전·운영 failover 검증이 아니며 일반 System 지원으로 확대하지 않는다.
-- ⑤ SYS-003의 API/Console과 배포 pin·Operator subject·Campaign 제한 및 실제 HTTP 브라우저
-  검증은 완료했다. 기존 실제 SYS-002 봉인 결과의 조회 검증이며 새 호스트 실행 검증이 아니다.
-  기본 반응형·키보드는 Chromium 두 viewport로 관찰했고 다른 browser/device는 미검증이다.
-- 이전 모든 goal은 완료 상태다. EFFECT-003의 불완전 비교/품질 개선 미확인은 기록된 결과이며
-  이전 goal을 다시 여는 사유가 아니다. 이후 내용의 이전 결과는 새 소스 검증을 대신하지 않는다.
-
-## 기존 검증과 이번 변경의 구분
-
-- 이번 최종 로컬 4 shard는 8,426 passed·기존 76 skipped다. 이전 8,418개를 보존했고 신규 84개를
-  포함한 8,502개가 중복·누락 없이 처리됐으며 비문서 소스 939개가 실행 중 유지됐다. Ruff 전체,
-  Linux strict mypy 기본 475개와 추가 scripts 10개도 통과했다. 76개 opt-in 검사의 일반 pytest
-  미실행과 별도 실제 OPS/SYS·모델·브라우저 실증을 구분한다. 문서 push의 원격 CI는
-  통과했다. 제품 `27127bd`의 원격 CI도 8,426 passed·76 skipped, Web/Network/AI/SYS 성공이다.
-  OPS 보정 후 로컬 집중 66개·문서 4개와 새 collection 8,517개를 확인했다. 새 로컬 전체 pytest는 반복하지
-  않았고 원격 `51aeb02` CI 34566919945의 Quality·24 shard에서 8,441 passed·기존 76 skipped를 확인했다.
-  24개 artifact가 정확한 clean SHA·exit 0이며 이전 8,502개를 모두 보존하고 새 15개를 추가했다.
-  같은 SHA의 Web/Network/AI/OPS/SYS도 모두 첫 시도 성공이다. 보정 후 원격 결과를 보정 전 로컬 결과와 구분한다.
-
-- 최종 `215d4fc`의 일반 CI와 Web/Network/AI exact-clean Ubuntu Docker 검증이 모두 첫 시도에 통과했다.
-  Quality·24 shard의 8,260 passed·기존 76 skipped와 세 실제 Docker 검증의 cleanup·zero residue를 확인했다.
-  24개 duration artifact의 동일 SHA·clean tree·8,336개 중복 없는 테스트와 기존 항목 보존을 대조했다.
-  이후 변경은 [MEASURED-CONFORMANCE](docs/orchestration/MEASURED-CONFORMANCE.md)에 따라 재검증한다.
-- 이전 제품·테스트의 전체 로컬 회귀와 `3c66c2e`의 원격 CI는 각각 8,342 passed·기존 76 skipped다.
-  새 CI 34493304521의 24개 artifact에서 동일 SHA·clean tree·exit 0·중복 없는 8,418개 테스트와
-  기존 8,336개 보존·새 82개 추가를 확인했다. Web 34493387107(133.92초), Network 34493428264
-  (340.94초), AI 34493435878(84.89초)는 각각 실제 1 passed와 별도 잔여 자원 검사를 통과했다.
-  실제 모델·운영 복구·System mTLS의 로컬 실증과 원격 conformance는 별도 결과다.
+- 새 다섯 목표의 구현·로컬 실증·원격 코드 검증을 완료했다. 코드 SHA `1fd37d1`의 일반 CI는
+  첫 시도 8,566 passed·기존 76 skipped이며 Web·Network·AI·OPS·SYS도 첫 시도 성공이다.
+  모든 8,642개 ID와 source/image·독립 residue 근거를 확인했다. 상세 결과는 `HANDOFF.md`에 있다.
+- 최초 로컬 전체 회귀는 8,541 passed·76 skipped·10 failed·15 errors였다. 호스트 sleep/wake와
+  승인 만료·시간 예산 초과가 관찰됐다. source·기준을 유지한 별도 25개 재검증은 모두 통과했다.
+  전체+재검증 합산 8,566 unique passed·기존 76 skipped이며 최초 실패는 보존한다.
+  유휴 절전 영향을 받는 로컬 장기 실행의 한계와 원격 첫 시도 성공을 구분한다.
+- [EFFECT-005](docs/benchmark/EFFECT-005-public-derived-disclosure-and-cpu.md)는 새 384응답/0실패에서
+  오탐 76→64, 정밀도 64.49→68.32%, 재현율 100%, 평균 CPU 27.09→20.96μs다.
+  생성 오탐 45→33이며 무작위 ID·public control·일부 변환 표현에서 오탐이 남는다. 고정 과제의 결과이고
+  일반 분포의 품질 추정이나 Finding이 아니다. 기본 v1은 유지하며 소비된 평가군을 재사용하지 않는다.
+- [GRAPH-PERF-004](docs/benchmark/GRAPH-PERF-004-processes-and-first-read-validation.md)는 새 process
+  1/2개, 두 DB, guest file pages cold/warm의 전후 24그룹씩을 검증했다. 큰 이력 cold 최초 단일
+  12.6702→9.5380초, 두 reader 완료 13.4525→10.0194초지만 전체 검증·hash·copy 비용은 남는다.
+  반복 지연의 일관된 개선·host/SSD cold·aggregate RSS·최대 크기·운영 SLO는 입증하지 않았다.
+- [OPS-004](docs/orchestration/OPS-004-independent-checkpoint-head.md)의 15개 격리 검사와 기존
+  OPS-003의 11개 검사는 통과했다. 새 volume 초기화의 권한 순서 실패를 실제 재현해 fixture에서
+  보정했다. 독립 anchor가 최신인 조건에서 old archive+old pin을 거부한다. anchor 전체 rollback,
+  유효 suffix 삭제, 별도 물리 host, power loss·운영 failover는 미검증이다. 사용자도 격리 검증을 선택했다.
+- [SYS-004](docs/orchestration/SYS-004-authenticated-kernel-aslr-read.md)는 실제 guest kernel mode와
+  독립 GNU 관찰·봉인 결과가 같고 네 Worker의 cleanup을 확인했다. malformed 값은 runc의 `/proc`
+  교체 금지를 우회하지 않고 별도 test launcher의 fixed-open redirection으로 거부 검증했다.
+  이 negative fixture를 실제 malformed kernel 관찰로 취급하지 않는다. 개별 process 보호·physical
+  host·일반 System·Finding은 입증하지 않으며 새 API/Console도 제공하지 않는다.
+- 직전 `51aeb02`의 일반 CI 및 다섯 conformance family는 첫 시도 성공이었다. 그 이전 OPS 원격
+  실패의 상세 내부 원인은 확정하지 않았다. 이후 별도 재현으로 확인한 권한 문제와 구분한다.
 
 ## 의존성 보안 수정의 검증 경계
 
@@ -119,8 +103,8 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   20.80→0.304초다. 작은 DB 반복은 소폭 느려졌고 history RSS는 평균 1,313→1,618 MiB로 늘었다.
   이력 전체 검증·defensive copy·hash 비용은 남는다. 크기 초과/플랫폼 fallback은 전체 검증이며
   이후 [GRAPH-PERF-003](docs/benchmark/GRAPH-PERF-003-memory-and-concurrent-reads.md)은 같은 process의
-  reader 두 개까지 측정하고 RSS 감소·지연 악화를 기록했다. 더 긴 이력·별도 process 동시성·
-  cold disk·최대 크기·실제 운영 메모리/SLO는 미측정이다.
+  reader 두 개까지 측정하고 RSS 감소·지연 악화를 기록했다. 후속 GRAPH-PERF-004는 별도 process
+  두 개와 guest page cold/warm을 검증했다. 더 긴 이력·물리 cold disk·최대 크기·운영 메모리/SLO는 미측정이다.
 - UX-003A ranking은 최대 500개로 제한되고 confidence는 위험도·검증 진실이 아니다.
   UX-003B Decision audit도 최대 500개이며 off-host anchor·historical browsing·compaction이 없다.
 - UX-004A KISA와 UX-004B WALK 비교는 각각의 증거 경계를 유지한다. semantic diff나 새 validation·
@@ -143,7 +127,7 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   원래 배포를 정지한 수동 복원 검증이며, 등록형 OPS-001 hybrid 지원·live atomic backup·물리 host
   장애·외부 rollback·자동 실행 재개·운영 배포를 증명하지 않는다. 소유 자원 부재는 별도 관측했고
   새 변경의 `215d4fc` commit·push·동일 커밋 CI/Web/Network/AI 검증까지 완료했다.
-  OPS-002의 구성 선택·실행 승인 대기는 해소됐다. 이번 새 변경의 승인은 별도다.
+  OPS-002의 구성 선택·실행 승인 대기는 해소됐다. 이후 운영 변경은 별도 승인 범위다.
 - [OPS-003](docs/orchestration/OPS-003-managed-hybrid-recovery.md)의 운영자 명령은 선정 hybrid의
   안전한 정지·암호화 cold checkpoint·독립 pin 검증·새 빈 대상 복원·현재 권한과 별도 승인 재개를
   실제 격리 환경에서 검증했다. 기존 OPS-001 등록형 API는 여전히 POSIX local SQLite 전용이다.

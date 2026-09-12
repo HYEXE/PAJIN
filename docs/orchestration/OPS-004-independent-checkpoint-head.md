@@ -90,7 +90,18 @@ continuation succeeded once and preserved the unacknowledged-call charge.
 
 The unchanged OPS-003 exercise also passed its 11 checks against the same product
 code digest. Independent Docker observations found no owned resources remaining.
-These are local results from the uncommitted source, not clean-commit remote CI.
+These local measurements preceded publication of the code checkpoint.
+
+The first attempt of [OPS conformance 34669911248](https://github.com/HYEXE/PAJIN/actions/runs/34669911248)
+then passed the original 11 and additional 15 checks on Ubuntu 24.04, Linux/amd64,
+Python 3.12.14 at clean commit `1fd37d16d05887f9ff7956ccea4986b77cd4fe6c`.
+The combined outer runner took 248.66 seconds. Both probe processes exited zero,
+and the independently recomputed tracked-source commitment matched
+`6326d2448a5a40dbe415e553aca8e2386dd2c15edc6e7635f0c59c8c18f84e4f`.
+Cleanup and a separate read-only audit found zero owned containers, networks and
+volumes without fallback removal. Only three bounded public summary files were
+retained as workflow artifacts. The dedicated runner remains an isolated exercise;
+it does not establish the physical or production guarantees excluded below.
 
 The first OPS-004 attempt failed before checkpoint creation: its volume initializer
 changed ownership before changing permissions under restricted capabilities. A

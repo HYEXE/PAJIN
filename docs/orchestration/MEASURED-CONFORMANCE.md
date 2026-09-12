@@ -131,9 +131,43 @@ not demonstrate physical power-loss recovery, production failover or arbitrary S
 GitHub's [runner environment variables](https://docs.github.com/en/actions/reference/workflows-and-actions/variables)
 define the dedicated-host admission input; it is checked alongside the actual platform and Git SHA.
 
-The added OPS-004 and SYS-004 paths are implemented but have not yet completed local or remote
-actual conformance. The historical results below cover only the boundaries present at their
-recorded commit. They do not satisfy these newly added checks.
+## Verified expanded checkpoint
+
+Commit `1fd37d16d05887f9ff7956ccea4986b77cd4fe6c` passed ordinary CI and all five required
+conformance families on their first attempts, including both newly added operational paths:
+
+| Workflow | Verified result |
+| --- | --- |
+| [CI 34669692639](https://github.com/HYEXE/PAJIN/actions/runs/34669692639) | Quality and 24 shards; 8,566 passed, existing 76 skipped |
+| [Web 34669907026](https://github.com/HYEXE/PAJIN/actions/runs/34669907026) | 1 actual test passed in 133.03 s |
+| [Network 34669908622](https://github.com/HYEXE/PAJIN/actions/runs/34669908622) | 1 actual test passed in 296.50 s |
+| [AI 34669909903](https://github.com/HYEXE/PAJIN/actions/runs/34669909903) | 1 actual test passed in 79.89 s |
+| [OPS 34669911248](https://github.com/HYEXE/PAJIN/actions/runs/34669911248) | Original 11 plus additional 15 checks; combined outer runner 248.66 s |
+| [SYS 34669912227](https://github.com/HYEXE/PAJIN/actions/runs/34669912227) | Original and additional profiles each passed 1 actual test and 4 Worker executions; combined outer runner 86.51 s |
+
+The 24 duration artifacts identify the same clean SHA and exit zero. Their 8,642 unique test IDs
+match local collection, preserve all 8,517 previous IDs and add 125 tests. Skip locations, reasons
+and counts are unchanged. Ruff and strict Linux mypy passed for 490 source files, 13 explicitly
+included scripts and 2 additional agent/client files. All five conformance jobs passed exact-image,
+clean-commit and independent residue gates.
+
+OPS/SYS ran on Ubuntu 24.04, Linux/amd64, Python 3.12.14. Their source commitment matches all
+1,505 tracked files read independently from that Git commit:
+`6326d2448a5a40dbe415e553aca8e2386dd2c15edc6e7635f0c59c8c18f84e4f`.
+Both original and additional probes exited zero. Cleanup and a separate read-only audit found zero
+owned containers, networks and volumes without fallback removal. Each artifact contains only the
+three bounded public JSON summaries. Local arm64 probes and earlier failed local fixture attempts
+remain separate evidence. These results do not establish physical-host recovery, trusted-anchor
+rollback detection, process ASLR protection or general System support.
+
+The result-only documentation follow-up is Markdown-only and requires its own ordinary CI check.
+It selects no additional Docker family when compared with this verified code commit, and does not
+claim a new product execution result.
+
+## Earlier checkpoint and retained failure
+
+The historical results below cover only the boundaries present at their recorded commit. They do
+not substitute for the expanded checks above.
 
 The first OPS run for `27127bd1872c56c98a0ffc93cabaa834cfcc0259` failed during the actual probe,
 while unconditional cleanup and independent residue checks succeeded. Its exact internal cause

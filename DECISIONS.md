@@ -5,6 +5,14 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0289](docs/adr/0289-reuse-matching-projections-only-within-current-graph-verification.md): 동일 트랜잭션에서 검증한 Projection의 전체 내용 일치를 확인하는 현재 Graph 조회 최적화.
+
+- [ADR-0288](docs/adr/0288-isolate-an-approved-kernel-aslr-read-from-os-release-authority.md): 기존 OS-release 권한 지문을 보존하는 별도 ASLR 고정 읽기·증거·CLI 경계.
+
+- [ADR-0287](docs/adr/0287-retain-a-recovery-head-outside-restored-application-state.md): 복원 대상 밖의 독립 checkpoint 최신 기록과 등록된 복구의 오래된 archive 거부.
+
+- [ADR-0286](docs/adr/0286-verify-public-derived-values-before-reducing-disclosure-alerts.md): 공개 입력에서 계산한 값만 제외하는 새 탐지 후보와 고정 오탐·CPU 비교.
+
 - [ADR-0285](docs/adr/0285-validate-all-graph-history-with-bounded-current-snapshot-retention.md): 모든 이력을 검증하면서 현재 조회의 동시 Snapshot 보관량을 제한한다.
 
 - [ADR-0284](docs/adr/0284-read-pinned-system-results-with-operator-campaign-admission.md): 배포자 고정 System 증거에 대한 Operator·Campaign 조회 경계.
