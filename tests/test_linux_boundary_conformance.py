@@ -139,7 +139,9 @@ def test_ops_summary_requires_all_actual_checks_and_omits_private_fields(tmp_pat
 @pytest.mark.parametrize("change", [None, "phase", "checks", "version", "oversize"])
 def test_failed_ops_diagnostics_publish_only_observed_phase_and_count(tmp_path, change):
     report = dict(
-        version="ops003-linux-rehearsal-v1", phase="source-postgres", checks=[],
+        version="ops003-linux-rehearsal-v1",
+        phase="source-postgres",
+        checks=[],
         stderr="PRIVATE-CREDENTIAL-NEVER-PUBLISH",
     )
     if change == "oversize":
@@ -150,7 +152,8 @@ def test_failed_ops_diagnostics_publish_only_observed_phase_and_count(tmp_path, 
     result = ci.failed_probe_observation("ops", tmp_path)
     assert result == (
         dict(observed_phase="source-postgres", completed_checks=0)
-        if change is None else dict(observed_phase="unknown", completed_checks=None)
+        if change is None
+        else dict(observed_phase="unknown", completed_checks=None)
     )
     assert "PRIVATE" not in json.dumps(result)
     assert ci.failed_probe_observation("sys", tmp_path)["observed_phase"] == "unknown"
@@ -234,9 +237,13 @@ def test_ops004_requires_every_new_check_and_keeps_limits_explicit(tmp_path, inc
     if incomplete:
         checks.pop()
     report = dict(
-        version="ops004-linux-rehearsal-v1", complete=True, checks_passed=True,
-        cleanup="observed-absent", checks=checks,
-        physical_separate_host_verified=False, anchor_volume_rollback_detected=False,
+        version="ops004-linux-rehearsal-v1",
+        complete=True,
+        checks_passed=True,
+        cleanup="observed-absent",
+        checks=checks,
+        physical_separate_host_verified=False,
+        anchor_volume_rollback_detected=False,
     )
     (tmp_path / "report.json").write_text(json.dumps(report))
     if incomplete:
@@ -244,7 +251,8 @@ def test_ops004_requires_every_new_check_and_keeps_limits_explicit(tmp_path, inc
             ci.verify_probe("ops", tmp_path, extended=True)
     else:
         assert ci.verify_probe("ops", tmp_path, extended=True) == {
-            "actual_checks": 15, "cleanup_observed": True,
+            "actual_checks": 15,
+            "cleanup_observed": True,
         }
         report["physical_separate_host_verified"] = True
         (tmp_path / "report.json").write_text(json.dumps(report))
@@ -273,8 +281,11 @@ def test_original_success_alone_cannot_complete_the_extended_workflow(
 
     monkeypatch.setattr(ci.subprocess, "run", probe)
     monkeypatch.setattr(ci, "verify_probe", verify)
+    monkeypatch.setattr(ci, "verify_witness_probe", lambda private: {"actual_checks": 21})
     assert ci.run("ops", tmp_path, "sha256:" + "d" * 64, "sha256:" + "e" * 64) == second_exit
-    assert len(calls) == 2
+    assert len(calls) == (3 if second_exit == 0 else 2)
+    if second_exit == 0:
+        assert "scripts.witness_checkpoint_rehearsal" in calls[2]
     assert "scripts.hybrid_operations_rehearsal" in calls[0]
     assert "scripts.independent_checkpoint_rehearsal" in calls[1]
     result = json.loads((tmp_path / "public-summary.json").read_text())
@@ -282,16 +293,85 @@ def test_original_success_alone_cannot_complete_the_extended_workflow(
     assert verified == ([False, True] if second_exit == 0 else [False])
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "missing-check",
+        "power-loss",
+        "darwin",
+        "cycles",
+        "no-crash",
+        "report-list",
+        "probe-list",
+    ],
+)
+def test_ops005_requires_observed_linux_crash_and_all_witness_checks(tmp_path, mutation):
+    report = dict(
+        version="ops005-linux-rehearsal-v1",
+        complete=True,
+        checks_passed=True,
+        cleanup="observed-absent",
+        checks=sorted(ci.OPS005_CHECKS),
+        anchor_volume_rollback_detected=True,
+        physical_separate_host_verified=False,
+        simultaneous_store_rollback_detected=False,
+        power_loss_verified=False,
+        production_failover_verified=False,
+    )
+    probe = dict(
+        version="ops005-process-crash-v1",
+        complete=True,
+        system="Linux",
+        cycles=32,
+        sigkill_after_witness_fsync=True,
+        stale_head_denied=True,
+        original_retained=True,
+        physical_host_failure_verified=False,
+        power_loss_verified=False,
+    )
+    if mutation == "missing-check":
+        report["checks"].pop()
+    elif mutation == "power-loss":
+        report["power_loss_verified"] = True
+    elif mutation == "darwin":
+        probe["system"] = "Darwin"
+    elif mutation == "cycles":
+        probe["cycles"] = True
+    elif mutation == "no-crash":
+        probe["sigkill_after_witness_fsync"] = False
+    (tmp_path / "report.json").write_text(json.dumps([] if mutation == "report-list" else report))
+    (tmp_path / "process-crash.json").write_text(
+        json.dumps([] if mutation == "probe-list" else probe)
+    )
+    if mutation is None:
+        assert ci.verify_witness_probe(tmp_path) == {
+            "actual_checks": 21,
+            "process_restart_cycles": 32,
+            "cleanup_observed": True,
+        }
+    else:
+        with pytest.raises(ValueError, match="OPS-005"):
+            ci.verify_witness_probe(tmp_path)
+
+
 @pytest.mark.parametrize("mutation", [None, "mismatch", "missing", "process-claim", "boolean"])
 def test_sys004_requires_independent_coreutils_agreement(tmp_path, mutation):
     metadata = {"randomizeVaSpace": 2}
     evidence = dict(
-        metadata=metadata, bytes=[50, 10], implementation="od (GNU coreutils) 9.7",
-        match=True, physicalHostVerified=False, processAslrVerified=False,
+        metadata=metadata,
+        bytes=[50, 10],
+        implementation="od (GNU coreutils) 9.7",
+        match=True,
+        physicalHostVerified=False,
+        processAslrVerified=False,
     )
     comparison = dict(
-        version="pajin.sys-004.reexecution-report/v1", complete=True, aslrMatch=True,
-        source={"aslr": {"metadata": metadata}}, replay={"aslr": {"metadata": metadata}},
+        version="pajin.sys-004.reexecution-report/v1",
+        complete=True,
+        aslrMatch=True,
+        source={"aslr": {"metadata": metadata}},
+        replay={"aslr": {"metadata": metadata}},
     )
     if mutation == "mismatch":
         comparison["replay"]["aslr"]["metadata"] = {"randomizeVaSpace": 1}

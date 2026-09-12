@@ -127,14 +127,19 @@ def create_checkpoint(
     destination: Path,
     anchor: CheckpointAnchor | None = None,
     anchor_key: Ed25519PrivateKey | None = None,
+    witness_key: Ed25519PrivateKey | None = None,
     expected_anchor_sequence: int | None = None,
 ) -> str:
     require_anchor(plan.recovery_anchor, anchor, state)
-    if anchor is None and (anchor_key is not None or expected_anchor_sequence is not None):
+    if anchor is None and (
+        anchor_key is not None or witness_key is not None or expected_anchor_sequence is not None
+    ):
         raise ValueError("checkpoint publication requires deployment enrollment")
     if anchor is not None:
         if destination.is_relative_to(anchor.directory):
             raise ValueError("checkpoint archive must remain outside the independent anchor")
+        if anchor.witness is not None and destination.is_relative_to(anchor.witness.directory):
+            raise ValueError("checkpoint archive must remain outside the independent witness")
         if (
             anchor_key is None
             or type(expected_anchor_sequence) is not int
@@ -142,16 +147,24 @@ def create_checkpoint(
             or anchor_key.public_key().public_bytes_raw().hex() != anchor.binding.public_key_hex
         ):
             raise ValueError("checkpoint requires the enrolled publisher and expected sequence")
+        anchor.require_publication_keys(anchor_key, witness_key)
         head = anchor.head()
         if expected_anchor_sequence != (head.sequence if head else 0):
             raise ValueError("checkpoint publication expectation is stale")
     pin = _create_checkpoint(
-        plan, state, database_url=database_url, signer=signer,
-        encryption_key=encryption_key, destination=destination,
+        plan,
+        state,
+        database_url=database_url,
+        signer=signer,
+        encryption_key=encryption_key,
+        destination=destination,
     )
     if anchor is not None and anchor_key is not None and expected_anchor_sequence is not None:
         anchor.publish(
-            checkpoint_pin=pin, source_pin=digest(plan), key=anchor_key,
+            checkpoint_pin=pin,
+            source_pin=digest(plan),
+            key=anchor_key,
+            witness_key=witness_key,
             expected_sequence=expected_anchor_sequence,
         )
     return pin
@@ -220,7 +233,11 @@ def verify_restored(
         target.recovery_anchor, anchor, state, checkpoint_pin, digest(checkpoint.deployment)
     ) as head:
         report = _verify_restored(
-            checkpoint, target, state, database_url=database_url, signer=signer,
+            checkpoint,
+            target,
+            state,
+            database_url=database_url,
+            signer=signer,
             checkpoint_pin=checkpoint_pin,
         )
         if head is not None:
@@ -278,8 +295,13 @@ def restore_checkpoint(
         target.recovery_anchor, anchor, state, checkpoint_pin, digest(checkpoint.deployment)
     ):
         return _restore_checkpoint(
-            checkpoint, target, state, database_url=database_url, signer=signer,
-            checkpoint_pin=checkpoint_pin, anchor=anchor,
+            checkpoint,
+            target,
+            state,
+            database_url=database_url,
+            signer=signer,
+            checkpoint_pin=checkpoint_pin,
+            anchor=anchor,
         )
 
 

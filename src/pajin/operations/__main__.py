@@ -67,6 +67,8 @@ def main() -> None:
     parser.add_argument("--attempt", type=Path)
     parser.add_argument("--anchor-directory", type=Path)
     parser.add_argument("--anchor-key", type=Path)
+    parser.add_argument("--witness-directory", type=Path)
+    parser.add_argument("--witness-key", type=Path)
     parser.add_argument("--expected-anchor-sequence", type=int)
     args = parser.parse_args()
     if args.operation == "code-digest":
@@ -105,7 +107,16 @@ def _state_operation(args: argparse.Namespace, plan: object) -> dict[str, object
     if args.anchor_directory is not None:
         if plan.recovery_anchor is None:
             raise ValueError("anchor directory requires independent deployment enrollment")
-        anchor = CheckpointAnchor(args.anchor_directory, plan.recovery_anchor)
+        witness = None
+        if args.witness_directory is not None:
+            from pajin.operations.checkpoint_witness import CheckpointWitness
+
+            if plan.recovery_anchor.witness is None:
+                raise ValueError("witness directory requires independent deployment enrollment")
+            witness = CheckpointWitness(args.witness_directory, plan.recovery_anchor.witness)
+        anchor = CheckpointAnchor(args.anchor_directory, plan.recovery_anchor, witness=witness)
+    elif args.witness_directory is not None or args.witness_key is not None:
+        raise ValueError("witness options require an enrolled anchor")
     if not all((args.cp_keyring, args.encryption_key, args.checkpoint)):
         raise ValueError(
             "state operations require external CP keyring, encryption key and checkpoint"
@@ -124,9 +135,15 @@ def _state_operation(args: argparse.Namespace, plan: object) -> dict[str, object
             anchor=anchor,
             anchor_key=(
                 Ed25519PrivateKey.from_private_bytes(read(args.anchor_key, limit=32))
-                if args.anchor_key is not None else None
+                if args.anchor_key is not None
+                else None
             ),
             expected_anchor_sequence=args.expected_anchor_sequence,
+            witness_key=(
+                Ed25519PrivateKey.from_private_bytes(read(args.witness_key, limit=32))
+                if args.witness_key is not None
+                else None
+            ),
         )
         return {"checkpoint_sha256": pin, "source_stopped": True, "execution_authorized": False}
     if not args.checkpoint_pin:

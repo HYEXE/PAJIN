@@ -1,6 +1,6 @@
 # Measured Docker Conformance Rerun Policy
 
-This policy covers Web, Network, AI, OPS-003/004, and SYS-002/004 boundaries. A successful
+This policy covers Web, Network, AI, OPS-003/004/005, and SYS-002/004 boundaries. A successful
 synthetic fixture run demonstrates the covered execution and verification contract. It does not
 establish general vulnerability detection performance or grant execution authority for other targets.
 
@@ -90,7 +90,7 @@ rerunning a job does not replace investigating the cause.
 | Web | `web-002d-conformance.yml` | Source ZAP measurement, controlled validation and denial, cleanup, bounded product, independent process and integrity failures |
 | Network | `network-002d-conformance.yml` | Six source cases, six independent Replay cases, floor, product, fresh-process reads, cleanup |
 | AI | `ai-002d-conformance.yml` | Source, two supporting Replay operations, three comparison controls, floor, product, fresh-process reads, cleanup |
-| OPS | `ops-003-conformance.yml` | Existing OPS-003 recovery plus separately retained OPS-004 checkpoint head, old archive/pin rejection, read-only anchor mount and approved continuation |
+| OPS | `ops-003-conformance.yml` | OPS-003 recovery, OPS-004 independent checkpoint head, and OPS-005 separately signed witness; old archive/pin and one-sided store rollback rejection, read-only verification and approved continuation |
 | SYS | `sys-002-conformance.yml` | Existing SYS-002 OS-release plus separately approved SYS-004 ASLR reads, independent parser/coreutils checks, fresh-process readers, denials/failures and eight Worker lifecycles |
 
 The Web, Network and AI tests also export the UX-010 private deployment inventory and reconstruct the Operator
@@ -111,13 +111,15 @@ They build from that clean checkout on `ubuntu-24.04`, use locked dependencies a
 environment and refuses cleanup admission if any matching fixture resources already exist.
 Its private admission marker binds the commit, tracked-source digest, workflow Run and attempt.
 
-The execution step verifies all eleven original OPS checks plus fifteen OPS-004 checks, or
+The execution step verifies all eleven original OPS checks, fifteen OPS-004 checks and
+twenty-one OPS-005 checks including thirty-two fresh-process restart cycles after actual
+SIGKILL at the witness-first durability boundary, or
 both actual passing System pytests with four observed Worker executions each. The ASLR path
 also requires independent coreutils bytes to match both sealed observations. Original and
 additional probes retain separate private directories, logs and bounded public counts;
 success of the original probe alone cannot complete the workflow. The SYS workflow builds
 and pins a separate ASLR image. Its cleanup admission includes both agent ownership labels.
-The unchanged confirmation input names now explicitly describe both covered profiles.
+The unchanged confirmation input names explicitly describe all covered profiles.
 The unconditional cleanup step removes only resources admitted on
 that fresh dedicated runner; finding fallback residue still fails conformance even if removal
 succeeds. A separate unconditional, read-only audit requires zero remaining containers, networks

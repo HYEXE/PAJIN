@@ -23,6 +23,10 @@ class AnchoredRehearsal(Rehearsal):
         self.anchor_binding: dict[str, object] | None = None
         self.publisher = Ed25519PrivateKey.generate()
         self.anchor_sequence = 0
+        self.anchor_path = "/anchor/head"
+
+    def anchor_read_args(self) -> list[str]:
+        return []
 
     def controller_mounts(self, role: str) -> list[str]:
         if self.anchor_volume is None:
@@ -67,7 +71,7 @@ class AnchoredRehearsal(Rehearsal):
         self, identity: str, args: list[str], *, succeeds: bool = True, error: str | None = None
     ) -> None:
         if args[0] in ("checkpoint", "restore", "verify", "resume"):
-            args = [*args, "--anchor-directory", "/anchor/head"]
+            args = [*args, "--anchor-directory", self.anchor_path]
         if args[0] == "checkpoint":
             args += [
                 "--anchor-key", "/tmp/anchor.key",
@@ -129,7 +133,8 @@ class AnchoredRehearsal(Rehearsal):
     def check_restored(self, recovery: str, report: dict[str, Any]) -> None:
         head = json.loads(self.execute(recovery, [
             "python", "-m", "pajin.operations.checkpoint_anchor", "inspect",
-            "--directory", "/anchor/head", "--binding", "/evidence/anchor-binding.json",
+            "--directory", self.anchor_path, "--binding", "/evidence/anchor-binding.json",
+            *self.anchor_read_args(),
         ]))
         if (
             head["sequence"] != 2 or report.get("independent_checkpoint") != head

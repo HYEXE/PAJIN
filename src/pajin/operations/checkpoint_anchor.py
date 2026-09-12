@@ -13,16 +13,19 @@ import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pajin.runtime.host_checkpoint import _safe_directory, _write_new
 from pajin.runtime.safe_files import read_bounded_regular_bytes
+
+if TYPE_CHECKING:
+    from pajin.operations.checkpoint_witness import CheckpointWitness
 
 DOMAIN = b"pajin.recovery-anchor/v1\0"
 MAX_ENTRIES = 4096
@@ -34,11 +37,29 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
-class AnchorBinding(Model):
-    version: Literal["pajin-recovery-anchor-v1"] = "pajin-recovery-anchor-v1"
+class WitnessBinding(Model):
+    version: Literal["pajin-recovery-witness-v1"] = "pajin-recovery-witness-v1"
     authority_id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$")
     public_key_hex: Digest
     genesis_sha256: Digest
+
+
+class AnchorBinding(Model):
+    version: Literal["pajin-recovery-anchor-v1", "pajin-recovery-anchor-v2"] = (
+        "pajin-recovery-anchor-v1"
+    )
+    authority_id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$")
+    public_key_hex: Digest
+    genesis_sha256: Digest
+    witness: WitnessBinding | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def require_explicit_witness_version(self) -> Self:
+        if (self.witness is not None) != (self.version == "pajin-recovery-anchor-v2"):
+            raise ValueError("witness enrollment requires the explicit anchor v2 boundary")
+        if self.witness is not None and self.witness.public_key_hex == self.public_key_hex:
+            raise ValueError("witness and anchor publishers must use distinct signing keys")
+        return self
 
 
 class Genesis(Model):
@@ -91,15 +112,29 @@ def initialize(directory: Path, *, authority_id: str, public_key_hex: str) -> An
 
 
 class CheckpointAnchor:
-    def __init__(self, directory: Path, binding: AnchorBinding) -> None:
+    def __init__(
+        self, directory: Path, binding: AnchorBinding, *, witness: CheckpointWitness | None = None
+    ) -> None:
         self.directory = directory
         self.binding = AnchorBinding.model_validate_json(binding.model_dump_json())
+        self.witness = witness
+        if self.binding.witness is None:
+            if witness is not None:
+                raise ValueError("witness is not enrolled in this anchor")
+        else:
+            from pajin.operations.checkpoint_witness import CheckpointWitness
+
+            if type(witness) is not CheckpointWitness or witness.binding != self.binding.witness:
+                raise ValueError("anchor requires its independently enrolled witness")
+            witness.require_outside(directory)
 
     def require_outside(self, state: Path) -> None:
         _safe_directory(state)
         _safe_directory(self.directory)
         if self.directory.is_relative_to(state) or state.is_relative_to(self.directory):
             raise ValueError("independent anchor and application state must be disjoint")
+        if self.witness is not None:
+            self.witness.require_outside(state)
 
     @contextmanager
     def lock(self, *, exclusive: bool) -> Iterator[None]:
@@ -121,7 +156,12 @@ class CheckpointAnchor:
             ):
                 raise ValueError("independent anchor lock differs")
             fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
-            yield
+            if self.witness is None:
+                yield
+            else:
+                # Every operation uses anchor -> witness order, including publication.
+                with self.witness.lock(exclusive=exclusive):
+                    yield
         finally:
             os.close(descriptor)
 
@@ -163,13 +203,30 @@ class CheckpointAnchor:
     def head(self) -> AnchorEntry | None:
         with self.lock(exclusive=False):
             entries = self._entries()
+            self._require_witness(entries)
             return entries[-1] if entries else None
+
+    def _require_witness(self, entries: tuple[AnchorEntry, ...]) -> None:
+        if self.witness is not None:
+            self.witness.require_anchor(self.binding, entries)
+
+    def require_publication_keys(
+        self, key: Ed25519PrivateKey, witness_key: Ed25519PrivateKey | None
+    ) -> None:
+        if key.public_key().public_bytes_raw().hex() != self.binding.public_key_hex:
+            raise ValueError("checkpoint publisher differs from independent anchor authority")
+        if self.witness is None:
+            if witness_key is not None:
+                raise ValueError("witness publisher is not enrolled")
+        else:
+            self.witness.require_publisher(witness_key)
 
     @contextmanager
     def hold(self, checkpoint_pin: str, source_pin: str) -> Iterator[AnchorEntry]:
         """Prevent cooperating publishers from advancing during a recovery operation."""
         with self.lock(exclusive=False):
             entries = self._entries()
+            self._require_witness(entries)
             if not entries or (
                 entries[-1].checkpoint_sha256 != checkpoint_pin
                 or entries[-1].source_deployment_sha256 != source_pin
@@ -179,6 +236,7 @@ class CheckpointAnchor:
             yield head
             if self._entries() != entries:
                 raise ValueError("independent recovery head changed during verification")
+            self._require_witness(entries)
 
     def publish(
         self,
@@ -187,15 +245,16 @@ class CheckpointAnchor:
         source_pin: str,
         expected_sequence: int,
         key: Ed25519PrivateKey,
+        witness_key: Ed25519PrivateKey | None = None,
     ) -> AnchorEntry:
-        from pajin.operations.hybrid_models import canonical, digest
+        from pajin.operations.hybrid_models import digest
 
-        if key.public_key().public_bytes_raw().hex() != self.binding.public_key_hex:
-            raise ValueError("checkpoint publisher differs from independent anchor authority")
+        self.require_publication_keys(key, witness_key)
         if type(expected_sequence) is not int or not 0 <= expected_sequence < MAX_ENTRIES:
             raise ValueError("checkpoint publication requires a bounded expected sequence")
         with self.lock(exclusive=True):
             entries = self._entries()
+            self._require_witness(entries)
             if len(entries) != expected_sequence or any(
                 entry.checkpoint_sha256 == checkpoint_pin for entry in entries
             ):
@@ -210,28 +269,38 @@ class CheckpointAnchor:
             signed = value.model_copy(
                 update={"signature_hex": key.sign(value.signed_bytes()).hex()}
             )
-            path = self.directory / "entries.jsonl"
-            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC)
-            try:
-                info = os.fstat(descriptor)
-                observed = path.stat(follow_symlinks=False)
-                if (
-                    not stat.S_ISREG(info.st_mode)
-                    or info.st_nlink != 1
-                    or (info.st_dev, info.st_ino) != (observed.st_dev, observed.st_ino)
-                    or info.st_uid != os.geteuid()
-                    or info.st_mode & 0o077
-                ):
-                    raise ValueError("independent anchor append target differs")
-                content = canonical(signed) + b"\n"
-                if os.write(descriptor, content) != len(content):
-                    raise ValueError("independent anchor append is incomplete; keep source stopped")
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            if self.witness is not None:
+                # Durable independent intent comes first. A crash before anchor append
+                # leaves a mismatch that blocks reads until explicit anchor restoration.
+                self.witness._publish_intent(self.binding, entries, signed, key=witness_key)
+            self._append_entry(signed)
             if self._entries() != (*entries, signed):
                 raise ValueError("independent anchor publication failed verification")
+            self._require_witness((*entries, signed))
             return signed
+
+    def _append_entry(self, signed: AnchorEntry) -> None:
+        from pajin.operations.hybrid_models import canonical
+
+        path = self.directory / "entries.jsonl"
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            info = os.fstat(descriptor)
+            observed = path.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or (info.st_dev, info.st_ino) != (observed.st_dev, observed.st_ino)
+                or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077
+            ):
+                raise ValueError("independent anchor append target differs")
+            content = canonical(signed) + b"\n"
+            if os.write(descriptor, content) != len(content):
+                raise ValueError("independent anchor append is incomplete; keep source stopped")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def require_anchor(
@@ -269,8 +338,11 @@ def main() -> None:
     parser.add_argument("--binding", type=Path, required=True)
     parser.add_argument("--authority-id")
     parser.add_argument("--public-key")
+    parser.add_argument("--witness-directory", type=Path)
     args = parser.parse_args()
     if args.operation == "init":
+        if args.witness_directory is not None:
+            parser.error("enroll a witness after initializing an empty anchor")
         if not args.authority_id or not args.public_key or args.binding.exists():
             parser.error("init requires an authority, public key and new binding output")
         binding = initialize(
@@ -280,9 +352,18 @@ def main() -> None:
         print(binding.model_dump_json())
     else:
         binding = AnchorBinding.model_validate_json(_read(args.binding, 4096))
-        head = CheckpointAnchor(args.directory, binding).head()
+        witness = None
+        if args.witness_directory is not None:
+            from pajin.operations.checkpoint_witness import CheckpointWitness
+
+            if binding.witness is None:
+                parser.error("witness is not enrolled in this binding")
+            witness = CheckpointWitness(args.witness_directory, binding.witness)
+        head = CheckpointAnchor(args.directory, binding, witness=witness).head()
         print(head.model_dump_json() if head else "null")
 
 
 if __name__ == "__main__":
-    main()
+    from pajin.operations.checkpoint_anchor import main as canonical_main
+
+    canonical_main()

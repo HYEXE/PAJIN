@@ -41,15 +41,27 @@ OPS_CHECKS = {
     "one-use-resume",
     "unacknowledged-call-charge-preserved",
 }
-OPS004_CHECKS = (OPS_CHECKS - {
-    "failed-pg-restore-kept-target-inactive", "exact-retry-restored",
-}) | {
+OPS004_CHECKS = (
+    OPS_CHECKS
+    - {
+        "failed-pg-restore-kept-target-inactive",
+        "exact-retry-restored",
+    }
+) | {
     "two-durable-independent-checkpoints",
     "stale-archive-and-old-pin-denied-before-materialization",
     "latest-enrolled-checkpoint-restored",
     "fresh-process-latest-head-agrees",
     "recovery-anchor-read-only",
     "application-writers-have-no-anchor-mount",
+}
+OPS005_CHECKS = OPS004_CHECKS | {
+    "anchor-suffix-rollback-denied-before-materialization",
+    "explicit-new-anchor-restored-with-original-retained",
+    "recovery-witness-read-only-without-publisher-key",
+    "application-writers-have-no-witness-mount",
+    "sigkill-after-witness-fsync-refused-and-explicitly-restored",
+    "32-fresh-process-head-verification-cycles",
 }
 
 
@@ -212,7 +224,8 @@ def _verify_aslr_independent(private: Path) -> None:
         raise ValueError("independent ASLR evidence is not an object")
     metadata = evidence.get("metadata")
     if (
-        not isinstance(metadata, dict) or set(metadata) != {"randomizeVaSpace"}
+        not isinstance(metadata, dict)
+        or set(metadata) != {"randomizeVaSpace"}
         or type(metadata.get("randomizeVaSpace")) is not int
         or metadata["randomizeVaSpace"] not in (0, 1, 2)
         or evidence.get("bytes") != [48 + metadata["randomizeVaSpace"], 10]
@@ -222,7 +235,8 @@ def _verify_aslr_independent(private: Path) -> None:
         or not isinstance(evidence.get("implementation"), str)
         or not evidence["implementation"].startswith("od (GNU coreutils)")
         or compared.get("version") != "pajin.sys-004.reexecution-report/v1"
-        or compared.get("complete") is not True or compared.get("aslrMatch") is not True
+        or compared.get("complete") is not True
+        or compared.get("aslrMatch") is not True
     ):
         raise ValueError("independent ASLR observation differs")
     for name in ("source", "replay"):
@@ -234,7 +248,7 @@ def _verify_aslr_independent(private: Path) -> None:
 
 
 def failed_probe_observation(
-    boundary: str, private: Path, *, extended: bool = False
+    boundary: str, private: Path, *, extended: bool = False, witnessed: bool = False
 ) -> dict[str, object]:
     """Expose only an allowlisted OPS phase/count, never private command output."""
     unknown: dict[str, object] = dict(observed_phase="unknown", completed_checks=None)
@@ -242,8 +256,12 @@ def failed_probe_observation(
         return unknown
     from scripts.hybrid_operations_rehearsal import PHASES
 
-    required = OPS004_CHECKS if extended else OPS_CHECKS
-    version = "ops004-linux-rehearsal-v1" if extended else "ops003-linux-rehearsal-v1"
+    required = OPS005_CHECKS if witnessed else OPS004_CHECKS if extended else OPS_CHECKS
+    version = (
+        "ops005-linux-rehearsal-v1"
+        if witnessed
+        else ("ops004-linux-rehearsal-v1" if extended else "ops003-linux-rehearsal-v1")
+    )
     try:
         path = private / "report.json"
         if path.stat().st_size > 65_536:
@@ -254,8 +272,10 @@ def failed_probe_observation(
         checks, phase = report.get("checks"), report.get("phase")
         if (
             report.get("version") != version
-            or not isinstance(phase, str) or phase not in PHASES
-            or not isinstance(checks, list) or len(checks) > len(required)
+            or not isinstance(phase, str)
+            or phase not in PHASES
+            or not isinstance(checks, list)
+            or len(checks) > len(required)
             or not all(isinstance(check, str) and check in required for check in checks)
             or len(set(checks)) != len(checks)
         ):
@@ -276,6 +296,8 @@ def run(
             "private-probe",
             "private-additional-probe",
             "private-additional-runner.log",
+            "private-witness-probe",
+            "private-witness-runner.log",
             "public-summary.json",
         )
     ):
@@ -325,6 +347,7 @@ def run(
     )
     started = perf_counter()
     extended = False
+    witnessed = False
     try:
         with (state / "private-runner.log").open("x") as log:
             result = subprocess.run(
@@ -344,33 +367,121 @@ def run(
         private = state / "private-additional-probe"
         extra = (
             [
-                "-m", "scripts.independent_checkpoint_rehearsal",
-                "--runtime-image", primary, "--worker-image", secondary,
-            ] if boundary == "ops" else [
-                "scripts/operational_system_aslr.py", "--image-id", str(additional_image),
-                "--proxy-image-id", secondary,
+                "-m",
+                "scripts.independent_checkpoint_rehearsal",
+                "--runtime-image",
+                primary,
+                "--worker-image",
+                secondary,
+            ]
+            if boundary == "ops"
+            else [
+                "scripts/operational_system_aslr.py",
+                "--image-id",
+                str(additional_image),
+                "--proxy-image-id",
+                secondary,
             ]
         )
         with (state / "private-additional-runner.log").open("x") as log:
             result = subprocess.run(
                 [sys.executable, *extra, "--output", str(private)],
-                stdout=log, stderr=subprocess.STDOUT, timeout=1800, check=False,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                timeout=1800,
+                check=False,
             )
         summary["additional_exit_code"] = result.returncode
         if result.returncode != 0:
             raise ValueError("additional actual probe failed")
         summary["additional_boundary"] = verify_probe(boundary, private, extended=True)
+        if boundary == "ops":
+            if source_digest() != marker["source_sha256"]:
+                raise ValueError("conformance source changed before witness execution")
+            witnessed = True
+            private = state / "private-witness-probe"
+            with (state / "private-witness-runner.log").open("x") as log:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "scripts.witness_checkpoint_rehearsal",
+                        "--runtime-image",
+                        primary,
+                        "--worker-image",
+                        secondary,
+                        "--output",
+                        str(private),
+                    ],
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    timeout=1800,
+                    check=False,
+                )
+            summary["witness_exit_code"] = result.returncode
+            if result.returncode != 0:
+                raise ValueError("witness actual probe failed")
+            summary["witness_boundary"] = verify_witness_probe(private)
         if source_digest() != marker["source_sha256"]:
             raise ValueError("conformance source changed during execution")
         summary["complete"] = True
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         summary["diagnostic"] = "actual-probe-or-evidence-failed; detail=omitted"
-        summary["failed_probe"] = "additional" if extended else "original"
-        summary.update(failed_probe_observation(boundary, private, extended=extended))
+        summary["failed_probe"] = (
+            "witness" if witnessed else "additional" if extended else "original"
+        )
+        summary.update(
+            failed_probe_observation(boundary, private, extended=extended, witnessed=witnessed)
+        )
     finally:
         summary["elapsed_seconds"] = perf_counter() - started
         write(state / "public-summary.json", summary)
     return 0 if summary["complete"] is True else 1
+
+
+def verify_witness_probe(private: Path) -> dict[str, object]:
+    report = json.loads((private / "report.json").read_text())
+    probe = json.loads((private / "process-crash.json").read_text())
+    if not isinstance(report, dict) or not isinstance(probe, dict):
+        raise ValueError("OPS-005 witness evidence is not an object")
+    checks = report.get("checks")
+    if (
+        report.get("version") != "ops005-linux-rehearsal-v1"
+        or report.get("complete") is not True
+        or report.get("checks_passed") is not True
+        or report.get("cleanup") != "observed-absent"
+        or not isinstance(checks, list)
+        or len(checks) != len(OPS005_CHECKS)
+        or not all(isinstance(check, str) for check in checks)
+        or set(checks) != OPS005_CHECKS
+        or report.get("anchor_volume_rollback_detected") is not True
+        or any(
+            report.get(key) is not False
+            for key in (
+                "physical_separate_host_verified",
+                "simultaneous_store_rollback_detected",
+                "power_loss_verified",
+                "production_failover_verified",
+            )
+        )
+        or probe.get("version") != "ops005-process-crash-v1"
+        or probe.get("system") != "Linux"
+        or probe.get("complete") is not True
+        or type(probe.get("cycles")) is not int
+        or probe.get("cycles") != 32
+        or any(
+            probe.get(key) is not True
+            for key in (
+                "sigkill_after_witness_fsync",
+                "stale_head_denied",
+                "original_retained",
+            )
+        )
+        or probe.get("physical_host_failure_verified") is not False
+        or probe.get("power_loss_verified") is not False
+    ):
+        raise ValueError("OPS-005 witness checks or boundary claims are incomplete")
+    return dict(actual_checks=len(OPS005_CHECKS), process_restart_cycles=32, cleanup_observed=True)
 
 
 def cleanup(boundary: str, state: Path, *, audit_only: bool) -> int:
@@ -427,7 +538,10 @@ def main() -> int:
             if not args.primary_image or not args.secondary_image:
                 parser.error("run requires both observed image IDs")
             return run(
-                args.boundary, args.state, args.primary_image, args.secondary_image,
+                args.boundary,
+                args.state,
+                args.primary_image,
+                args.secondary_image,
                 args.additional_image,
             )
         return cleanup(args.boundary, args.state, audit_only=args.operation == "audit")
