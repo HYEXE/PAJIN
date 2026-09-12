@@ -120,14 +120,19 @@ class GraphProjection(StrictModel):
             raise ValueError("Graph projection material belongs to another Campaign")
         self._require_resolved_edges()
 
+        # Serialize each node/edge once. The same exact material is checked by all
+        # domain-separated digests and by the final canonical byte-size bound.
+        material = self.model_dump(
+            mode="json", by_alias=True, exclude={"projection_id", "projection_digest"},
+        )
         node_digest = graph_digest(
             "pajin.graph.projection.nodes/v1",
-            [node.model_dump(mode="json", by_alias=True) for node in self.nodes],
+            material["nodes"],
             max_bytes=_MAX_PROJECTION_BYTES,
         )
         edge_digest = graph_digest(
             "pajin.graph.projection.edges/v1",
-            [edge.model_dump(mode="json", by_alias=True) for edge in self.edges],
+            material["edges"],
             max_bytes=_MAX_PROJECTION_BYTES,
         )
         if self.node_projection_digest and self.node_projection_digest != node_digest:
@@ -137,11 +142,8 @@ class GraphProjection(StrictModel):
         object.__setattr__(self, "node_projection_digest", node_digest)
         object.__setattr__(self, "edge_projection_digest", edge_digest)
 
-        material = self.model_dump(
-            mode="json",
-            by_alias=True,
-            exclude={"projection_id", "projection_digest"},
-        )
+        material["nodeProjectionDigest"] = node_digest
+        material["edgeProjectionDigest"] = edge_digest
         projection_digest = graph_digest(
             "pajin.graph.projection/v1",
             material,
@@ -157,7 +159,7 @@ class GraphProjection(StrictModel):
         if fullmatch(_PROJECTION_ID_PATTERN, self.projection_id) is None:
             raise ValueError("Graph projection ID is malformed")
         canonical_graph_json(
-            self.model_dump(mode="json", by_alias=True),
+            {**material, "projectionId": projection_id, "projectionDigest": projection_digest},
             label="GraphProjection",
             max_bytes=_MAX_PROJECTION_BYTES,
         )
@@ -417,7 +419,7 @@ class GraphSnapshot(StrictModel):
         if fullmatch(_SNAPSHOT_ID_PATTERN, self.snapshot_id) is None:
             raise ValueError("Graph Snapshot ID is malformed")
         canonical_graph_json(
-            self.model_dump(mode="json", by_alias=True),
+            {**material, "snapshotId": snapshot_id, "snapshotDigest": snapshot_digest},
             label="GraphSnapshot",
             max_bytes=_MAX_PROJECTION_BYTES,
         )

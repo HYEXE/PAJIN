@@ -13,7 +13,6 @@ from pajin.graph.projection import GraphSnapshot
 from pajin.graph.sqlite_store import (
     SQLiteGraphStoreError,
     _absolute_path,
-    _canonical_snapshot,
     _file_identity,
     _readonly_connection,
     _validate_schema,
@@ -136,7 +135,9 @@ class VerifiedCurrentGraphSnapshotCache:
                 snapshot, _events = _verified_current_snapshot_from_connection(
                     connection, campaign_id=campaign_id, snapshot_id=snapshot_id
                 )
-                snapshot = _canonical_snapshot(snapshot) if snapshot is not None else None
+                # This object and every nested model were just validated from exact
+                # canonical stored bytes in this transaction. No caller has held it.
+                # A defensive copy still leaves the cache below on every read.
             if snapshot is not None:
                 _require_current_head(connection, snapshot)
             # Copy while the checked input is still pinned. The caller may mutate nested models.
