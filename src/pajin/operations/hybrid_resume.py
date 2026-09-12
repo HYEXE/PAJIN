@@ -15,6 +15,7 @@ from sqlalchemy import select
 from pajin.control_plane.database import CheckpointRecord, ControlPlaneRepository
 from pajin.control_plane.models import Principal, PrincipalRole, ResumeView
 from pajin.control_plane.security import CheckpointSigner
+from pajin.operations.checkpoint_anchor import CheckpointAnchor, recovery_head
 from pajin.operations.hybrid import _compatible, _source_stopped
 from pajin.operations.hybrid_docker import Postgres, WriterFence, inspect_writer
 from pajin.operations.hybrid_files import collect
@@ -57,6 +58,35 @@ def verify_authorization(
 
 
 def resume(
+    checkpoint: Checkpoint,
+    plan: Deployment,
+    state: Path,
+    *,
+    database_url: str,
+    signer: CheckpointSigner,
+    report: dict[str, object],
+    checkpoint_pin: str,
+    grant: ResumeAuthorization,
+    ca_path: Path,
+    token: str,
+    attempt_path: Path,
+    anchor: CheckpointAnchor | None = None,
+) -> dict[str, object]:
+    with recovery_head(
+        plan.recovery_anchor, anchor, state, checkpoint_pin, digest(checkpoint.deployment)
+    ) as head:
+        if head is not None and (
+            report.get("independent_checkpoint") != head.model_dump(mode="json")
+        ):
+            raise ValueError("resume receipt differs from the independent latest checkpoint")
+        return _resume(
+            checkpoint, plan, state, database_url=database_url, signer=signer, report=report,
+            checkpoint_pin=checkpoint_pin, grant=grant, ca_path=ca_path, token=token,
+            attempt_path=attempt_path,
+        )
+
+
+def _resume(
     checkpoint: Checkpoint,
     plan: Deployment,
     state: Path,

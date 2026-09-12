@@ -111,6 +111,7 @@ class Rehearsal:
                     f"{lab.volumes['control-' + config]}:/control:ro",
                     "-v",
                     f"{shared}:/evidence",
+                    *self.controller_mounts(role),
                     "-v",
                     "/var/run/docker.sock:/var/run/docker.sock",
                     "--tmpfs",
@@ -123,6 +124,9 @@ class Rehearsal:
         )
         self.controllers.append(identity)
         return identity
+
+    def controller_mounts(self, role: str) -> list[str]:
+        return []
 
     def execute(self, identity: str, args: list[str], *, stdin: bytes | None = None) -> bytes:
         self.sequence += 1
@@ -296,10 +300,7 @@ class Rehearsal:
         )
         self.checks.append("running-source-denied")
         self.cli(controller, ["stop", *common, "--output", "/evidence/stopped.json"])
-        self.cli(
-            controller,
-            ["checkpoint", *common, *state_args, "--output", "/evidence/checkpoint.json"],
-        )
+        self.checkpoint_source(controller, common, state_args)
         cp = self.read_json(controller, "/evidence/checkpoint.json")
         self.checks.append("full-cold-checkpoint-source-stopped")
         target, restored, target_host = self.pair("target")
@@ -320,6 +321,60 @@ class Rehearsal:
             "/target/host",
         ]
         restore_args = [*state_args, "--checkpoint-pin", cp["checkpoint_sha256"]]
+        self.before_restore(recovery, target_common, state_args)
+        self.cli(
+            recovery,
+            ["restore", *target_common, *restore_args, "--output", "/evidence/restored.json"],
+        )
+        self.cli(
+            recovery,
+            ["verify", *target_common, *restore_args, "--output", "/evidence/verified.json"],
+        )
+        self.checks.extend(self.restoration_checks())
+        report = self.read_json(recovery, "/evidence/verified.json")
+        self.check_restored(recovery, report)
+        self.phase = "target-resume"
+        command(["docker", "start", target_host])
+        command(
+            [
+                "docker", "exec", "-d", target_host, "python",
+                "/app/tests/operational_linux_probe.py", "server", "v2",
+            ]
+        )
+        target.execute(target_host, ["python", PROBE, "ready"], log="api-ready")
+        self.resume_target(recovery, target_common, restore_args, report, seed, target_host)
+        command(["docker", "start", target_worker])
+        result = target.execute(
+            target_host,
+            ["python", PROBE, "finish"],
+            log="continuation",
+            stdin=json.dumps(seed).encode(),
+            env={"PAJIN_OPS003_WORKER_CONTAINER": target_worker},
+        )
+        (self.output / "continuation.json").write_bytes(result)
+        self.checks.extend(
+            [
+                "expired-recovery-authorization-denied",
+                "unapproved-cp-resume-denied",
+                "approver-role-rechecked",
+                "approved-continuation-completed",
+                "one-use-resume",
+                "unacknowledged-call-charge-preserved",
+            ]
+        )
+        self.phase = "complete"
+
+    def checkpoint_source(
+        self, controller: str, common: list[str], state_args: list[str]
+    ) -> None:
+        self.cli(
+            controller,
+            ["checkpoint", *common, *state_args, "--output", "/evidence/checkpoint.json"],
+        )
+
+    def before_restore(
+        self, recovery: str, target_common: list[str], state_args: list[str]
+    ) -> None:
         # A valid encrypted object with an invalid pg_dump exercises interruption after
         # local materialization. The original archive remains intact for the exact retry.
         malformed = (
@@ -354,41 +409,21 @@ class Rehearsal:
             ["restore", *target_common, *interrupted, "--output", "/evidence/interrupted.json"],
             succeeds=False,
         )
-        self.cli(
-            recovery,
-            ["restore", *target_common, *restore_args, "--output", "/evidence/restored.json"],
-        )
-        self.cli(
-            recovery,
-            ["verify", *target_common, *restore_args, "--output", "/evidence/verified.json"],
-        )
-        self.checks.extend(
-            [
-                "failed-pg-restore-kept-target-inactive",
-                "exact-retry-restored",
-                "fresh-process-domain-verification",
-            ]
-        )
-        report = self.read_json(recovery, "/evidence/verified.json")
-        self.phase = "target-resume"
-        command(["docker", "start", target_host])
-        command(
-            [
-                "docker",
-                "exec",
-                "-d",
-                target_host,
-                "python",
-                "/app/tests/operational_linux_probe.py",
-                "server",
-                "v2",
-            ]
-        )
-        target.execute(
-            target_host,
-            ["python", PROBE, "ready"],
-            log="api-ready",
-        )
+
+    def restoration_checks(self) -> list[str]:
+        return [
+            "failed-pg-restore-kept-target-inactive",
+            "exact-retry-restored",
+            "fresh-process-domain-verification",
+        ]
+
+    def check_restored(self, recovery: str, report: dict[str, Any]) -> None:
+        return None
+
+    def resume_target(
+        self, recovery: str, target_common: list[str], restore_args: list[str],
+        report: dict[str, Any], seed: dict[str, Any], target_host: str,
+    ) -> None:
         resume_args = [
             "resume",
             *target_common,
@@ -426,7 +461,7 @@ class Rehearsal:
             succeeds=False,
             error="current Control Plane authentication, approval or resume policy denied",
         )
-        target.execute(
+        self.labs[1].execute(
             target_host,
             ["python", PROBE, "approve"],
             log="approval",
@@ -442,26 +477,6 @@ class Rehearsal:
                 "/evidence/approved-resume.json",
             ],
         )
-        command(["docker", "start", target_worker])
-        result = target.execute(
-            target_host,
-            ["python", PROBE, "finish"],
-            log="continuation",
-            stdin=json.dumps(seed).encode(),
-            env={"PAJIN_OPS003_WORKER_CONTAINER": target_worker},
-        )
-        (self.output / "continuation.json").write_bytes(result)
-        self.checks.extend(
-            [
-                "expired-recovery-authorization-denied",
-                "unapproved-cp-resume-denied",
-                "approver-role-rechecked",
-                "approved-continuation-completed",
-                "one-use-resume",
-                "unacknowledged-call-charge-preserved",
-            ]
-        )
-        self.phase = "complete"
 
     def _close_controller(self, identity: str) -> bool:
         item = json.loads(command(["docker", "inspect", identity]))[0]

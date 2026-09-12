@@ -9,6 +9,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from pajin.operations.checkpoint_anchor import AnchorBinding
 from pajin.runtime.host_checkpoint_models import relative_path
 from pajin.supervision.run_binding import SupervisorRunBinding
 
@@ -83,6 +84,9 @@ class Deployment(Model):
     resume_signers: dict[Identifier, ResumeSigner] = Field(min_length=1, max_length=32)
     operator_api_origin: str = Field(pattern=r"^https://(?:127\.0\.0\.1|localhost):[0-9]{1,5}$")
     operator_ca_sha256: Digest
+    recovery_anchor: AnchorBinding | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def require_unique_members(self) -> Self:

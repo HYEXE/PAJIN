@@ -9,7 +9,10 @@ import sys
 from pathlib import Path
 from typing import cast
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from pajin.control_plane.security import CheckpointSigner
+from pajin.operations.checkpoint_anchor import CheckpointAnchor
 from pajin.operations.hybrid import (
     create_checkpoint,
     implementation_digest,
@@ -62,6 +65,9 @@ def main() -> None:
     parser.add_argument("--resume-authorization", type=Path)
     parser.add_argument("--operator-ca", type=Path)
     parser.add_argument("--attempt", type=Path)
+    parser.add_argument("--anchor-directory", type=Path)
+    parser.add_argument("--anchor-key", type=Path)
+    parser.add_argument("--expected-anchor-sequence", type=int)
     args = parser.parse_args()
     if args.operation == "code-digest":
         print(implementation_digest())
@@ -95,6 +101,11 @@ def _state_operation(args: argparse.Namespace, plan: object) -> dict[str, object
     from pajin.operations.hybrid_models import Deployment
 
     assert isinstance(plan, Deployment)
+    anchor = None
+    if args.anchor_directory is not None:
+        if plan.recovery_anchor is None:
+            raise ValueError("anchor directory requires independent deployment enrollment")
+        anchor = CheckpointAnchor(args.anchor_directory, plan.recovery_anchor)
     if not all((args.cp_keyring, args.encryption_key, args.checkpoint)):
         raise ValueError(
             "state operations require external CP keyring, encryption key and checkpoint"
@@ -110,6 +121,12 @@ def _state_operation(args: argparse.Namespace, plan: object) -> dict[str, object
             signer=signer,
             encryption_key=encryption_key,
             destination=args.checkpoint,
+            anchor=anchor,
+            anchor_key=(
+                Ed25519PrivateKey.from_private_bytes(read(args.anchor_key, limit=32))
+                if args.anchor_key is not None else None
+            ),
+            expected_anchor_sequence=args.expected_anchor_sequence,
         )
         return {"checkpoint_sha256": pin, "source_stopped": True, "execution_authorized": False}
     if not args.checkpoint_pin:
@@ -128,6 +145,7 @@ def _state_operation(args: argparse.Namespace, plan: object) -> dict[str, object
             database_url=database_url,
             signer=signer,
             checkpoint_pin=args.checkpoint_pin,
+            anchor=anchor,
         )
     if not all((args.verification, args.resume_authorization, args.operator_ca, args.attempt)):
         raise ValueError(
@@ -152,6 +170,7 @@ def _state_operation(args: argparse.Namespace, plan: object) -> dict[str, object
         ca_path=args.operator_ca,
         token=os.environ.get("PAJIN_RECOVERY_OPERATOR_TOKEN", ""),
         attempt_path=args.attempt,
+        anchor=anchor,
     )
 
 

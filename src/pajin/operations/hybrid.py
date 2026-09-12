@@ -11,7 +11,15 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from pajin.control_plane.security import CheckpointSigner
+from pajin.operations.checkpoint_anchor import (
+    MAX_ENTRIES,
+    CheckpointAnchor,
+    recovery_head,
+    require_anchor,
+)
 from pajin.operations.hybrid_docker import Postgres, WriterFence, command, inspect_writer
 from pajin.operations.hybrid_files import (
     authenticate,
@@ -101,6 +109,7 @@ def _compatible(source: Deployment, target: Deployment) -> None:
         "checkpoint_key_commitments",
         "code_sha256",
         "resume_signers",
+        "recovery_anchor",
     ):
         if getattr(source, name) != getattr(target, name):
             raise ValueError("target changes the source store or verifier contract")
@@ -109,6 +118,46 @@ def _compatible(source: Deployment, target: Deployment) -> None:
 
 
 def create_checkpoint(
+    plan: Deployment,
+    state: Path,
+    *,
+    database_url: str,
+    signer: CheckpointSigner,
+    encryption_key: bytes,
+    destination: Path,
+    anchor: CheckpointAnchor | None = None,
+    anchor_key: Ed25519PrivateKey | None = None,
+    expected_anchor_sequence: int | None = None,
+) -> str:
+    require_anchor(plan.recovery_anchor, anchor, state)
+    if anchor is None and (anchor_key is not None or expected_anchor_sequence is not None):
+        raise ValueError("checkpoint publication requires deployment enrollment")
+    if anchor is not None:
+        if destination.is_relative_to(anchor.directory):
+            raise ValueError("checkpoint archive must remain outside the independent anchor")
+        if (
+            anchor_key is None
+            or type(expected_anchor_sequence) is not int
+            or not 0 <= expected_anchor_sequence < MAX_ENTRIES
+            or anchor_key.public_key().public_bytes_raw().hex() != anchor.binding.public_key_hex
+        ):
+            raise ValueError("checkpoint requires the enrolled publisher and expected sequence")
+        head = anchor.head()
+        if expected_anchor_sequence != (head.sequence if head else 0):
+            raise ValueError("checkpoint publication expectation is stale")
+    pin = _create_checkpoint(
+        plan, state, database_url=database_url, signer=signer,
+        encryption_key=encryption_key, destination=destination,
+    )
+    if anchor is not None and anchor_key is not None and expected_anchor_sequence is not None:
+        anchor.publish(
+            checkpoint_pin=pin, source_pin=digest(plan), key=anchor_key,
+            expected_sequence=expected_anchor_sequence,
+        )
+    return pin
+
+
+def _create_checkpoint(
     plan: Deployment,
     state: Path,
     *,
@@ -165,6 +214,28 @@ def verify_restored(
     database_url: str,
     signer: CheckpointSigner,
     checkpoint_pin: str,
+    anchor: CheckpointAnchor | None = None,
+) -> dict[str, object]:
+    with recovery_head(
+        target.recovery_anchor, anchor, state, checkpoint_pin, digest(checkpoint.deployment)
+    ) as head:
+        report = _verify_restored(
+            checkpoint, target, state, database_url=database_url, signer=signer,
+            checkpoint_pin=checkpoint_pin,
+        )
+        if head is not None:
+            report["independent_checkpoint"] = head.model_dump(mode="json")
+        return report
+
+
+def _verify_restored(
+    checkpoint: Checkpoint,
+    target: Deployment,
+    state: Path,
+    *,
+    database_url: str,
+    signer: CheckpointSigner,
+    checkpoint_pin: str,
 ) -> dict[str, object]:
     _compatible(checkpoint.deployment, target)
     _source_stopped(checkpoint.deployment)
@@ -201,6 +272,26 @@ def restore_checkpoint(
     database_url: str,
     signer: CheckpointSigner,
     checkpoint_pin: str,
+    anchor: CheckpointAnchor | None = None,
+) -> dict[str, object]:
+    with recovery_head(
+        target.recovery_anchor, anchor, state, checkpoint_pin, digest(checkpoint.deployment)
+    ):
+        return _restore_checkpoint(
+            checkpoint, target, state, database_url=database_url, signer=signer,
+            checkpoint_pin=checkpoint_pin, anchor=anchor,
+        )
+
+
+def _restore_checkpoint(
+    checkpoint: Checkpoint,
+    target: Deployment,
+    state: Path,
+    *,
+    database_url: str,
+    signer: CheckpointSigner,
+    checkpoint_pin: str,
+    anchor: CheckpointAnchor | None,
 ) -> dict[str, object]:
     _compatible(checkpoint.deployment, target)
     _source_stopped(checkpoint.deployment)
@@ -223,6 +314,7 @@ def restore_checkpoint(
         database_url=database_url,
         signer=signer,
         checkpoint_pin=checkpoint_pin,
+        anchor=anchor,
     )
 
 
