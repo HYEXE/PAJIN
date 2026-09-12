@@ -1430,6 +1430,7 @@ def register_control_plane_routes(
     pentest_workflow_runtime: PentestOperatorWorkflowRuntime | None,
     pentest_workflow_coordination_runtime: (PentestWorkflowCoordinationDispatchRuntime | None),
     dependencies: ControlPlaneDependencies,
+    review_principals: tuple[Principal, ...] = (),
 ) -> None:
     """Register all route groups in the established public route order."""
 
@@ -1495,7 +1496,7 @@ def register_control_plane_routes(
         service=MeasuredReviewService(repository, MeasuredReviewEvidenceReader(
             web=web_measured_product_reader, network=network_measured_product_reader,
             ai=ai_measured_product_reader,
-        )),
+        ), principals=review_principals),
         dependencies=dependencies,
     )
     register_public_replay_routes(

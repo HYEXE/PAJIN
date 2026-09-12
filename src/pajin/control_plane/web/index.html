@@ -1054,8 +1054,23 @@
             </div>
           </form>
         </div>
+        <section aria-labelledby="measured-review-inbox-heading">
+          <h3 id="measured-review-inbox-heading">Your assignment notifications</h3>
+          <div class="review-actions"><button id="measured-review-inbox-refresh" class="button button-quiet" type="button" disabled>Refresh your notifications</button><button id="measured-review-inbox-more" class="button button-quiet" type="button" disabled>More review records</button></div>
+          <p id="measured-review-inbox-status" tabindex="-1">Notifications stay inside this application.</p>
+          <ul id="measured-review-inbox" class="review-list"></ul>
+        </section>
         <div id="measured-review-workspace" hidden>
           <article id="measured-review-detail" class="review-detail"></article>
+          <details class="review-editor"><summary>Assign review work</summary>
+            <button id="measured-review-assignee-refresh" class="button button-quiet" type="button" disabled>Load configured reviewers</button>
+            <p id="measured-review-assignee-status">Load configured reviewers before assigning work.</p>
+            <form id="measured-review-assignment-form" autocomplete="off">
+              <div class="field"><label for="measured-review-assignee">Assignee</label><select id="measured-review-assignee" disabled></select></div>
+              <div class="field"><label for="measured-review-assignment-reason">Assignment reason</label><textarea id="measured-review-assignment-reason" required maxlength="1000" rows="2" disabled></textarea></div>
+              <button class="button button-primary" type="submit" disabled>Save assignment</button>
+            </form>
+          </details>
           <div class="review-actions">
             <button id="measured-review-download" class="button button-primary" type="button" disabled>Download review report</button>
             <button id="measured-review-history-load" class="button button-quiet" type="button" disabled>Load full revision history</button>

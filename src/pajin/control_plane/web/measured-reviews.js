@@ -6,6 +6,7 @@ const BASE = "/v1/measured-reviews";
 const DIGEST = /^[a-f0-9]{64}$/;
 const ID = /^review_[a-f0-9]{32}$/;
 const STATES = ["open", "awaiting-review", "changes-requested", "accepted"];
+const SUBJECT = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$/;
 
 export function validateReviewEvidence(value) {
   if (!value || value.apiVersion !== "pajin.dev/measured-review-evidence/v1"
@@ -20,7 +21,7 @@ export function validateReviewEvidence(value) {
 }
 
 export function validateMeasuredReview(value) {
-  if (!value || value.apiVersion !== "pajin.dev/measured-human-review/v1"
+  if (!value || !["pajin.dev/measured-human-review/v1", "pajin.dev/measured-human-review/v2"].includes(value.apiVersion)
     || !ID.test(value.reviewId) || !Number.isInteger(value.revision)
     || value.revision < 1 || value.revision > 200 || !DIGEST.test(value.recordDigest)
     || typeof value.title !== "string" || !STATES.includes(value.state)
@@ -32,6 +33,15 @@ export function validateMeasuredReview(value) {
     throw new Error("The review response does not match the human review contract.");
   }
   validateReviewEvidence(value.evidence);
+  if (value.apiVersion.endsWith("/v2")) {
+    if (!Number.isInteger(value.assignmentRevision) || value.assignmentRevision < 2 || value.assignmentRevision > value.revision
+      || (value.assignee !== undefined && !SUBJECT.test(value.assignee))
+      || (value.state === "accepted" && (!Number.isInteger(value.decisionRevision) || value.decisionRevision < 3 || value.decisionRevision > value.revision))) {
+      throw new Error("The assignment does not match the versioned review history.");
+    }
+  } else if (value.assignmentRevision !== undefined || value.assignee !== undefined || value.decisionRevision !== undefined) {
+    throw new Error("Assignment history requires the v2 review contract.");
+  }
   if (value.retest !== null) {
     validateReviewEvidence(value.retest.evidence);
     if (value.retest.executionAfterRemediationVerified !== false) {
@@ -53,8 +63,8 @@ export function createMeasuredReviews({ document, request, requestReport, access
   const detail = element("detail");
   const list = element("list");
   const source = element("source");
-  const forms = ["open", "assessment", "decision", "retest"].map((name) => element(`${name}-form`));
-  const state = { sequence: 0, stepSequence: 0, busy: false, evidence: null, review: null, after: null, keys: new Map() };
+  const forms = ["open", "assessment", "decision", "retest", "assignment"].map((name) => element(`${name}-form`));
+  const state = { sequence: 0, stepSequence: 0, busy: false, evidence: null, review: null, after: null, inboxAfter: null, assignees: null, keys: new Map() };
   const fields = (form) => [...form.querySelectorAll("input, select, textarea, button")];
   const node = (tag, text, className = "") => {
     const result = document.createElement(tag);
@@ -86,6 +96,11 @@ export function createMeasuredReviews({ document, request, requestReport, access
     });
     element("download").disabled = !reading || !state.review;
     element("history-load").disabled = !reading || !state.review;
+    element("assignee-refresh").disabled = !reading;
+    element("inbox-refresh").disabled = !reading;
+    element("inbox-more").disabled = !reading || state.inboxAfter === null;
+    element("inbox").querySelectorAll("button").forEach((button) => { button.disabled = !reading; });
+    fields(forms[4]).forEach((field) => { field.disabled = !writing || !state.review || state.review.revision >= 200 || state.assignees === null; });
     element("decision-help").textContent = selfReview
       ? "Another authenticated Approver must review your contribution."
       : "An Approver reviews the complete current assessment and any attached retest.";
@@ -129,6 +144,7 @@ export function createMeasuredReviews({ document, request, requestReport, access
     state.busy = false;
     state.evidence = state.review = null;
     state.after = null;
+    state.inboxAfter = null; state.assignees = null;
     state.keys.clear();
     forms.forEach((form) => form.reset());
     element("lookup-form").reset();
@@ -138,6 +154,10 @@ export function createMeasuredReviews({ document, request, requestReport, access
     [source, list, detail, element("history")].forEach((item) => item.replaceChildren());
     element("workspace").hidden = true;
     source.hidden = true;
+    element("inbox").replaceChildren();
+    element("inbox-status").textContent = "Refresh to read your saved assignment notifications.";
+    element("assignee").replaceChildren();
+    element("assignee-status").textContent = "Load configured reviewers before assigning work.";
     status.textContent = "Connect, then load evidence or refresh the saved reviews.";
     updateAccess();
   }
@@ -177,7 +197,7 @@ export function createMeasuredReviews({ document, request, requestReport, access
     box.append(disclosure);
     return box;
   }
-  function showReview(raw) {
+  function showReview(raw, focus = true) {
     const view = validateMeasuredReview(raw);
     state.review = view;
     forms.slice(1).forEach((form) => form.reset());
@@ -190,6 +210,8 @@ export function createMeasuredReviews({ document, request, requestReport, access
       node("p", view.reviewId, "review-digest"),
       node("p", "This human report does not confirm a general vulnerability or authorize execution. Downloading it does not reverify stored evidence."),
       evidenceView(view.evidence, true));
+    if (view.assignmentRevision) detail.append(node("p", `Assigned to: ${view.assignee ?? "Unassigned"} · assignment revision ${view.assignmentRevision}. Assignment grants no permission.`));
+    element("assignee").value = view.assignee ?? "";
     const assessment = view.assessment;
     element("steps").replaceChildren();
     state.stepSequence = 0;
@@ -220,13 +242,13 @@ export function createMeasuredReviews({ document, request, requestReport, access
         evidenceView(view.retest.evidence, true));
     }
     if (view.decision) detail.append(node("h4", "Human review decision"),
-      node("p", `${view.reviewer} · ${view.decision.decision} · revision ${view.revision}`),
+      node("p", `${view.reviewer} · ${view.decision.decision} · decision revision ${view.decisionRevision ?? view.revision}`),
       node("p", view.decision.reason, "review-human-text"));
     element("workspace").hidden = false;
-    title.focus();
+    if (focus) title.focus();
     updateAccess();
   }
-  async function save(kind, path, payload, current) {
+  async function save(kind, path, payload, current, focus = true) {
     const signature = JSON.stringify([path, payload]);
     let pending = state.keys.get(kind);
     if (!pending || pending.signature !== signature) {
@@ -239,7 +261,7 @@ export function createMeasuredReviews({ document, request, requestReport, access
     // A duplicate returns its original revision; reopen the latest state before editing it.
     const latest = await request(`${BASE}/${result.reviewId}`);
     if (!current()) return;
-    showReview(latest);
+    showReview(latest, focus);
     status.textContent = "Saved. The current review and its retained history are available below.";
     announce("Human review saved.", "success");
   }
@@ -294,6 +316,74 @@ export function createMeasuredReviews({ document, request, requestReport, access
     source.replaceChildren(); source.hidden = true; updateAccess();
   });
   element("refresh").addEventListener("click", () => run("Loading saved reviews…", (current) => loadList(null, current)));
+  element("assignee-refresh").addEventListener("click", () => run("Loading configured reviewers…", async (current) => {
+    const roster = await request("/v1/measured-review-assignees");
+    if (!current()) return;
+    if (!Array.isArray(roster) || roster.some((subject, index) => !SUBJECT.test(subject) || (index > 0 && roster[index - 1] >= subject))) {
+      throw new Error("Configured reviewer list is invalid.");
+    }
+    state.assignees = roster;
+    const empty = node("option", "Unassigned"); empty.value = "";
+    element("assignee").replaceChildren(empty, ...roster.map((subject) => {
+      const option = node("option", subject); option.value = subject; return option;
+    }));
+    element("assignee").value = state.review?.assignee ?? "";
+    element("assignee-status").textContent = roster.length ? "Configured reviewers loaded. Assigning work does not grant a role or approve the review." : "No configured reviewers are available.";
+    status.textContent = "Configured reviewers loaded.";
+  }));
+  async function loadInbox(after, current) {
+    const value = await request("/v1/measured-review-inbox" + (after ? `?after=${encodeURIComponent(after)}` : ""));
+    if (!current()) return;
+    if (value?.apiVersion !== "pajin.dev/review-inbox/v1" || value.externalDeliveryAuthorized !== false
+      || !Number.isInteger(value.scannedReviews) || value.scannedReviews < 0 || value.scannedReviews > 10
+      || (value.nextAfter !== null && !ID.test(value.nextAfter)) || !Array.isArray(value.items) || value.items.length > 2000
+      || value.items.some((item) => !/^review-notice_[a-f0-9]{64}$/.test(item.notificationId)
+        || !ID.test(item.reviewId) || !Number.isInteger(item.assignmentRevision) || item.assignmentRevision < 2
+        || !Number.isInteger(item.currentRevision) || item.assignmentRevision > item.currentRevision || item.currentRevision > 200
+        || typeof item.acknowledged !== "boolean" || !SUBJECT.test(item.actor)
+        || (item.assignee !== null && !SUBJECT.test(item.assignee)) || !Number.isFinite(Date.parse(item.recordedAt)))) {
+      throw new Error("Your assignment notification response is invalid.");
+    }
+    state.inboxAfter = value.nextAfter;
+    element("inbox").replaceChildren(...value.items.map((item) => {
+      const row = document.createElement("li");
+      row.append(node("p", `${item.acknowledged ? "Read" : "Unread"} · assigned to ${item.assignee ?? "Unassigned"} · ${item.actor} · ${item.recordedAt}`));
+      const open = node("button", `Open review ${item.reviewId.slice(-8)}`, "button button-quiet"); open.type = "button";
+      open.addEventListener("click", () => run("Opening assigned review…", async (valid) => {
+        const review = await request(`${BASE}/${item.reviewId}`);
+        if (valid()) { showReview(review); status.textContent = "Assigned review loaded."; }
+      })); row.append(open);
+      if (!item.acknowledged && item.currentRevision >= 200) {
+        row.append(node("p", "Review history is full. This notification remains unread."));
+      } else if (!item.acknowledged && !(access().operator || access().approver)) {
+        row.append(node("p", "Your current role permits reading this notification only."));
+      } else if (!item.acknowledged) {
+        const ack = node("button", "Mark read", "button button-quiet"); ack.type = "button";
+        ack.addEventListener("click", () => run("Recording your acknowledgment…", async (valid) => {
+          const latest = validateMeasuredReview(await request(`${BASE}/${item.reviewId}`));
+          if (!valid()) return;
+          await save(`ack-${item.notificationId}`, `${BASE}/${item.reviewId}/notification-ack`, {
+            expectedRevision: latest.revision, assignmentRevision: item.assignmentRevision,
+          }, valid, false);
+          if (valid()) {
+            await loadInbox(after, valid);
+            if (valid()) element("inbox-status").focus();
+          }
+        })); row.append(ack);
+      }
+      return row;
+    }));
+    element("inbox-status").textContent = `${value.items.length} assignment notification(s) across ${value.scannedReviews} reviewed record(s).${value.nextAfter ? " More review records are available." : " End of records."} Notifications stay inside this application.`;
+    status.textContent = "Your saved assignment notifications loaded.";
+  }
+  element("inbox-refresh").addEventListener("click", () => run("Loading your assignment notifications…", (current) => loadInbox(null, current)));
+  element("inbox-more").addEventListener("click", () => run("Loading notifications from more reviews…", (current) => loadInbox(state.inboxAfter, current)));
+  forms[4].addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!state.review || !access().operator || state.assignees === null) return;
+    const payload = { expectedRevision: state.review.revision, assignee: element("assignee").value || null, reason: element("assignment-reason").value };
+    run("Saving work assignment…", (current) => save("assignment", `${BASE}/${state.review.reviewId}/assignment`, payload, current));
+  });
   element("more").addEventListener("click", () => run("Loading the next saved reviews…", (current) => loadList(state.after, current)));
   element("lookup-form").addEventListener("submit", (event) => {
     event.preventDefault();

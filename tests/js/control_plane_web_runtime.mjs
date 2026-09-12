@@ -100,7 +100,7 @@ const selectors = [
   ...["panel", "status", "detail", "list", "source", "open-form", "assessment-form",
     "decision-form", "retest-form", "domain", "load-source", "refresh", "more", "lookup-form",
     "lookup-id", "title", "steps", "add-step", "workspace", "history", "history-load", "download",
-    "decision-help"].map((name) => `#measured-review-${name}`),
+    "decision-help", "assignment-form", "assignee-refresh", "assignee", "assignee-status", "assignment-reason", "inbox-refresh", "inbox-more", "inbox", "inbox-status"].map((name) => `#measured-review-${name}`),
   "#system-product-panel", "#system-product-form", "#system-product-campaign",
   "#system-product-load", "#system-product-status", "#system-product-result",
   "#network-measured-panel", "#network-measured-load", "#network-measured-status", "#network-measured-result",

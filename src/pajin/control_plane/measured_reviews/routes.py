@@ -8,13 +8,16 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from pajin.control_plane.measured_reviews.evidence import ReviewEvidenceUnavailable
 from pajin.control_plane.measured_reviews.models import (
     AssessmentRequest,
+    AssignmentRequest,
     DecisionRequest,
     MeasuredReviewView,
+    NotificationAckRequest,
     OpenReviewRequest,
     RetestRequest,
     ReviewDomain,
     ReviewEvidence,
     ReviewId,
+    ReviewInbox,
     ReviewList,
     ReviewRevision,
 )
@@ -34,6 +37,8 @@ def register_measured_review_routes(
     )
     operator = dependencies.require_roles(PrincipalRole.OPERATOR)
     approver = dependencies.require_roles(PrincipalRole.APPROVER)
+
+    register_assignment_routes(app, service=service, dependencies=dependencies)
 
     @app.exception_handler(ReviewEvidenceUnavailable)
     async def evidence_unavailable(_request: Request, exc: ReviewEvidenceUnavailable) -> Response:
@@ -117,3 +122,45 @@ def register_measured_review_routes(
             media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{review_id}.md"'},
         )
+
+
+def register_assignment_routes(
+    app: FastAPI, *, service: MeasuredReviewService, dependencies: "ControlPlaneDependencies"
+) -> None:
+    read_role = dependencies.require_roles(
+        PrincipalRole.OPERATOR, PrincipalRole.APPROVER, PrincipalRole.AUDITOR
+    )
+    operator = dependencies.require_roles(PrincipalRole.OPERATOR)
+    acknowledger = dependencies.require_roles(PrincipalRole.OPERATOR, PrincipalRole.APPROVER)
+
+    @app.get("/v1/measured-review-assignees", response_model=tuple[str, ...])
+    def list_assignees(principal: Annotated[Principal, Depends(read_role)]) -> tuple[str, ...]:
+        require_review_role(
+            principal, PrincipalRole.OPERATOR, PrincipalRole.APPROVER, PrincipalRole.AUDITOR
+        )
+        return service.assignees
+
+    @app.get("/v1/measured-review-inbox", response_model=ReviewInbox)
+    def get_inbox(
+        principal: Annotated[Principal, Depends(read_role)],
+        after: Annotated[ReviewId | None, Query()] = None,
+    ) -> ReviewInbox:
+        return service.inbox(principal=principal, after=after)
+
+    @app.post("/v1/measured-reviews/{review_id}/assignment", response_model=MeasuredReviewView)
+    def assign_review(
+        review_id: ReviewId,
+        payload: AssignmentRequest,
+        principal: Annotated[Principal, Depends(operator)],
+    ) -> MeasuredReviewView:
+        return service.submit(payload, principal=principal, review_id=review_id)
+
+    @app.post(
+        "/v1/measured-reviews/{review_id}/notification-ack", response_model=MeasuredReviewView
+    )
+    def acknowledge_notification(
+        review_id: ReviewId,
+        payload: NotificationAckRequest,
+        principal: Annotated[Principal, Depends(acknowledger)],
+    ) -> MeasuredReviewView:
+        return service.submit(payload, principal=principal, review_id=review_id)

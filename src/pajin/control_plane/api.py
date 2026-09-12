@@ -2289,6 +2289,13 @@ def _create_admitted_app(
         pentest_workflow_runtime=selected_pentest_workflow_runtime,
         pentest_workflow_coordination_runtime=(selected_pentest_workflow_coordination_runtime),
         dependencies=dependencies,
+        review_principals=tuple(resolved.credentials.values()) + tuple(
+            Principal(subject=identity.principal_subject, roles=identity.roles)
+            for identity in (
+                resolved.oidc_human_trust_policy.identities
+                if resolved.oidc_human_trust_policy else ()
+            )
+        ),
     )
     from pajin.control_plane.system_product_routes import register_system_product_route
 

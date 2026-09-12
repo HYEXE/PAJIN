@@ -16,25 +16,38 @@ from pajin.control_plane.measured_reviews.evidence import MeasuredReviewEvidence
 from pajin.control_plane.measured_reviews.models import (
     MAX_REVIEW_HISTORY_BYTES,
     MAX_REVIEW_REVISIONS,
+    AcknowledgeReviewNotification,
     AssessmentRequest,
     AssessReview,
+    AssignmentRequest,
+    AssignReview,
     AttachRetest,
     DecideReview,
     DecisionRequest,
     MeasuredReviewView,
+    NotificationAckRequest,
     OpenReview,
     OpenReviewRequest,
     RetestRequest,
     ReviewCommand,
+    ReviewInbox,
     ReviewList,
     ReviewListItem,
+    ReviewNotification,
     ReviewRevision,
     review_digest,
 )
 from pajin.control_plane.measured_reviews.state import rebuild_review
 from pajin.control_plane.models import Principal, PrincipalRole
 
-type MutationRequest = OpenReviewRequest | AssessmentRequest | DecisionRequest | RetestRequest
+type MutationRequest = (
+    OpenReviewRequest
+    | AssessmentRequest
+    | DecisionRequest
+    | RetestRequest
+    | AssignmentRequest
+    | NotificationAckRequest
+)
 _READ_ROLES = frozenset({PrincipalRole.OPERATOR, PrincipalRole.APPROVER, PrincipalRole.AUDITOR})
 
 
@@ -104,10 +117,69 @@ def _duplicate(
 
 class MeasuredReviewService:
     def __init__(
-        self, repository: ControlPlaneRepository, evidence: MeasuredReviewEvidenceReader
+        self,
+        repository: ControlPlaneRepository,
+        evidence: MeasuredReviewEvidenceReader,
+        *,
+        principals: tuple[Principal, ...] = (),
     ) -> None:
         self._repository = repository
         self.evidence = evidence
+        # Deployment-owned human identities only; request data cannot enroll an assignee.
+        self.assignees = tuple(
+            sorted(
+                {
+                    p.subject
+                    for p in principals
+                    if PrincipalRole.WORKER not in p.roles
+                    and not p.roles.isdisjoint({PrincipalRole.OPERATOR, PrincipalRole.APPROVER})
+                }
+            )
+        )
+
+    def inbox(self, *, principal: Principal, after: str | None = None) -> ReviewInbox:
+        require_review_role(principal, *_READ_ROLES)
+        with self._repository.read_transaction() as session:
+            query = select(MeasuredReviewRevisionRecord.review_id).where(
+                MeasuredReviewRevisionRecord.revision == 1
+            )
+            if after is not None:
+                query = query.where(MeasuredReviewRevisionRecord.review_id > after)
+            ids = session.scalars(
+                query.order_by(MeasuredReviewRevisionRecord.review_id).limit(11)
+            ).all()
+            notices = []
+            for review_id in ids[:10]:
+                history = _load(session, review_id)
+                acknowledged = {
+                    r.command.assignment_revision
+                    for r in history
+                    if isinstance(r.command, AcknowledgeReviewNotification)
+                    and r.actor == principal.subject
+                }
+                previous = None
+                for revision in history:
+                    command = revision.command
+                    if isinstance(command, AssignReview):
+                        if principal.subject in {previous, command.assignee}:
+                            notices.append(
+                                ReviewNotification(
+                                    notificationId="review-notice_" + revision.record_digest,
+                                    reviewId=review_id,
+                                    assignmentRevision=revision.revision,
+                                    currentRevision=len(history),
+                                    assignee=command.assignee,
+                                    actor=revision.actor,
+                                    recordedAt=revision.recorded_at,
+                                    acknowledged=revision.revision in acknowledged,
+                                )
+                            )
+                        previous = command.assignee
+            return ReviewInbox(
+                items=tuple(notices),
+                scannedReviews=min(10, len(ids)),
+                nextAfter=ids[9] if len(ids) > 10 else None,
+            )
 
     def history(self, review_id: str, *, principal: Principal) -> tuple[ReviewRevision, ...]:
         require_review_role(principal, *_READ_ROLES)
@@ -157,6 +229,11 @@ class MeasuredReviewService:
             if isinstance(payload, DecisionRequest)
             else PrincipalRole.OPERATOR
         )
+        if isinstance(payload, NotificationAckRequest):
+            require_review_role(principal, PrincipalRole.OPERATOR, PrincipalRole.APPROVER)
+            role = next(
+                r for r in (PrincipalRole.OPERATOR, PrincipalRole.APPROVER) if r in principal.roles
+            )
         require_review_role(principal, role)
         payload = type(payload).model_validate_json(payload.model_dump_json())
         if (review_id is None) != isinstance(payload, OpenReviewRequest):
@@ -199,6 +276,9 @@ class MeasuredReviewService:
                 revision = ReviewRevision.model_validate(
                     {
                         "review_id": identity,
+                        "apiVersion": "pajin.dev/measured-review-revision/v2"
+                        if isinstance(command, AssignReview | AcknowledgeReviewNotification)
+                        else "pajin.dev/measured-review-revision/v1",
                         "revision": len(history) + 1,
                         "previous_digest": history[-1].record_digest if history else None,
                         "actor": principal.subject,
@@ -253,6 +333,12 @@ class MeasuredReviewService:
             raise StateConflict("Review changed; reload its current revision before editing")
 
     def _prepare(self, payload: MutationRequest, history: list[ReviewRevision]) -> ReviewCommand:
+        if isinstance(payload, AssignmentRequest):
+            if payload.assignee is not None and payload.assignee not in self.assignees:
+                raise AuthorizationDenied("Assignee is not a configured human reviewer")
+            return AssignReview(assignee=payload.assignee, reason=payload.reason)
+        if isinstance(payload, NotificationAckRequest):
+            return AcknowledgeReviewNotification(assignmentRevision=payload.assignment_revision)
         if isinstance(payload, OpenReviewRequest):
             return OpenReview(
                 title=payload.title,

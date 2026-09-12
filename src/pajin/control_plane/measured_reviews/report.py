@@ -56,9 +56,19 @@ def render_review_report(history: Sequence[ReviewRevision]) -> str:
         "## Baseline evidence",
         "",
         _evidence(view.evidence),
-        "## Human assessment",
-        "",
     ]
+    if view.assignment_revision:
+        lines.extend(
+            [
+                "## Work assignment",
+                "",
+                _block(view.assignee or "Unassigned"),
+                f"Assignment revision: {view.assignment_revision}. "
+                "Assignment grants no review or execution permission.",
+                "",
+            ]
+        )
+    lines.extend(["## Human assessment", ""])
     assessment = view.assessment
     if assessment is None:
         lines.append("No assessment has been submitted.")
@@ -127,7 +137,8 @@ def render_review_report(history: Sequence[ReviewRevision]) -> str:
             [
                 f"Reviewer: `{view.reviewer}`",
                 f"Decision: {view.decision.decision}",
-                f"Decision applies to revision {view.revision} only.",
+                f"Decision recorded at revision {view.decision_revision or view.revision}; "
+                "later assignment acknowledgments do not change that assessment.",
                 "",
                 _block(view.decision.reason),
             ]
