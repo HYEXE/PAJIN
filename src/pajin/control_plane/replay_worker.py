@@ -286,12 +286,20 @@ class ReplayWorkerDaemon:
         heartbeat = asyncio.create_task(self._heartbeat_loop(claim, lease_deadline=lease_deadline))
         execution: asyncio.Task[ReplayFinalizeRequest] | None = None
         finalization: asyncio.Task[ReplayFinalizationView] | None = None
+
+        async def execute_with_live_lease() -> ReplayFinalizeRequest:
+            # Copying the claim or waiting for scheduling consumes the lease.
+            # Recheck after the copy, immediately before calling the executor.
+            executor_claim = claim.model_copy(deep=True)
+            lease_deadline.require_active()
+            return await self._executor.execute(executor_claim, cancellation=cancellation)
+
         try:
             execution = asyncio.create_task(
                 # The claimed authority remains daemon-owned.  A custom executor
                 # receives an isolated snapshot so it cannot retarget subsequent
                 # heartbeat or finalization by mutating the shared Pydantic model.
-                self._executor.execute(claim.model_copy(deep=True), cancellation=cancellation)
+                execute_with_live_lease()
             )
             request = await self._lifecycle.await_with_heartbeat(
                 execution,

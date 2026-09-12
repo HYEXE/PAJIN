@@ -1,7 +1,7 @@
 # PAJIN 현재 인수인계
 
 체크포인트: 2026-09-12. 직전 다섯 slice의 로컬 구현·통합 검증을 바탕으로 새 네 후속 항목을 시작했다.
-기존 완료분을 push했고 OPS 원격 실증의 재개 단계 실패를 보완 중이다.
+기존 완료분과 OPS 실행 순서 보완을 push했다. 다섯 원격 실증이 통과했고 Replay 시작 경계의 CI 회귀를 보완했다.
 
 ## 목표와 승인 범위
 
@@ -119,10 +119,22 @@ Private 작업 근거는 `.pajin/continuation-three-20260912/`에 있다. `basel
   실제 승인된 재개 뒤로 옮겼고 개별 제한·만료 거부·모든 검사·cleanup은 유지한다.
   재개 단계는 고정된 public-safe 하위 phase로 구분한다. 관련 101개·Ruff·Linux mypy를 통과했다.
   새 소유 Linux 실증도 187.20초에 21개 검사·32회 새 process를 통과했고 독립 9회 조회에서 자원은 0개다.
-- 현재 수정한 복구 script·회귀·문서의 로컬 검증을 완료했다. 승인된 수정
-  commit/push와 새 SHA의 일반 CI·다섯 실증을 수행한다. 새 후보 구현은 그 체크포인트부터 이어간다.
-- 새 작업 근거는 `.pajin/four-followups-20260912/`에 있다. 탐지 가설의 개발용 prototype은
-  그 private 디렉터리에만 있으며, 원본 EFFECT-006을 미사용 평가로 재사용하지 않는다.
+- 복구 순서 보완 커밋 `0d7343a5d013187ee5cffbe93fc4d730b17a76d0`를 push했다.
+  Web 34696427693·Network 34696428887·AI 34696430066·OPS 34696431387·SYS 34696432624가
+  같은 SHA에서 첫 시도 성공했다. OPS는 748.62초에 기존 11·추가 15·witness 21 검사와
+  32회 새 process 검증을 모두 통과했고 독립 cleanup도 통과했다.
+- 일반 CI 34696391646의 shard 19는 기존 Replay 0.15초 lease 테스트의 진단 문구 불일치로
+  실패했다. quality와 나머지 23 shard는 성공했다. 원격에서 만료를 관측한 정확한 내부 위치는
+  해당 traceback만으로 확정하지 않는다.
+- 별도 결정론적 재현에서 초기 검사 뒤 scheduling 전에 만료되면 executor가 한 번 호출되는
+  경계를 확인했다. claim 복사 뒤 실제 executor 호출 직전에 local lease를 재검사한다.
+  재현은 수정 전 1 failed·2 passed, 수정 뒤 Replay/Worker 전체 **199 passed**다.
+  stalled-heartbeat 통합 검사는 시작 여유를 확보하고 기존 중단/겹침/최종화 검사를 유지하며
+  실제 heartbeat 시작과 더 구체적인 local-deadline 예외를 추가 검사한다.
+- Ruff 전체·Linux strict mypy 507 source가 통과했다. 이 필요한 수정만 승인된 commit/push한 뒤
+  새 SHA의 일반 CI와 다섯 실증을 확인한다. 새 후보 파일은 이 커밋에 섞지 않는다.
+- 새 작업 근거는 `.pajin/four-followups-20260912/`다. 초기 실패, 0d7343a 검증은 `remote/`,
+  `remote-fixed/`, scheduling 재현은 `replay-start-red.log`, 검증은 `replay-start-green.log`에 있다.
 
 ## 유지되는 운영 경계
 

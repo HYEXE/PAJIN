@@ -5,15 +5,13 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
 
 ## 현재 후속 목표의 한계와 남은 검증
 
-- 이번 세 축의 변경은 기준 `b2fe5cb` 위의 다섯 로컬 구현 커밋으로 보존했다. `dd039ef`를 push했고 OPS의 원격 재개 단계 실패를 보완 중이다.
-  전체 로컬 회귀와 수정 후 관련 검증은
-  최종 고유 8,671 passed·기존 76 skipped다. 첫 전체 실행의 목록 누락 두 실패를 보완한 뒤 관련
-  121개를 통과했으며 전체를 두 번째 실행하지 않았다. 마지막 Linux 복구 재검증도 통과했다.
-  같은 SHA의 일반 CI는 첫 시도 8,671 passed·76 skipped이며 Web·Network·AI·SYS도 통과했다.
-  OPS는 기존 11·추가 15 검사를 통과했지만 witness 15/21 뒤 target-resume에서 실패했다.
-  private 명령 상세가 없어 원격 내부 원인은 미확정이고 독립 cleanup은 성공했다.
-  별도 재현에서 독립 스트레스가 승인 유효기간을 소모하는 문제를 확인해 실행 순서를 수정 중이다.
-  이전 코드의 성공은 수정된 코드의 검증으로 재사용하지 않는다. 배포는 실행하지 않았다.
+- 기존 구현과 OPS 순서 보완을 `0d7343a`까지 push했다. 같은 SHA의 Web·Network·AI·OPS·SYS
+  실증은 모두 첫 시도 성공했다. OPS는 11+15+21 검사·32회 새 process·독립 cleanup을 통과했다.
+  일반 CI의 한 Replay 테스트는 짧은 시작 lease와 진단 문구 가정으로 실패했고 나머지 job은 성공했다.
+  별도 재현에서 scheduling 중 만료 뒤 executor가 호출되는 경계를 확인해 호출 직전 재검사를 추가했다.
+  기존 중단/겹침/최종화 assertions를 유지한 Replay/Worker 199개·Ruff·Linux mypy가 통과했다.
+  이 수정의 새로운 SHA에 대한 일반 CI·다섯 실증은 아직 남는다. 최초 OPS 실패와 이전 SHA 결과는
+  별도 보존하며 새 수정의 검증으로 대체하지 않는다. 배포는 없다.
 - [EFFECT-006](docs/benchmark/EFFECT-006-public-text-transforms-and-disclosure.md)의 새 384응답은
   실패 없이 완료했지만 오탐은 v4/v5 모두 62건, 미탐 0건이며 개별 판정도 모두 같았다.
   정밀도 68.37%·재현율 100%는 동일하다. 평균 CPU는 29.73→27.52μs지만 중앙값은

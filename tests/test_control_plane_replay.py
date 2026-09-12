@@ -6164,13 +6164,13 @@ async def test_replay_worker_stalled_heartbeat_quiesces_before_reclaim_overlap(
                         update={
                             "heartbeat_at": server_now,
                             "updated_at": server_now,
-                            "lease_expires_at": server_now + timedelta(seconds=0.15),
+                            "lease_expires_at": server_now + timedelta(seconds=1),
                         }
                     ),
                     "ticket": claim.ticket.model_copy(
                         update={
                             "updated_at": server_now,
-                            "lease_expires_at": server_now + timedelta(seconds=0.15),
+                            "lease_expires_at": server_now + timedelta(seconds=1),
                         }
                     ),
                 }
@@ -6235,21 +6235,82 @@ async def test_replay_worker_stalled_heartbeat_quiesces_before_reclaim_overlap(
 
         async def mark_reclaim_after_fresh_lease() -> None:
             await claim_received.wait()
-            await asyncio.sleep(0.16)
+            await asyncio.sleep(1.01)
             reclaim_started.set()
 
         reclaim_timer = asyncio.create_task(mark_reclaim_after_fresh_lease())
 
-        with pytest.raises(ControlPlaneLeaseLost, match="local Replay lease deadline"):
-            await asyncio.wait_for(daemon.run_once(), timeout=1)
+        with pytest.raises(
+            ControlPlaneLocalLeaseDeadlineExceeded, match="local Replay lease deadline"
+        ):
+            await asyncio.wait_for(daemon.run_once(), timeout=3)
         await reclaim_timer
 
         await asyncio.wait_for(executor.stopped.wait(), timeout=0.25)
         effects_at_reclaim = executor.side_effects
         await asyncio.sleep(0.08)
         assert executor.side_effects == effects_at_reclaim
+        assert effects_at_reclaim > 0
+        assert port.heartbeat_calls == 1
         assert reclaim_started.is_set()
         assert executor.overlap_side_effects == 0
+        assert port.finalize_calls == 0
+    finally:
+        repository.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active_checks", [0, 1], ids=["before-process", "when-scheduled"])
+async def test_replay_local_deadline_prevents_executor_start(
+    tmp_path: Path, active_checks: int,
+) -> None:
+    repository, service = _service(tmp_path / "replay-start-deadline.db")
+
+    class SchedulingDeadline(MonotonicLeaseDeadline):
+        """Expire at a fixed scheduling boundary without relying on machine speed."""
+
+        def remaining(self) -> float:
+            nonlocal active_checks
+            if active_checks > 0:
+                active_checks -= 1
+                return 1.0
+            return -1.0
+
+    class UnstartedExecutor:
+        profile = EXECUTOR_PROFILE
+        side_effects = 0
+
+        async def execute(self, _claim, *, cancellation=None):
+            del cancellation
+            self.side_effects += 1
+            await asyncio.Event().wait()
+            raise AssertionError("expired execution unexpectedly resumed")
+
+    try:
+        await asyncio.to_thread(_create_batch, repository, service, "replay-start-deadline")
+        claim = _claim(service)
+        port = _ReplayDaemonServicePort(service, actor="replay-worker-a")
+        executor = UnstartedExecutor()
+        daemon = ReplayWorkerDaemon(
+            client=port,
+            executor=executor,
+            config=ReplayWorkerConfig(worker_id="replay-worker-a"),
+        )
+        with pytest.raises(
+            ControlPlaneLocalLeaseDeadlineExceeded,
+            match="local lease deadline elapsed before authority was renewed",
+        ):
+            await asyncio.wait_for(
+                daemon._process_claim(
+                    claim,
+                    lease_deadline=SchedulingDeadline(
+                        expires_at=asyncio.get_running_loop().time() + 1
+                    ),
+                ),
+                timeout=1,
+            )
+        assert executor.side_effects == 0
+        assert port.heartbeat_calls == 0
         assert port.finalize_calls == 0
     finally:
         repository.close()
