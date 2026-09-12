@@ -205,6 +205,12 @@ def test_main_ci_workflow_separates_quality_from_twenty_four_test_shards() -> No
             "scripts/hybrid_operations_rehearsal.py", "scripts/operational_system_read.py",
             "scripts/operations_cold_checkpoint.py", "containers/system-agent/agent.py",
             "containers/system-agent/client.py", "containers/worker/worker_entry.py",
+            "scripts/profile_graph_processes.py", "scripts/independent_checkpoint_rehearsal.py",
+            "scripts/operational_system_aslr.py",
+        ],
+        [
+            "uv", "run", "--locked", "mypy", "--platform", "linux", "--explicit-package-bases",
+            "containers/system-aslr/agent.py", "containers/system-aslr/client.py",
         ],
     ]
     assert quality_steps["Check out repository"]["with"] == {"fetch-depth": "2"}

@@ -1,6 +1,6 @@
 # Measured Docker Conformance Rerun Policy
 
-This policy covers Web, Network, AI, OPS-003, and SYS-002 boundaries. A successful
+This policy covers Web, Network, AI, OPS-003/004, and SYS-002/004 boundaries. A successful
 synthetic fixture run demonstrates the covered execution and verification contract. It does not
 establish general vulnerability detection performance or grant execution authority for other targets.
 
@@ -90,8 +90,8 @@ rerunning a job does not replace investigating the cause.
 | Web | `web-002d-conformance.yml` | Source ZAP measurement, controlled validation and denial, cleanup, bounded product, independent process and integrity failures |
 | Network | `network-002d-conformance.yml` | Six source cases, six independent Replay cases, floor, product, fresh-process reads, cleanup |
 | AI | `ai-002d-conformance.yml` | Source, two supporting Replay operations, three comparison controls, floor, product, fresh-process reads, cleanup |
-| OPS | `ops-003-conformance.yml` | Real PG17/TLS cold checkpoint, distinct restore, injected restore failure, exact retry, independently approved resume, preserved ambiguous call charge |
-| SYS | `sys-002-conformance.yml` | Real mTLS OS-release source and separately approved replay, independent parser and fresh-process reader, denial/failure and four Worker lifecycles |
+| OPS | `ops-003-conformance.yml` | Existing OPS-003 recovery plus separately retained OPS-004 checkpoint head, old archive/pin rejection, read-only anchor mount and approved continuation |
+| SYS | `sys-002-conformance.yml` | Existing SYS-002 OS-release plus separately approved SYS-004 ASLR reads, independent parser/coreutils checks, fresh-process readers, denials/failures and eight Worker lifecycles |
 
 The Web, Network and AI tests also export the UX-010 private deployment inventory and reconstruct the Operator
 API from that JSON in a separate process. The live path uses the actual Docker command runners.
@@ -111,8 +111,14 @@ They build from that clean checkout on `ubuntu-24.04`, use locked dependencies a
 environment and refuses cleanup admission if any matching fixture resources already exist.
 Its private admission marker binds the commit, tracked-source digest, workflow Run and attempt.
 
-The execution step verifies all eleven OPS checks or the actual passing SYS pytest and four
-observed Worker executions. The unconditional cleanup step removes only resources admitted on
+The execution step verifies all eleven original OPS checks plus fifteen OPS-004 checks, or
+both actual passing System pytests with four observed Worker executions each. The ASLR path
+also requires independent coreutils bytes to match both sealed observations. Original and
+additional probes retain separate private directories, logs and bounded public counts;
+success of the original probe alone cannot complete the workflow. The SYS workflow builds
+and pins a separate ASLR image. Its cleanup admission includes both agent ownership labels.
+The unchanged confirmation input names now explicitly describe both covered profiles.
+The unconditional cleanup step removes only resources admitted on
 that fresh dedicated runner; finding fallback residue still fails conformance even if removal
 succeeds. A separate unconditional, read-only audit requires zero remaining containers, networks
 and volumes. Failed resource removal does not prevent attempts to clean the other owned resources.
@@ -124,6 +130,10 @@ failed verification or cleanup can never be reported as success. Container termi
 not demonstrate physical power-loss recovery, production failover or arbitrary System support.
 GitHub's [runner environment variables](https://docs.github.com/en/actions/reference/workflows-and-actions/variables)
 define the dedicated-host admission input; it is checked alongside the actual platform and Git SHA.
+
+The added OPS-004 and SYS-004 paths are implemented but have not yet completed local or remote
+actual conformance. The historical results below cover only the boundaries present at their
+recorded commit. They do not satisfy these newly added checks.
 
 The first OPS run for `27127bd1872c56c98a0ffc93cabaa834cfcc0259` failed during the actual probe,
 while unconditional cleanup and independent residue checks succeeded. Its exact internal cause

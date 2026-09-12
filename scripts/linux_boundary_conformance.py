@@ -25,7 +25,7 @@ LABELS = {
         "pajin.ops-002-owner",
         "pajin.execution-id",
     ),
-    "sys": ("pajin.sys002-owner", "pajin.execution-id"),
+    "sys": ("pajin.sys002-owner", "pajin.sys004-owner", "pajin.execution-id"),
 }
 KINDS = ("container", "network", "volume")
 OPS_CHECKS = {
@@ -40,6 +40,16 @@ OPS_CHECKS = {
     "approved-continuation-completed",
     "one-use-resume",
     "unacknowledged-call-charge-preserved",
+}
+OPS004_CHECKS = (OPS_CHECKS - {
+    "failed-pg-restore-kept-target-inactive", "exact-retry-restored",
+}) | {
+    "two-durable-independent-checkpoints",
+    "stale-archive-and-old-pin-denied-before-materialization",
+    "latest-enrolled-checkpoint-restored",
+    "fresh-process-latest-head-agrees",
+    "recovery-anchor-read-only",
+    "application-writers-have-no-anchor-mount",
 }
 
 
@@ -151,23 +161,30 @@ def image_record(identity: str) -> dict[str, str]:
     return dict(id=identity, platform=fields[1])
 
 
-def verify_probe(boundary: str, private: Path) -> dict[str, object]:
+def verify_probe(boundary: str, private: Path, *, extended: bool = False) -> dict[str, object]:
     report = json.loads((private / "report.json").read_text())
     if not isinstance(report, dict) or report.get("complete") is not True:
         raise ValueError("actual probe is incomplete")
     if boundary == "ops":
         checks = report.get("checks")
+        required = OPS004_CHECKS if extended else OPS_CHECKS
         if (
             report.get("checks_passed") is not True
             or report.get("cleanup") != "observed-absent"
             or not isinstance(checks, list)
             or not all(isinstance(check, str) for check in checks)
-            or len(checks) != 11
-            or len(set(checks)) != 11
-            or set(checks) != OPS_CHECKS
+            or len(checks) != len(required)
+            or len(set(checks)) != len(required)
+            or set(checks) != required
         ):
             raise ValueError("OPS actual checks or cleanup are incomplete")
-        return dict(actual_checks=11, cleanup_observed=True)
+        if extended and (
+            report.get("version") != "ops004-linux-rehearsal-v1"
+            or report.get("physical_separate_host_verified") is not False
+            or report.get("anchor_volume_rollback_detected") is not False
+        ):
+            raise ValueError("OPS-004 boundary claims differ from the actual fixture")
+        return dict(actual_checks=len(required), cleanup_observed=True)
     cleanup = report.get("cleanup", {})
     if (
         not isinstance(cleanup, dict)
@@ -183,16 +200,50 @@ def verify_probe(boundary: str, private: Path) -> dict[str, object]:
     log = (private / "pytest.log").read_text()
     if re.search(r"(?m)^1 passed in [0-9.]+s(?: \([^\n]+\))?\s*$", log) is None:
         raise ValueError("SYS actual pytest success is missing or skipped")
+    if extended:
+        _verify_aslr_independent(private)
     return dict(actual_tests_passed=1, worker_executions=4, cleanup_observed=True)
 
 
-def failed_probe_observation(boundary: str, private: Path) -> dict[str, object]:
+def _verify_aslr_independent(private: Path) -> None:
+    evidence = json.loads((private / "independent-coreutils.json").read_text())
+    compared = json.loads((private / "fresh-process-report.json").read_text())
+    if not isinstance(evidence, dict) or not isinstance(compared, dict):
+        raise ValueError("independent ASLR evidence is not an object")
+    metadata = evidence.get("metadata")
+    if (
+        not isinstance(metadata, dict) or set(metadata) != {"randomizeVaSpace"}
+        or type(metadata.get("randomizeVaSpace")) is not int
+        or metadata["randomizeVaSpace"] not in (0, 1, 2)
+        or evidence.get("bytes") != [48 + metadata["randomizeVaSpace"], 10]
+        or evidence.get("match") is not True
+        or evidence.get("physicalHostVerified") is not False
+        or evidence.get("processAslrVerified") is not False
+        or not isinstance(evidence.get("implementation"), str)
+        or not evidence["implementation"].startswith("od (GNU coreutils)")
+        or compared.get("version") != "pajin.sys-004.reexecution-report/v1"
+        or compared.get("complete") is not True or compared.get("aslrMatch") is not True
+    ):
+        raise ValueError("independent ASLR observation differs")
+    for name in ("source", "replay"):
+        result = compared.get(name)
+        if not isinstance(result, dict) or not isinstance(result.get("aslr"), dict):
+            raise ValueError("independent ASLR report is incomplete")
+        if result["aslr"].get("metadata") != metadata:
+            raise ValueError("independent ASLR bytes disagree with the sealed result")
+
+
+def failed_probe_observation(
+    boundary: str, private: Path, *, extended: bool = False
+) -> dict[str, object]:
     """Expose only an allowlisted OPS phase/count, never private command output."""
     unknown: dict[str, object] = dict(observed_phase="unknown", completed_checks=None)
     if boundary != "ops":
         return unknown
     from scripts.hybrid_operations_rehearsal import PHASES
 
+    required = OPS004_CHECKS if extended else OPS_CHECKS
+    version = "ops004-linux-rehearsal-v1" if extended else "ops003-linux-rehearsal-v1"
     try:
         path = private / "report.json"
         if path.stat().st_size > 65_536:
@@ -202,10 +253,10 @@ def failed_probe_observation(boundary: str, private: Path) -> dict[str, object]:
             return unknown
         checks, phase = report.get("checks"), report.get("phase")
         if (
-            report.get("version") != "ops003-linux-rehearsal-v1"
+            report.get("version") != version
             or not isinstance(phase, str) or phase not in PHASES
-            or not isinstance(checks, list) or len(checks) > len(OPS_CHECKS)
-            or not all(isinstance(check, str) and check in OPS_CHECKS for check in checks)
+            or not isinstance(checks, list) or len(checks) > len(required)
+            or not all(isinstance(check, str) and check in required for check in checks)
             or len(set(checks)) != len(checks)
         ):
             return unknown
@@ -214,13 +265,17 @@ def failed_probe_observation(boundary: str, private: Path) -> dict[str, object]:
         return unknown
 
 
-def run(boundary: str, state: Path, primary: str, secondary: str) -> int:
+def run(
+    boundary: str, state: Path, primary: str, secondary: str, additional_image: str | None = None
+) -> int:
     marker = admitted(boundary, state)
     if any(
         (state / name).exists()
         for name in (
             "private-runner.log",
             "private-probe",
+            "private-additional-probe",
+            "private-additional-runner.log",
             "public-summary.json",
         )
     ):
@@ -228,6 +283,10 @@ def run(boundary: str, state: Path, primary: str, secondary: str) -> int:
     if source_digest() != marker["source_sha256"]:
         raise ValueError("conformance source changed after clean-commit gate")
     images = [image_record(primary), image_record(secondary)]
+    if boundary == "sys":
+        if additional_image is None or additional_image == primary:
+            raise ValueError("SYS requires a separate observed ASLR image")
+        images.append(image_record(additional_image))
     if boundary == "ops":
         from scripts.operational_postgres import IMAGE
 
@@ -265,6 +324,7 @@ def run(boundary: str, state: Path, primary: str, secondary: str) -> int:
         production_recovery=False,
     )
     started = perf_counter()
+    extended = False
     try:
         with (state / "private-runner.log").open("x") as log:
             result = subprocess.run(
@@ -279,11 +339,34 @@ def run(boundary: str, state: Path, primary: str, secondary: str) -> int:
             raise ValueError("actual probe failed")
         summary.update(verify_probe(boundary, private))
         if source_digest() != marker["source_sha256"]:
+            raise ValueError("conformance source changed before additional execution")
+        extended = True
+        private = state / "private-additional-probe"
+        extra = (
+            [
+                "-m", "scripts.independent_checkpoint_rehearsal",
+                "--runtime-image", primary, "--worker-image", secondary,
+            ] if boundary == "ops" else [
+                "scripts/operational_system_aslr.py", "--image-id", str(additional_image),
+                "--proxy-image-id", secondary,
+            ]
+        )
+        with (state / "private-additional-runner.log").open("x") as log:
+            result = subprocess.run(
+                [sys.executable, *extra, "--output", str(private)],
+                stdout=log, stderr=subprocess.STDOUT, timeout=1800, check=False,
+            )
+        summary["additional_exit_code"] = result.returncode
+        if result.returncode != 0:
+            raise ValueError("additional actual probe failed")
+        summary["additional_boundary"] = verify_probe(boundary, private, extended=True)
+        if source_digest() != marker["source_sha256"]:
             raise ValueError("conformance source changed during execution")
         summary["complete"] = True
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         summary["diagnostic"] = "actual-probe-or-evidence-failed; detail=omitted"
-        summary.update(failed_probe_observation(boundary, private))
+        summary["failed_probe"] = "additional" if extended else "original"
+        summary.update(failed_probe_observation(boundary, private, extended=extended))
     finally:
         summary["elapsed_seconds"] = perf_counter() - started
         write(state / "public-summary.json", summary)
@@ -334,6 +417,7 @@ def main() -> int:
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument("--primary-image")
     parser.add_argument("--secondary-image")
+    parser.add_argument("--additional-image")
     args = parser.parse_args()
     try:
         if args.operation == "preflight":
@@ -342,7 +426,10 @@ def main() -> int:
         if args.operation == "run":
             if not args.primary_image or not args.secondary_image:
                 parser.error("run requires both observed image IDs")
-            return run(args.boundary, args.state, args.primary_image, args.secondary_image)
+            return run(
+                args.boundary, args.state, args.primary_image, args.secondary_image,
+                args.additional_image,
+            )
         return cleanup(args.boundary, args.state, audit_only=args.operation == "audit")
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         print("Linux conformance boundary rejected; detail=omitted", file=sys.stderr)

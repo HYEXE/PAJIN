@@ -1,6 +1,7 @@
 """Test CI ownership gates and evidence projection without claiming Linux probe execution."""
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -225,3 +226,93 @@ def test_operational_workflows_are_additive_to_existing_domain_requirements(path
             "ai",
         )
     assert selector.required_operational_boundaries([], complete_comparison=False) == ("ops", "sys")
+
+
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_ops004_requires_every_new_check_and_keeps_limits_explicit(tmp_path, incomplete):
+    checks = sorted(ci.OPS004_CHECKS)
+    if incomplete:
+        checks.pop()
+    report = dict(
+        version="ops004-linux-rehearsal-v1", complete=True, checks_passed=True,
+        cleanup="observed-absent", checks=checks,
+        physical_separate_host_verified=False, anchor_volume_rollback_detected=False,
+    )
+    (tmp_path / "report.json").write_text(json.dumps(report))
+    if incomplete:
+        with pytest.raises(ValueError, match="incomplete"):
+            ci.verify_probe("ops", tmp_path, extended=True)
+    else:
+        assert ci.verify_probe("ops", tmp_path, extended=True) == {
+            "actual_checks": 15, "cleanup_observed": True,
+        }
+        report["physical_separate_host_verified"] = True
+        (tmp_path / "report.json").write_text(json.dumps(report))
+        with pytest.raises(ValueError, match="claims"):
+            ci.verify_probe("ops", tmp_path, extended=True)
+
+
+@pytest.mark.parametrize("second_exit", [0, 1])
+def test_original_success_alone_cannot_complete_the_extended_workflow(
+    tmp_path, monkeypatch, second_exit
+):
+    marker = {"head": "a" * 40, "source_sha256": "b" * 64}
+    monkeypatch.setattr(ci, "admitted", lambda *args: marker)
+    monkeypatch.setattr(ci, "source_digest", lambda: marker["source_sha256"])
+    monkeypatch.setattr(ci, "image_record", lambda value: {"id": value, "platform": "linux/amd64"})
+    monkeypatch.setattr(ci, "command", lambda *args: "sha256:" + "c" * 64)
+    calls, verified = [], []
+
+    def probe(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0 if len(calls) == 1 else second_exit)
+
+    def verify(boundary, private, *, extended=False):
+        verified.append(extended)
+        return {"actual_checks": 15 if extended else 11, "cleanup_observed": True}
+
+    monkeypatch.setattr(ci.subprocess, "run", probe)
+    monkeypatch.setattr(ci, "verify_probe", verify)
+    assert ci.run("ops", tmp_path, "sha256:" + "d" * 64, "sha256:" + "e" * 64) == second_exit
+    assert len(calls) == 2
+    assert "scripts.hybrid_operations_rehearsal" in calls[0]
+    assert "scripts.independent_checkpoint_rehearsal" in calls[1]
+    result = json.loads((tmp_path / "public-summary.json").read_text())
+    assert result["complete"] is (second_exit == 0)
+    assert verified == ([False, True] if second_exit == 0 else [False])
+
+
+@pytest.mark.parametrize("mutation", [None, "mismatch", "missing", "process-claim", "boolean"])
+def test_sys004_requires_independent_coreutils_agreement(tmp_path, mutation):
+    metadata = {"randomizeVaSpace": 2}
+    evidence = dict(
+        metadata=metadata, bytes=[50, 10], implementation="od (GNU coreutils) 9.7",
+        match=True, physicalHostVerified=False, processAslrVerified=False,
+    )
+    comparison = dict(
+        version="pajin.sys-004.reexecution-report/v1", complete=True, aslrMatch=True,
+        source={"aslr": {"metadata": metadata}}, replay={"aslr": {"metadata": metadata}},
+    )
+    if mutation == "mismatch":
+        comparison["replay"]["aslr"]["metadata"] = {"randomizeVaSpace": 1}
+    elif mutation == "missing":
+        del comparison["source"]
+    elif mutation == "process-claim":
+        evidence["processAslrVerified"] = True
+    elif mutation == "boolean":
+        evidence["metadata"] = {"randomizeVaSpace": True}
+    (tmp_path / "independent-coreutils.json").write_text(json.dumps(evidence))
+    (tmp_path / "fresh-process-report.json").write_text(json.dumps(comparison))
+    if mutation is None:
+        ci._verify_aslr_independent(tmp_path)
+    else:
+        with pytest.raises(ValueError):
+            ci._verify_aslr_independent(tmp_path)
+
+
+def test_sys004_image_and_residue_are_required_by_the_saved_workflow():
+    workflow = yaml.safe_load(Path(".github/workflows/sys-002-conformance.yml").read_text())
+    scripts = "\n".join(step.get("run", "") for step in workflow["jobs"]["conformance"]["steps"])
+    assert "containers/system-aslr/Dockerfile" in scripts
+    assert '--additional-image "$additional_image"' in scripts
+    assert "pajin.sys004-owner" in ci.LABELS["sys"]

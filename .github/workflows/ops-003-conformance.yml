@@ -1,10 +1,10 @@
-name: OPS-003 real-Linux conformance
+name: OPS-003 and OPS-004 real-Linux conformance
 
 on:
   workflow_dispatch:
     inputs:
       confirm_ops_003_conformance:
-        description: Run the exact OPS-003 managed hybrid recovery
+        description: Run OPS-003 hybrid recovery and OPS-004 independent checkpoint recovery
         required: true
         default: false
         type: boolean
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   conformance:
-    name: Ubuntu 24.04 / exact OPS-003 boundary
+    name: Ubuntu 24.04 / exact OPS-003 and OPS-004 boundaries
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -78,7 +78,7 @@ jobs:
       - name: Require exact clean commit and empty dedicated runner
         run: uv run --locked python -m scripts.linux_boundary_conformance preflight --boundary ops --state .pajin/ci-ops
 
-      - name: Run OPS-003 actual Linux probe
+      - name: Run OPS-003 and OPS-004 actual Linux probes
         run: |
           set -euo pipefail
           primary_image="$(docker image inspect pajin-ops003:ci --format '{{.Id}}')"
