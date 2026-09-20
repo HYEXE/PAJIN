@@ -47,9 +47,22 @@ ADR에 있다. 우선순위는 `PLAN.md`, 최신 기록 체크포인트는 `HAND
 - `main`에서 직접 작업하며 사용자가 명시적으로 요청하지 않으면 브랜치를 만들지 않는다.
 - 기존 사용자 변경을 보존하고 관련 없는 수정, rename-only 변경, 대규모 문서 재배치를
   피한다.
-- 한 변경은 하나의 Trust Boundary 또는 Vertical Slice에 집중한다.
+- 한 변경은 하나의 Trust Boundary 또는 Vertical Slice에 집중한다. 새 slice에 기존 slice의
+  코드가 필요하면 복사하지 않는다. 먼저 동작을 바꾸지 않는 공통화 변경을 별도 커밋으로
+  만들고 그 위에서 새 slice를 구현한다. 이 준비 변경은 여러 slice에 걸칠 수 있다.
+- 기존 모듈을 통째로 복사해 새 slice를 만들지 않는다. 차이를 의도적으로 고정해야 하는
+  경우(봉인된 실험 harness 등)에만 허용하고 이유를 계약 문서나 ADR에 남긴다.
+- 공통 코드는 도메인 중립이어야 한다. 서명 도메인, producer ID·digest, API·버전 문자열
+  같은 도메인 식별 값은 공유하지 않고 인자로 받는다.
 - 명시적인 마이그레이션·롤백 계약 없이 기존 public import, CLI 입력, artifact reader,
-  wire format을 깨지 않는다.
+  wire format을 깨지 않는다. public import는 CLI·entrypoint, 문서에 적힌 `python -m`
+  경로, `containers/`·`scripts/`가 쓰는 모듈, 패키지 `__init__`·`__all__`로 내보낸 이름이다.
+  구현을 옮기고 원래 경로에서 재수출하는 것은 깨는 것이 아니다. 테스트만 쓰는 내부 이름은
+  public 계약이 아니며, 이런 이름을 옮길 때 테스트는 import 경로만 고치고 assert·기대값은
+  바꾸지 않는다.
+- 특정 소스 파일의 bytes를 해시해 identity나 pin으로 쓰는 경우(`__file__`·`getsourcefile`
+  뒤 `read_bytes`) 그 파일은 수정하거나 코드를 옮기지 않는다. 패키지 전체 digest는 이
+  규칙에서 제외한다. 바꿔야 하면 새 version과 ADR로 다룬다.
 - Discovery와 Planning은 Campaign Scope를 확장하거나 발견된 인터페이스를 실행 권한으로
   전환할 수 없다.
 - 사용자가 명시적으로 요청하지 않으면 서브에이전트나 병렬 에이전트를 만들지 않는다.
