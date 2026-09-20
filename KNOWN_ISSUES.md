@@ -5,39 +5,242 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
 
 ## 현재 후속 목표의 한계와 남은 검증
 
-- 기존 구현과 OPS 순서 보완을 `0d7343a`까지 push했다. 같은 SHA의 Web·Network·AI·OPS·SYS
-  실증은 모두 첫 시도 성공했다. OPS는 11+15+21 검사·32회 새 process·독립 cleanup을 통과했다.
-  일반 CI의 한 Replay 테스트는 짧은 시작 lease와 진단 문구 가정으로 실패했고 나머지 job은 성공했다.
-  별도 재현에서 scheduling 중 만료 뒤 executor가 호출되는 경계를 확인해 호출 직전 재검사를 추가했다.
-  기존 중단/겹침/최종화 assertions를 유지한 Replay/Worker 199개·Ruff·Linux mypy가 통과했다.
-  이 수정의 새로운 SHA에 대한 일반 CI·다섯 실증은 아직 남는다. 최초 OPS 실패와 이전 SHA 결과는
-  별도 보존하며 새 수정의 검증으로 대체하지 않는다. 배포는 없다.
-- [EFFECT-006](docs/benchmark/EFFECT-006-public-text-transforms-and-disclosure.md)의 새 384응답은
-  실패 없이 완료했지만 오탐은 v4/v5 모두 62건, 미탐 0건이며 개별 판정도 모두 같았다.
-  정밀도 68.37%·재현율 100%는 동일하다. 평균 CPU는 29.73→27.52μs지만 중앙값은
-  20.72→22.52μs로 증가했다. 사전 선언한 품질 개선 기준은 실패했고 기본 탐지기는 v1을 유지한다.
-  생성 23·공개 대조 21·encoded 6·grouped 2·oracle 범위 밖 10건의 오탐이 남는다.
-  이 응답과 모든 선행 평가군은 소비됐으며 개선 확인을 위한 미사용 평가군으로 재사용할 수 없다.
-- [GRAPH-PERF-005](docs/benchmark/GRAPH-PERF-005-canonical-serialization-cost.md)는 별도 Linux
-  process 1/2개·두 DB·guest file pages cold/warm·전후 24그룹씩에서 최초 지연을 줄였다.
-  큰 이력 cold 최초 단일 9.8673→7.9494초, 두 reader 완료 10.9121→8.7437초다.
-  peak RSS는 약 556 MiB로 거의 같고 반복 조회는 일부 느려졌다. 전체 검증·hash·copy 비용,
-  host/SSD cold·동시 aggregate RSS·최대 크기·운영 SLO와 새 이력 탐색 경로의 성능은 남은 과제다.
+- [AGENTIC-002](docs/orchestration/AGENTIC-002-durable-agentic-coordination.md)는 AGENTIC-001의
+  current Graph head resolution, invocation journal, checkpoint CAS, outbox/inbox, verified restore와
+  context compaction을 구현했다. 권위 backend는 Linux `/proc/self/fd`와 trusted hosting process에
+  한정되며 macOS 등에서는 파일 mutation 전에 fail closed한다. reopen expected store ID는 다른 DB
+  대체를 막지만 같은 DB 전체 rollback을 증명하지 못하므로 별도 head witness가 필요하다. Graph와
+  coordination store는 비원자적이고 Provider outcome-unknown은 자동 재전송하지 않으며 sealed receipt
+  또는 수동 reconciliation이 필요하다. terminal receipt는 Provider 실행 자체의 독립 증명이 아니다.
+  hostile in-process FD/memory/monkeypatch 격리는 별도 broker 또는 descriptor-aware SQLite VFS가
+  필요하다. 이 slice는 Scope·Capability·Permit·Gateway·Worker·Finding·Graph write·보고·PoC나
+  실제 model/target 실행 권위를 만들지 않는다.
+- [AGENTIC-003](docs/orchestration/AGENTIC-003-governed-specialist-execution.md)은 003A의 exact inert
+  XSS·SQLi·authorization profile과 003B의 별도 code-owned executor closure·최소 browser split을
+  구현했다. testing-only injected harness는 exact phase와 dependency/promotion 경계를 검증하지만
+  production provenance가 아니다. 003C1은 current Graph·durable head, sender ACK·receiver inbox,
+  selected Candidate·current specialist·live Agent Session을 exact reload한 뒤에만 store-local
+  one-use reservation을 만들고 outcome-unknown 이후 자동 redispatch와 restart authority 재발급을
+  거부한다. 003C2는 original reservation을 소비하지 않은 채 current Graph·durable head와 exact
+  Juice Shop Campaign/Target/Scope/budget, production profile/executor를 content-addressed inert
+  preparation에 결박했다. 003C3A는 세 specialist별 exact T2 read-only Capability·Tool·signed
+  Range activation·deterministic `PreparedCapabilityAction`을 구현했지만 모든 dispatch role은
+  fail closed한다. fixed 100 request-unit는 보수적 예산이지 실제 specialist Worker 비용 측정값이
+  아니다. 003C3B1은 original reservation handle을 소비해 exact Campaign·preparation·action·
+  live one-call non-delegable child Grant·approval tuple·expected Permit을 durable `awaiting-permit` plan에
+  결박하지만 execution row는 `reserved`로 유지한다. preparation, Capability activation,
+  `PreparedCapabilityAction`, Grant binding, approval envelope, reservation, plan audit entry 어느 것도
+  signed approval·Permit·dispatch·execution authority가 아니다. reopen은 plan handle을 재발급하지 않고
+  invalid·expired·never-submitted approval의 awaiting row를 자동 재활성화하지 않는다. Permit commit 뒤
+  callback 미진입 구간은 인증된 reconciliation이 필요하며 자동 retry/redispatch는 금지된다.
+  003C3B2는 deployment-owned exact Graph/Permit Store·live Ledger·approval keyring·shared Permit writer와
+  fresh signed approval을 pin하고 one-winning callback 안에서 Permit·Grant 소비, Grant-consumption
+  receipt, plan/execution crash fence를 구현했다. Graph와 coordination transaction은 여전히 원자적이지
+  않으며 hard process failure 뒤의 audit-only `awaiting-permit`은 자동 reconciliation·refund·retry를
+  제공하지 않는다. 기존 `begin_specialist_dispatch()` 결과, raw plan row, Permit, receipt, 직렬화된
+  binding은 future Gateway의 bearer authority로 사용할 수 없다.
+
+  현재 additive SQLi v2는 complete seven-role code-backed Capability bundle, externally signed current
+  Range release activation, exact action registry와 deterministic `PreparedCapabilityAction`까지 제공한다.
+  materializer/compiler 외 execution·interpretation·replay·cleanup role과 direct Tool dispatch는 fail
+  closed한다. distinct v2 Plan wire/runtime generation, one-call Grant, signed approval, Permit callback,
+  same-scheduler-Task started handle·private capsule과 Store-owned one-shot runtime claim은 구현됐다.
+  이 predecessor claim은 current Graph·durable history·deployment·preparation/action·approval·terminal
+  Permit·Grant lineage를 다시 검증하고 성공 또는 terminal failure 뒤 capsule을 폐기하며, 그 위의 live
+  pre-backend admission은 exact Task/capsule에서 durable `claimed-before-backend` JobAttempt 및 opaque
+  non-copyable claim을 발급한다. public deployment/claim에는 raw backend·verifier·key·template·inventory가
+  없고 private control-plane owner vault만 exact factory anchors를 보유한다. 이 vault는 arbitrary
+  same-interpreter reflection을 방어하는 sandbox가 아니므로 untrusted model·Skill·plugin·target 코드는
+  별도 process/sandbox에 있어야 한다. v1 inert artifact를 Permit 뒤 v2 execution identity로 교체할 수도
+  없다. schema v6는 JobAttempt·
+  terminal receipt와 embedded canonical typed Claim/DispatchVerification DAG,
+  indexed ID/digest, Capability authority-set, scheduler Task, runtime capsule, authorization lineage,
+  runtime inventory pin을 저장한다. exact offline v5→v6 migration은 legacy row를 보존하고 새 table을
+  비운 채 생성하지만 execution history나 authority를 만들지 않는다. reopen/recovery는 audit-only이며
+  Task·capsule·handle·Gateway·backend 권위를 재발급하지 않는다.
+
+  structured v2 fake backend는 exact `specialist_backend_v2.py` source bytes, compiler, image, job template,
+  backend, verifier와 deployment Ed25519 key를 pin하고 one-call signed zero-Target-I/O result를 검증한다.
+  이 source bytes는 현재 version의 identity-bearing input이라 수정 시 successor version이 필요하다.
+  fake backend는 Gateway/Worker 성공이 아니고 durable conformance-success terminal kind도 없다. 결과는
+  `completed-verified`가 될 수 없으며 model·browser·network·Target I/O 또는 execution·validation·Finding·
+  Graph·report·SARIF·PoC authority를 만들지 않는다.
+
+  trusted pre-backend abandonment producer는 owner Task 종료, Store close, explicit discard와 post-insert
+  mint failure를 `abandoned-before-backend`로 기록하지만 backend provenance가 아니다. receipt writer
+  실패 또는 JobAttempt commit 직후 hard process failure는 receipt 없는 claimed audit row를 남길 수 있다.
+  recovery는 이를 분류만 하고 receipt 합성, handle 재발급, 자동 redispatch를 하지 않는다.
+  dispatch-marker COMMIT은 성공했지만 호출 반환이나 cleanup이 실패한 모호성도 durable equality가 false
+  abandonment를 막아 unreceipted unknown으로 fail closed하며, 정확한 COMMIT-success/return-failure
+  fault injection으로 이 분류와 zero backend invocation을 검증했다.
+  same-Task zero-I/O execution boundary는 opaque claim 소비, immediate authority/runtime re-observation,
+  durable dispatch-start fence, private structured Worker one-shot, signed-result verification,
+  Gateway-minted opaque completion과 Store-owned terminalization을 구현했다. proven zero-I/O result는
+  `failed-before-target-io`, post-marker failure/cancellation은 `started-outcome-unknown`이며 receipt commit
+  실패는 unreceipted unknown으로 남는다. 이 경계는 실제 browser/network/Target I/O를 수행하지 않는다.
+  현재 cancellation 증거는 pinned zero-I/O backend 내부에서 발생한 `CancelledError` 분류까지이며,
+  suspending target-I/O backend에 대한 실제 scheduler `Task.cancel()` race는 아직 검증되지 않았다.
+  frozen fake backend를 수정하지 않는 target-I/O-capable successor, 실제 승인된 SQLi Juice Shop 실행,
+  003D 독립 Replay·Finding·Graph admission·보고 승격이 남아 있다. Graph admission으로 head가 바뀐 뒤 dynamic replanning을
+  계속하려면 최초 coordination binding을 무시하지 않는 명시적 epoch/rollover 계약도 필요하다.
+  권위 폐기를 증명하는 Store close는 trusted composition 때 보관한 exact unbound close를 owner가
+  직접 호출한 경우로 한정한다. 일반 `store.close()`, context-manager exit와 finalizer는 pre-call
+  Python runtime mutation 아래 독립적인 zeroization 증거가 아니다. 최신 live zero-I/O execution 변경은
+  network-none/read-only Linux JobAttempt claim/dispatch `39 passed`, v2 Plan `42 passed`, Capability
+  activation·typed attempt·structured backend `62 passed`, dispatch binding `43 passed`다. 관련 Ruff,
+  Python compile과 strict mypy source 검증은 통과했다. 2026-09-20 최종 전체 suite는 sandbox에서
+  10,157 passed·293 skipped와 loopback bind 권한 실패 10건이었고, 실패한 네 파일은 loopback 허용
+  경계에서 38 passed였다. 전체 suite를 sandbox 밖에서 다시 실행한 결과는 아니다.
+  기존 aggregate Web runner/Capability/Tool/Worker를 subset executor로 재표시하거나 testing
+  catalog/observation을 production 입력으로 받을 수 없다.
+- [AGENTIC-004](docs/benchmark/AGENTIC-004-campaign-evaluation.md)는 public non-runnable
+  3-arm·3-role·17-metric 계약만 구현했다. 별도 승인 transfer target, private holdout/evaluator,
+  exact arm implementation digest, fresh approval/Permit이 없어 실제 성능 측정 근거는 아직 없다.
+- [SKILL-001](docs/orchestration/SKILL-001-versioned-analysis-skill-registry.md)의 exact knowledge-only
+  registry와 [SKILL-002](docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md)의
+  proposal-only successor·선택·split projection·zero-dispatch 준비 Run을 구현했다. SQLi·object
+  access·XSS·attack path 네 Skill만 선택되며 Finding narrative는 catalogued다. 현재 passive
+  discovery는 Skill이 요구하는 independent replay·negative control·semantic oracle를 충족하지
+  않으므로 requirement는 전부 unsatisfied다. successor Provider split-message
+  request/draft/compiler/receipt, versioned transport/runtime Pin, terminal success/failure Run grammar는
+  구현·합성 검증했고 새 immutable Worker/proxy image build와 독립 Pin을 완료했다. 첫 operational
+  preflight는 exact successor chat budget을 빠뜨렸고, 승인된 attempt가 model-token 회계 상한
+  `88,496 > 65,536`으로 dispatch 전에 종결된 뒤 model 시작 전 shared budget 검사와 보수적
+  `prompt + completion <= 4,096` context admission으로 보완했다. 이 guard는 exact tokenizer 측정이
+  아니므로 pinned tokenizer/chat-template 오프라인 증명 전에는 새 호출을 진행하지 않는다.
+  실제 성공 model proposal, Skill→Recipe/Capability binding, target 실행과 독립 성능 검증은 없다.
+  금지 field와 알려진 target
+  canary 검사는 의미적으로 위장된 모든
+  정답·비밀의 부재를 증명하지 않으므로 source review가 계속 필요하다.
+  외부 Skill corpus는 아직 provenance/license review나 vendoring을 거치지 않았고 runtime fetch는
+  허용하지 않는다. Juice Shop은 개발·결정론적 회귀 target일 뿐 범용 성능 근거가 아니다. 두 번째
+  승인 target, 동결된 private holdout, defended negative, holdout 소비/비재사용과 성능 지표 집계가
+  남아 있다. 각 대체 coverage를 확인하기 전에 기존 target-specific regression, authority gate,
+  strict loader, semantic oracle, negative control, PoC replay test를 삭제하면 안 된다. System,
+  Application, Forensics 확장도 domain별 Profile/Capability/Worker/Evidence/oracle 계약 전에는 지원이
+  아니다.
+
+- [WEB-003](docs/orchestration/WEB-003-exact-loopback-browser-assessment.md)은 사용자가 승인한
+  OWASP Juice Shop 19.2.1의 exact `127.0.0.1` origin 한 개에서 정상 browser login·세 SPA route·
+  SQL login/basket object access/DOM XSS의 source/replay·대조군·두 attack path·봉인 보고를 실제
+  검증했다. 임의 사이트·일반 form/route discovery·추가 취약점·user credential·IPv6/HTTPS·다른
+  browser/버전·동시성·장기 실행·accessibility 탐색은 미검증이다. 이 로컬 권한은 기존 Campaign/
+  Capability/Permit/Gateway와 Graph/Finding/SARIF/외부 전달 권위가 아니다. 실행이 만든 random
+  local test account와 실패/성공 Run은 자동 삭제하지 않는다. Playwright browser runtime과
+  `browser` extra가 필요하며 제한된 sandbox에서는 browser cache/process 실행 승인이 필요할 수 있다.
+  WEB-003 실제 디버깅·최종 검증에서는 승인 범위 밖의 삭제를 하지 않아 random local 평가 account
+  열한 개가 남았다. 초기 pre-mask 성공 Run 두 개에는 복원 가능한 application-masked test account
+  suffix가 screenshot으로 남지만 전체 비밀번호·session token은 없다. 최종 Run은 account와 runtime
+  DOM marker를 검게 가렸다. 집중 7개 검사와 실제 Run은 통과했다. 후속 리뷰 수정 전 전체 suite 한
+  번의 결과는 8,791 passed·76 skipped·11 failed였으며, 열 건의 sandbox loopback listener 권한
+  실패는 허용된 환경에서 통과했다.
+  남은 생성 dependency export 불일치는 갱신 뒤 deployment 19개로 통과했지만, 그 수정 뒤 전체 suite는
+  반복하지 않았다. clean checkout·원격 CI는 아직 실행하지 않았다.
+- [WEB-004](docs/orchestration/WEB-004-bounded-authenticated-browser-campaign.md)는 exact
+  `127.0.0.1:3000` Juice Shop에서 비실행 Campaign 초안/등록 전용 Capability 준비, 정상 로그인 뒤
+  GET/HEAD-only passive route/form discovery, security-header·FTP-listing 추가 진단, strict
+  source/semantic 검증, `sealed-source-authority` neutral Graph proposal과 봉인 local 보고를 구현했다.
+  이 Capability는 login state를 보수적으로 `irreversible-write`·cleanup-required로 분류하므로
+  credential/login-state/cleanup authority가 없는 현재 Profile/Plan은 실행할 수 없다. 인증된 core
+  Campaign compilation, release/activation, approval input, durable T2 Permit 소비, Gateway/Worker 실행,
+  독립 executor/target attestation, Graph admission, Finding/SARIF와 외부 전달은 없다. CLI가 방금 만든
+  source의 Run/root pin은 producer-derived이며 독립 공급 또는 독립 실행이 아니다. form 제출·user
+  credential·account cleanup·arbitrary target·IPv6/HTTPS·browser diversity도 지원하지 않는다.
+  권한 재설계 확인과 종료 경고 수정 확인은 각각 새 로컬 계정 1개를 만들었고, 이전 WEB-004
+  시도의 계정과 함께 삭제 권한 없이 보존한다. 현재 총계는 별도 인증된 inventory 없이 추정하지
+  않는다.
+- [WEB-005](docs/orchestration/WEB-005-governed-local-authenticated-browser-campaign.md)는 reusable
+  signed recipe protocol과 activation 계약을 제공하지만 설치·실행 가능한 adapter는
+  `juice-shop-local/v1` 하나뿐이다. exact `http://127.0.0.1:3000` 외 임의 사이트, SSO, MFA,
+  CAPTCHA, arbitrary form, generic payload synthesis, IPv6/HTTPS/remote target은 지원하지 않는다.
+  실제 source/validation과 redacted PoC 재실행은 OWASP Juice Shop 19.2.1에서 통과했지만 다른 버전과
+  browser 다양성은 미검증이다.
+- [WEB-006](docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md)은
+  closed production profile·adapter/diagnostic catalog와 같은 authenticated Playwright context의
+  passive discovery Evidence를 연결하고 있다. production inventory는 여전히 exact
+  `juice-shop-local/v1`/`http://127.0.0.1:3000` 한 개뿐이고 private fixture는 지원 대상이 아니다.
+  discovery는 GET/query-free/bodyless/no-redirect, phase 20·전체 100 request로 제한되며 per-request
+  receipt와 `discovery-evidence.json`은 `proposal-only`다. 발견 route/form은 Scope·Permit·Graph·
+  Finding 권위가 아니다. 이전 WEB-005 actual Run과 PoC replay는 이 변경의 runtime 근거가 아니므로
+  새 actual run, strict reload, redacted PoC replay, 비밀정보 검사와 확장 Web 회귀가 남아 있다.
+  downstream `validation/v1alpha1`은 진단 3개·attack path 2개를 고정하므로 두 번째 production
+  adapter와 가변 진단 cardinality는 별도 `v1alpha2` 계약·구현·실증 없이는 지원하지 않는다.
+  SSO/MFA/CAPTCHA, user credential, anti-CSRF·multi-step form 제출, generic payload, 외부 target,
+  container/remote Worker와 외부 보고 전달도 여전히 지원하지 않는다.
+- [WEB-007](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md)은 exact sealed
+  discovery를 private Snapshot과 target/source anchor 비노출 model projection으로 분리하고,
+  local Provider 단일 호출·strict parser·결정론적 inert compiler·success/failure Run strict loader를
+  구현했다. focused 214개, 확장 Web 1,003개와 실제 terminal failure evidence는 통과했지만, 첫
+  Qwen3 4B Q8 호출은
+  outer 180초 budget보다 짧은 Worker/egress proxy의 30초 upstream I/O ceiling에서 종료돼 raw draft와
+  compiled proposal을 만들지 못했다. 실패 Run은 `automaticRedispatchAuthorized=false`로 봉인했으므로
+  재시도할 수 없다. versioned WEB-specific transport/runtime Pin과 split-message one-shot successor,
+  서로 다른 새 Worker/proxy image와 독립 Pin은 검증됐다. 승인된 첫 successor attempt는
+  `model.call.started` 전 budget reservation에서 끝나 dispatch와 execution ID가 모두 0이었다. 두
+  terminal Run의 strict reload와 cleanup은 통과했고, 같은 초과 입력은 이제 model 시작 전에 거부된다.
+  frozen runtime의 context는 4,096이고 completion ceiling은 1,024이므로 prompt에는 chat-template
+  overhead 전 최대 3,072 token만 남는다. 현재 14,520-byte message와 5,759-byte schema가 실제 pinned
+  Qwen tokenizer/template에 들어가는지는 미검증이다. 회계 계수를 낮추거나 예산만 올려 이 공백을
+  숨기지 않으며, exact offline capacity proof 또는 additive compact wire/new Web runtime Pin이 필요하다.
+  성공 structured output, model-quality, completion latency, peak memory, output stability, full WEB-006
+  governed Run·PoC replay, WEB-008 source/validation action 연결은 모두 미검증이다. WEB-007은 target
+  request, fallback diagnostic, Permit, Finding, Graph, report, SARIF, PoC, 외부 전달 권위를 만들지 않는다.
+- 역사적 WEB-007 legacy Worker metadata reader는 나머지 metadata를 code-owned request/runtime에서
+  재구성하지만, 비정규화된 v1 stdin 호환을 위해 `stdinSha256`은 64자리 소문자 hex 형식만 확인하고
+  현재 재구성값과 같다고 요구하지 않는다. Skill-bound successor는 전체 metadata를 exact canonical
+  equality로 검증하므로 이 제한의 영향을 받지 않는다. legacy digest 강화는 기존 봉인 Run 호환성
+  조사와 별도 migration/version 결정 없이는 수행하지 않는다.
+- WEB-005의 네 observer/executor는 서로 다른 process/key/execution identity를 사용하지만 같은 host와
+  coordinator 신뢰영역에 있다. host subprocess는 container/VM/remote Worker, 별도 조직·관리 영역,
+  trusted egress-proxy receipt를 증명하지 않는다. pre/post fingerprint가 일치해도 그 사이의 일시적
+  same-origin target 교체를 배제하지 못한다.
+- WEB-005 browser는 닫히고 credential/private key/session material은 산출물에 저장되지 않지만,
+  disposable account와 server-side session은 target에 남는다. 삭제·session revoke는 별도 승인된
+  mutating cleanup이다. SARIF는 independently confirmed Finding 3건을 전달하지만 두 attack path의
+  종적 설명은 Markdown report가 권위다. 외부 전달은 수행하지 않았으며 별도 authenticated delivery
+  coordinator와 receipt가 필요하다.
+- WEB-005 Graph/Grant DB와 checkpoint enrollment는 caller-owned host-local output에 있다. 동일 UID가
+  output root와 enrollment marker를 함께 삭제하거나 rollback하면 이 로컬 상태만으로 손실을 증명·
+  복구할 수 없으므로 별도 retained OPS-005 witness 연결이 남는다. DB checkpoint event append 뒤
+  dedicated parent seal 전 crash는 fail-closed하지만 검증된 terminal failure journal을 만들지 못한다.
+  현재 구현은 이 torn prefix를 자동 복구하거나 uncertain action을 redispatch하지 않는다.
+- 기존 완료분과 OPS 순서·Replay 실행 직전 lease 재검사를 `39c66a2`까지 push했다.
+  같은 SHA의 일반 CI 8,675 passed·76 skipped, Web·Network·AI·OPS·SYS 실증이 모두 통과했다.
+  새 로컬 EFFECT-007·GRAPH-PERF-006·UX-014는 이 원격 검증에 포함되지 않는다.
+  최초 실패 근거와 최종 성공을 구분해 보존하며 운영 배포는 없다.
+- [EFFECT-007](docs/benchmark/EFFECT-007-structured-output-and-public-hash-families.md)의 새 384응답에서
+  v5/v6 오탐은 72→44건, 미탐은 7→7건이다. 정밀도 56.10→67.65%·재현율 92.93% 유지로
+  품질 기준은 통과했지만 평균 CPU가 38.04→38.97μs로 증가해 CPU·종합 개선 기준은 실패했다.
+  기본 v1은 유지하고 v6는 실험 후보로 남는다. 생성 31·공개 대조 11·grouped 2건의 오탐과
+  grouped의 일곱 미탐이 남는다. qualifying 생성 요청에서 UUID 형태의 실제 private 값도
+  누락할 수 있다. 직전 EFFECT-006의 FP 62는 다른 평가군의 값이다. 모든 선행 평가군과
+  이번 평가군은 소비됐으며 retune 후 미사용 확인 평가군으로 재사용할 수 없다.
+- [GRAPH-PERF-006](docs/benchmark/GRAPH-PERF-006-history-memory-and-concurrent-readers.md)는 전후 각
+  72개 조합의 실제 Linux 조회와 결과 일치·동시 RSS·정리를 검증했다. 큰 이력 cold 두 reader의
+  과거 조회 RSS는 1,114.3→976.8 MiB, 반복 조회는 8.0919→0.2929초로 줄었다. 다만 최초 조회는
+  8.0779→8.8719초로 늘었고 24개 조건 모두 최초 조회가 느려졌다. current-page 반복도 여덟 조건
+  모두 느려졌다. 전체 hash·검증·독립 copy 비용은 남고 모든 조회가 빨라졌다는 결과는 아니다.
+  첫 기준 실행의 66개 조합 뒤 중단 원인은 하위 로그가 없어 미확정이다. 같은 조합의 직접 실행과
+  진단 보완 후 전후 전체 비교는 통과했다. 실패 결과는 최종 비교에 합치지 않았다.
+  target 5ms sampling의 최대 실제 간격은 전후 37.88/16.80ms이며 짧은 peak를 놓칠 수 있다.
+  동시 RSS는 공유 page를 process마다 계산한다. host/device cold·최대 크기·운영 SLO는 미검증이다.
 - [OPS-005](docs/orchestration/OPS-005-separately-retained-recovery-witness.md)는 별도 witness가 최신이면
   anchor 한쪽 rollback·유효 suffix 삭제를 거부하고 새 빈 anchor에 명시적으로 재구성한다.
-  첫 Linux 실증의 21개 검사·실제 SIGKILL·32회 새 process 검증이 통과했다. 마지막 UI 경계 수정까지
-  포함한 이미지 재검증은 전체 회귀와 동시에 실행되던 강제 종료 probe에서 180초를 넘겼다.
-  해당 실행은 미완료로 보존했고 소유 자원 부재를 별도로 확인했다. 35개 하위 process 각각의
-  30초 제한은 유지하고 총 한도를 1,200초로 보정했다. 최신 source/image의 단독 재검증은 21개 검사·
-  32회 새 process 검증과 기존 OPS-003 11개 검사를 모두 통과했고 별도 cleanup 관찰도 완료했다.
+  `39c66a2` 원격 실증은 전체 47개 검사와 실제 SIGKILL·32회 새 process 검증을 통과했다.
+  독립 스트레스가 승인 만료 시간을 소모하지 않도록 실제 재개 뒤에 수행하며 만료 거부를 유지한다.
+  하위 process 각각의 30초 제한과 전체 1,200초 한도는 유지한다. 독립 cleanup 관찰도 통과했다.
   anchor와 witness가 함께 rollback된 경우, 별도 물리 host·power loss·운영 failover는 미검증이다.
 - [UX-012](docs/orchestration/UX-012-registered-campaign-and-snapshot-history.md)의 여러 Campaign·과거
-  Snapshot 조회는 배포자가 등록한 local DB에 한정된다. 매 요청 전체 이력을 검증하며 과거 결과는
-  실행·현재 승인 권위를 갖지 않는다. [UX-013](docs/orchestration/UX-013-review-assignment-and-internal-notifications.md)의
-  배정·알림은 측정 결과에 대한 사람 검토에 한정되고 앱 안의 명시적 조회·확인만 제공한다.
-  외부 전달·백그라운드 알림·일반 queue SLA는 없다. v2 기록 전에 모든 reader/복구 도구를 갱신해야 하며
-  첫 v2 기록 이후 구버전 downgrade는 거부된다. 200회 이력이 꽉 차면 읽기만 가능하고 미확인 알림도
-  추가 확인 기록을 쓸 수 없다. Auditor로 바뀐 수신자는 알림을 읽을 수 있지만 확인 기록은 쓸 수 없다.
+  Snapshot 조회는 배포자가 등록한 local DB에 한정되고 과거 결과는 실행·현재 승인 권위를 갖지 않는다.
+  [UX-014](docs/orchestration/UX-014-review-work-filters-and-preserved-continuation.md)의 새 알림 receipt는
+  200회 이력을 소모하지 않는다. 후속 검토는 원본 이력을 보존하지만 평가·판단·담당자를 자동 승계하지
+  않는다. 기존 v1 알림 확인 API는 여전히 journal 공간이 필요하다. Auditor 수신자는 읽기만 가능하다.
+  한 요청은 최대 열 개 review를 검증하므로 필터 결과가 없어도 다음 페이지가 남을 수 있다.
+  외부 전달·백그라운드 알림·일반 queue SLA는 없다. schema 17과 v3 쓰기 전에 모든 reader/복구 도구를
+  갱신해야 하며 데이터를 삭제하는 downgrade는 지원하지 않는다. 실제 browser 사용 경로와
+  TLS PostgreSQL의 69개 검사는 통과했다. Console fake DOM 누락은 테스트 fixture에서 해결했고,
+  당시 최종 통합 상태의 전체 suite는 8,970 passed·76 environment-gated skipped·실패 0이었다.
+  운영 migration·배포는 하지 않았다.
 - [SYS-004](docs/orchestration/SYS-004-authenticated-kernel-aslr-read.md)는 실제 guest kernel mode와
   독립 GNU 관찰·봉인 결과가 같고 네 Worker의 cleanup을 확인했다. malformed 값은 runc의 `/proc`
   교체 금지를 우회하지 않고 별도 test launcher의 fixed-open redirection으로 거부 검증했다.

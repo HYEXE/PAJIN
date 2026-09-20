@@ -14,3 +14,5 @@ containers/worker/vendor/
 .env
 .env.*
 !.env.example
+.playwright-cli/
+output/

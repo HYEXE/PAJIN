@@ -153,6 +153,10 @@ The table distinguishes implemented runtime behavior from contract-only and plan
 | Common engine and Profiles | Implemented | Legacy `ai-redteam`, `bug-bounty`, and `ctf` compatibility plus code-owned `pentest`, `bug-hunt`, `ctf`, and `ai-assessment` Profile semantics |
 | Canonical Graph | Implemented | Single-Campaign append-only Event, Projection, Snapshot, Graph Decision, ActionPermit, cleanup, backup, and recovery authorities |
 | Capability lifecycle | Implemented | Exact CAP-001 definitions, complete CAP-002 authority sets, signed lifecycle/activation, Gateway dispatch, Oracle, Replay-plan, and cleanup boundaries |
+| Agentic campaign planning | Implemented, inert in-process foundation | [AGENTIC-001](docs/orchestration/AGENTIC-001-bounded-hypothesis-frontier-and-exploit-group.md) adds canonical-Graph-root LLM hypothesis expansion, deterministic frontier scoring, bounded dynamic supervision, typed logical-agent lifecycle, and an exact-version Skill-backed Web Exploit Group. It grants no Scope, Capability, Permit, Tool, Gateway, Worker, Graph write, Finding, report, PoC, target, or restart-resume authority. |
+| Agentic durable coordination | Implemented, Linux-only and non-executable | [AGENTIC-002](docs/orchestration/AGENTIC-002-durable-agentic-coordination.md) adds independently verified current Graph heads, a no-redispatch invocation journal, checkpoint CAS, transactional outbox/inbox, full-history recovery, and bounded target-neutral context compaction. The authoritative store requires Linux `/proc/self/fd`, exact SQLite-FD inode attestation, an independently retained store ID on reopen, and trusted hosting-process integrity; it grants no target or execution authority. |
+| Agentic specialist execution | SQLi v2 zero-Target-I/O governed lifecycle implemented; target execution and 003D pending | [AGENTIC-003](docs/orchestration/AGENTIC-003-governed-specialist-execution.md) preserves the inert XSS, SQLi, and authorization path while adding an SQLi-only v2 complete seven-role Capability bundle, signed current Range activation, exact action registry, deterministic `PreparedCapabilityAction`, distinct v2 Plan/runtime generation, and same-Task Grant/approval/Permit processing. Its Store-owned live admission mints a durable JobAttempt with embedded typed claim/dispatch verification preimages, transfers a non-copyable one-shot claim to the private specialist Gateway/Worker, commits a dispatch-start marker, verifies one source-byte-addressed signed zero-Target-I/O backend result, and records the bounded terminal outcome without redispatch. Explicit offline v5-to-v6 migration and audit-only recovery are included; non-preparation roles remain fail-closed. This proves only the structured zero-I/O lifecycle: no model, browser, network, or Target I/O occurs, and it grants no independent Evidence, Finding, Graph, report, SARIF, or PoC authority. A target-capable successor, actual approved SQLi Juice Shop execution, and independent 003D validation and promotion remain pending. |
+| Agentic campaign evaluation | Contract implemented; live evaluation pending | [AGENTIC-004](docs/benchmark/AGENTIC-004-campaign-evaluation.md) freezes a non-runnable three-arm, three-target-role, seventeen-metric comparison and keeps private Ground Truth outside public artifacts. No separate approved transfer target/private holdout evaluation or performance claim exists yet. |
 | Pentest | Implemented, bounded | Signed assessment compilation, approved one-shot GET Recon, independently authorized Replay, three Controls, durable five-stage coordination, controlled validity, and local Finding/report projection |
 | AI / LLM / RAG | Implemented, bounded | REDTEAM-001A exact single-turn M03/M06 and REDTEAM-001B exact two-turn A04 against approved AI/RAG targets |
 | AI typed Surface classification | Implemented, registry only | AI-001A classifies exact model, RAG, agent, MCP, and Tool knowledge under DOMAIN-002, reuses existing RAG/MCP/Tool locators, and adds secret-free model/agent identities; typed values remain `registered-not-authorized` and provide no Profile, Scope, Capability, Permit, Tool/Worker, network, credential, Graph, runtime, or execution authority |
@@ -160,7 +164,7 @@ The table distinguishes implemented runtime behavior from contract-only and plan
 | AI sealed Observation admission | Implemented, bounded | AI-001C reverifies one successful sealed REDTEAM LLM, LLM/RAG, or registered MCP Capability Graph Run and admits only one neutral `ai.behavior-observation` plus exact Evidence through the existing Graph single writer; Surface references remain classification-only and grant no Tool, Scope, Permit, Worker, replay, Finding, or further execution authority |
 | AI Replay, Controls, and benchmark contract | Implemented, bounded | AI-001D binds one exact AI-001C M03/M06/A04 source to separately sealed KISA two-repetition fresh-session Replay, three-Control evidence, the matching REDTEAM-002 Capability contract, and the DOMAIN-006 AI plan; it binds no concrete Ground Truth case or measurement and grants no confirmation, Finding, Scope, Permit, Worker, network, credential, Replay, or execution authority |
 | AI M03 measured system-prompt disclosure | Implemented, bounded product; conformance pending | [AI-002A](docs/benchmark/AI-002A-exact-m03-measured-case-authority.md) registers one neutral public M03 case, private Ground Truth, immutable Target/Worker/proxy contracts, and the canonical six-operation DOMAIN-006 floor. [AI-002B](docs/benchmark/AI-002B-registry-governed-disposable-m03-source-measurement.md) executes the fresh internal source. [AI-002C](docs/benchmark/AI-002C-independent-fresh-session-replay-controls-ai-floor.md) adds two fresh-session Replay operations, exact Baseline/Negative/Counterfactual Controls, disjoint execution identities, measured request/Tool/zero-cost accounting, mandatory cleanup, and a public-safe fourteen-metric floor. [AI-002D](docs/orchestration/AI-002D-bounded-ai-measurement-product-read-and-conformance.md) seals only the public case reference, ordered aggregate metrics, floor state, and false-authority markers behind a deployment-pinned zero-argument Operator read. Graph/Finding/report/delivery, credentials, external targets/providers, M06, A04, MCP, RAG, arbitrary prompts, general AI authority, and additional execution remain unavailable under [ADR-0259](docs/adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md); exact-clean Ubuntu real-Docker conformance remains pending. |
-| Web / API | Implemented, bounded | HTTP/OpenAPI/auth/file-upload discovery, exact Pentest GET Recon, and REDTEAM-001C exact three-request Boolean SQLi profile against one fixed synthetic local endpoint; no general scanner or arbitrary target authority |
+| Web / API | Implemented, bounded | HTTP/OpenAPI/auth/file-upload discovery, exact Pentest GET Recon, REDTEAM-001C's fixed synthetic SQLi profile, [WEB-003](docs/orchestration/WEB-003-exact-loopback-browser-assessment.md)'s fixed Juice Shop browser assessment, [WEB-004](docs/orchestration/WEB-004-bounded-authenticated-browser-campaign.md)'s inert observation flow, [WEB-005](docs/orchestration/WEB-005-governed-local-authenticated-browser-campaign.md)'s exact signed Campaign/Permit/Gateway/independent-validation/Finding/Graph/report/SARIF/PoC slice, [WEB-006](docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md)'s closed installed profile and bodyless same-context discovery Evidence, [WEB-007](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md)'s local LLM proposal-only shadow boundary and independently pinned one-shot Skill successor, [SKILL-001](docs/orchestration/SKILL-001-versioned-analysis-skill-registry.md)'s exact catalogued analysis registry, and [SKILL-002](docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md)'s four-Skill zero-dispatch split projection. Production execution remains limited to `juice-shop-local/v1` on exact `http://127.0.0.1:3000`; WEB-007's first actual model dispatch ended terminally on the old 30-second upstream I/O ceiling. The 180-second successor has new immutable images and an independent Pin, but its first authorized attempt was rejected before dispatch because the exact request exceeded the Campaign accounting budget. Budget and conservative 4,096-token context admission now run before model startup; pinned tokenizer/chat-template proof or an additive compact wire/new Pin is required before another live attempt. No arbitrary target, generic payload, model-authored action, or external delivery authority is provided. |
 | Web/API typed Surface | Implemented, registry only | WEB-001A binds the DOMAIN-002 `web.http-operation` semantics to existing concrete endpoint and bounded URI-template locator models; typed values remain `registered-not-authorized` and provide no Observation, Evidence, Graph, Scope, Capability, Permit, Worker, network, runtime, or execution authority |
 | Web/API read-only discovery binding | Implemented, preparation only | WEB-001B binds only a concrete WEB-001A GET Surface to the existing signed Pentest Recon CAP-002 and DOMAIN-004 minimum Web Worker profile; it stops at `PreparedCapabilityAction`, leaves pre-Gateway network disabled, and grants no Scope, approval, Permit, Worker selection, Observation/Evidence, Graph, Finding, runtime, or execution authority |
 | Web/API sealed knowledge admission | Implemented, bounded | WEB-001C exact-binds WEB-001B to an already approved sealed Pentest Recon source, reuses PENTEST-002A and the existing Graph single writer to admit only Action/neutral Observation/three Evidence nodes, and leaves typed Surface knowledge `registered-not-authorized` with no Scope, execution, Replay, or Finding authority |
@@ -698,6 +702,7 @@ Run `pajin --help` or `pajin <command> --help` for the authoritative option list
 | KISA AI assessment | `kisa-run`, `kisa-plan-remediation`, `kisa-retest` |
 | Bug hunt | `bug-bounty-review`, `bug-bounty-compile`, `bug-bounty-report`, `bug-bounty-run` |
 | CTF | `ctf-run`, `ctf-web-run`, `ctf-suite-run` |
+| Authorized local Web assessment | `web-assess-local`, `web-campaign-observe-local`, `web-campaign-run-governed-local` |
 | Evidence and infrastructure | `evidence-verify`, `replay-verify`, `replay-attestation-verify`, `sarif-export`, `worker-check`, `egress-check`, `mcp-check` |
 
 Optional processes are installed as `pajin-control-plane`, `pajin-worker-daemon`, and
@@ -716,9 +721,90 @@ configure `PAJIN_CP_GRAPH_CAMPAIGNS` using the
 Operators can assign measured human reviews to configured human identities. Recipients can
 read and acknowledge notices in the Console's personal inbox; see
 [review assignment and internal notifications](docs/orchestration/UX-013-review-assignment-and-internal-notifications.md).
-Update all review readers and recovery controllers before the first assignment: the new journal
-records use v2 and cannot be read by older software. Historical views and work assignments do
-not grant execution or Finding authority.
+The [review work contract](docs/orchestration/UX-014-review-work-filters-and-preserved-continuation.md)
+adds assignee, state and personal unread filters, independent notification receipts, and a linked
+follow-up when a review reaches 200 revisions. Update all readers and recovery controllers before
+schema 17 and v3 follow-up writes; older software must not be used to downgrade retained data.
+Historical views and work assignments do not grant execution or Finding authority.
+
+WEB-003 requires the `browser` optional dependency, an installed Playwright Chromium runtime, and
+an operator-owned OWASP Juice Shop instance on an exact numeric loopback origin. It creates and
+retains a random test account in that local lab. The explicit flag is a short-lived authorization for
+the fixed local recipe, not arbitrary Web scope:
+
+```sh
+uv sync --locked --extra browser
+uv run playwright install chromium
+uv run pajin web-assess-local \
+  --origin http://127.0.0.1:3000 \
+  --authorized-local-lab
+```
+
+WEB-004 runs the wider local-only observation composition. It emits an inert Campaign draft and
+sealed-source Graph proposals while keeping credential/login-state/cleanup authority, lifecycle
+activation, ActionPermit, Gateway dispatch, Graph admission, Finding/SARIF authority, and external
+delivery off:
+
+```sh
+uv run pajin web-campaign-observe-local \
+  --origin http://127.0.0.1:3000 \
+  --authorized-local-lab
+```
+
+WEB-005 is the opt-in governed vertical slice for the same exact local target. It resolves the
+installed signed `juice-shop-local/v1` adapter, activates a distinct executable Capability, consumes
+fresh source and validation approvals and ActionPermits through the Gateway, requires four distinct
+observer/executor subprocess identities, admits verified Graph facts and Findings, and writes a
+local report, SARIF, and redacted executable PoC. It never performs external delivery:
+
+```sh
+uv run pajin web-campaign-run-governed-local \
+  --origin http://127.0.0.1:3000 \
+  --adapter-ref juice-shop-local/v1 \
+  --authorized-local-lab \
+  --output ./private-web-assessment-output \
+  --headless
+```
+
+WEB-006 closes the production inventory to that exact adapter/origin pair and binds code-owned
+diagnostic identities to bodyless passive-discovery receipts from the same authenticated browser
+context. WEB-007 composes above that evidence substrate: it strictly reloads a sealed
+pre-diagnostic discovery Run, sends only a bounded target/source-anchor-free projection to one local
+model call, parses the result as untrusted typed data, and can compile only an inert advisory. It
+cannot issue a Permit, touch the target, promote a Finding, write Graph state, generate a report or
+PoC, or deliver anything externally. Its first actual Qwen3 4B Q8 dispatch exercised and sealed the
+terminal no-redispatch path but timed out before returning a draft; successful live advisory output
+is therefore not yet verified. An additive successor now binds built distinct immutable Worker/proxy
+images, exact 180-second internal ceilings, a split developer/user request, and one terminal sealed
+attempt. Its independent Pin and image checks pass. The first authorized successor attempt exposed
+a missing request-capacity preflight: its conservative bound exceeded the Campaign budget before
+`model.call.started`, so it sealed a zero-dispatch failure and cleaned every owned resource. The
+runner now rejects that exact oversized request before model startup and also applies a conservative
+`prompt + completion <= 4,096` context gate before constructing the model runtime. This
+accounting-based guard is fail-closed, not an exact tokenizer measurement. A pinned tokenizer and
+exact chat-template proof is therefore the next offline step; if the useful request does not fit, an
+additive compact wire or a new Web-specific RuntimePin must be adopted before another live attempt.
+
+SKILL-001 adds exact-version, target-neutral analysis knowledge without execution authority.
+SKILL-002 qualifies four immutable proposal-only successors, selects them through the registered
+Web policy, and seals their developer-message instruction projection separately from the tainted
+user-message Evidence projection. The resulting preparation Run dispatches neither a model nor the
+target. The versioned successor strict-reloads this Run and can make at most one separately
+authorized local model call; it still grants no target or downstream authority.
+
+The WEB-003 through WEB-007 flows seal public-safe JSON and Markdown and mask form, credential, and
+runtime marker material in screenshots while omitting generated test-account identifiers, passwords,
+session tokens, raw HTTP bodies, and raw DOM. WEB-003 and WEB-004 remain local diagnostic evidence;
+WEB-005 creates independently replay-confirmed Findings only for the exact installed Juice Shop
+adapter; WEB-006 discovery and WEB-007 model output remain proposal-only. None grants arbitrary-site
+scope or external-delivery authority; see the
+[WEB-003 contract](docs/orchestration/WEB-003-exact-loopback-browser-assessment.md) and
+[WEB-004 contract](docs/orchestration/WEB-004-bounded-authenticated-browser-campaign.md),
+[WEB-005 contract](docs/orchestration/WEB-005-governed-local-authenticated-browser-campaign.md),
+[WEB-006 contract](docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md),
+[WEB-007 contract](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md),
+[SKILL-001 contract](docs/orchestration/SKILL-001-versioned-analysis-skill-registry.md), and
+[SKILL-002 contract](docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md).
 
 ## Verification
 
