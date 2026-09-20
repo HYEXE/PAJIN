@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from pajin.domain.validation import (
     build_claim_replay_assessment,
     candidate_atomic_claims,
 )
+from pajin.runtime.pinned_workspace import PinnedOutputRoot
 from pajin.runtime.store import RunIntegritySeal, RunStore, load_verified_run_snapshot
 from pajin.workflow.validation_artifacts import (
     VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH,
@@ -333,6 +335,40 @@ def test_sealed_flat_legacy_confirmation_is_not_product_confirmation(
     assert loaded.validation == raw
     assert loaded.semantics is ValidationSnapshotSemantics.LEGACY_UNVERSIONED
     assert loaded.product_confirmed_findings == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX pinned CWD capability")
+def test_validation_loaders_stay_on_pinned_cwd_after_original_root_replacement(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "pinned-output"
+    parked = tmp_path / "parked-output"
+    victim = tmp_path / "victim-output"
+    victim.mkdir()
+
+    with PinnedOutputRoot.create(output) as pinned, pinned.activate():
+        output.rename(parked)
+        output.symlink_to(victim, target_is_directory=True)
+        store, _candidate, source_decision, _finding, _seal = _sealed_source_run(
+            Path("validation-runs"),
+            legacy_confirmed=False,
+        )
+        authority = load_verified_run_snapshot(store.path)
+
+        source = load_source_validation_artifacts(
+            store.path,
+            verified_snapshot=authority,
+        )
+        loaded = load_validation_snapshot(
+            store.path,
+            verified_snapshot=authority,
+        )
+
+        assert source.decisions == [source_decision]
+        assert loaded.validation == source
+        assert not store.path.is_absolute()
+        assert tuple(victim.iterdir()) == ()
+        assert (parked / store.path).is_dir()
 
 
 def test_validation_loaders_reject_a_later_run_phase_than_the_authority_snapshot(

@@ -16,6 +16,7 @@ from hashlib import sha256
 from pathlib import Path
 from re import fullmatch
 from typing import TYPE_CHECKING, Annotated, Literal, Self, cast
+from urllib.parse import quote
 
 from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -101,6 +102,14 @@ from pajin.graph.projection import (
     GraphSnapshotRef,
     graph_snapshot_ref,
 )
+from pajin.runtime.pinned_sqlite import (
+    PinnedMemorySQLite,
+    PinnedSQLiteCheckpoint,
+    PinnedSQLitePublication,
+    is_governed_pinned_sqlite_namespace,
+    pinned_memory_sqlite_for_path,
+)
+from pajin.runtime.pinned_workspace import pinned_workspace_relative_path
 from pajin.runtime.safe_files import (
     parse_strict_json_bytes,
     read_bounded_regular_bytes,
@@ -122,6 +131,63 @@ _BUSY_TIMEOUT_MS = 30_000
 _MAX_GRAPH_BYTES = 64 * 1024 * 1024
 _MAX_GRAPH_BACKUP_BYTES = 256 * 1024 * 1024
 _MAX_GRAPH_BACKUP_MANIFEST_BYTES = 64 * 1024
+_PINNED_GRAPH_SQLITE_OWNER = object()
+_GOVERNED_GRAPH_DATABASE_AUTHORITY_GUARD = object()
+
+
+def _governed_graph_checkpoint_metadata(
+    connection: sqlite3.Connection,
+) -> dict[str, object]:
+    event = connection.execute(
+        "SELECT sequence, event_digest FROM graph_events ORDER BY sequence DESC LIMIT 1"
+    ).fetchone()
+    projection = connection.execute(
+        """
+        SELECT revision, projection_digest
+        FROM graph_projections
+        ORDER BY revision DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    snapshot = connection.execute(
+        """
+        SELECT ordinal, snapshot_digest
+        FROM graph_snapshots
+        ORDER BY ordinal DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    permit_rows = connection.execute(
+        "SELECT permit_id, permit_digest FROM graph_action_permits ORDER BY ordinal"
+    ).fetchall()
+    approval_rows = connection.execute(
+        """
+        SELECT receipt_id, receipt_digest
+        FROM graph_action_approval_consumptions
+        ORDER BY ordinal
+        """
+    ).fetchall()
+    return {
+        "eventRevision": int(event["sequence"]) if event is not None else 0,
+        "eventHeadDigest": str(event["event_digest"]) if event is not None else None,
+        "projectionRevision": int(projection["revision"]),
+        "projectionDigest": str(projection["projection_digest"]),
+        "snapshotOrdinal": int(snapshot["ordinal"]) if snapshot is not None else 0,
+        "snapshotHeadDigest": (
+            str(snapshot["snapshot_digest"]) if snapshot is not None else None
+        ),
+        "permits": [
+            {"permitId": str(row["permit_id"]), "permitDigest": str(row["permit_digest"])}
+            for row in permit_rows
+        ],
+        "approvalConsumptions": [
+            {
+                "receiptId": str(row["receipt_id"]),
+                "receiptDigest": str(row["receipt_digest"]),
+            }
+            for row in approval_rows
+        ],
+    }
 
 
 def _canonical_action_policy_registry(
@@ -996,6 +1062,58 @@ class _VerifiedGraphStoreState:
     approval_consumption_head_digest: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class GovernedGraphDatabaseAuthority:
+    """Possession capability for freezing one governed Graph database."""
+
+    store: SQLiteGraphStore
+    _database: PinnedMemorySQLite
+    _guard: object
+
+    def freeze_and_publish(self) -> PinnedSQLitePublication:
+        if (
+            self._guard is not _GOVERNED_GRAPH_DATABASE_AUTHORITY_GUARD
+            or type(self.store) is not SQLiteGraphStore
+            or self._database.store_kind != "governed-web-graph"
+            or self._database.campaign_id != self.store.campaign_id
+            or self._database.schema_digest != _SCHEMA_DIGEST
+        ):
+            raise SQLiteGraphStoreError("governed Graph database authority is invalid")
+        return self._database.freeze_and_publish(
+            owner_authority=_PINNED_GRAPH_SQLITE_OWNER
+        )
+
+    def latest_checkpoint(self) -> PinnedSQLiteCheckpoint:
+        if self._guard is not _GOVERNED_GRAPH_DATABASE_AUTHORITY_GUARD:
+            raise SQLiteGraphStoreError("governed Graph database authority is invalid")
+        return self._database.latest_checkpoint(
+            owner_authority=_PINNED_GRAPH_SQLITE_OWNER
+        )
+
+    def enrollment_publication(self) -> PinnedSQLitePublication:
+        if self._guard is not _GOVERNED_GRAPH_DATABASE_AUTHORITY_GUARD:
+            raise SQLiteGraphStoreError("governed Graph database authority is invalid")
+        return self._database.enrollment_publication(
+            owner_authority=_PINNED_GRAPH_SQLITE_OWNER
+        )
+
+    def install_checkpoint_observer(
+        self,
+        observer: Callable[[PinnedSQLiteCheckpoint], None],
+    ) -> None:
+        if self._guard is not _GOVERNED_GRAPH_DATABASE_AUTHORITY_GUARD:
+            raise SQLiteGraphStoreError("governed Graph database authority is invalid")
+        self._database.install_checkpoint_observer(
+            observer,
+            owner_authority=_PINNED_GRAPH_SQLITE_OWNER,
+        )
+
+    def close(self) -> None:
+        if self._guard is not _GOVERNED_GRAPH_DATABASE_AUTHORITY_GUARD:
+            raise SQLiteGraphStoreError("governed Graph database authority is invalid")
+        self._database.close(owner_authority=_PINNED_GRAPH_SQLITE_OWNER)
+
+
 class SQLiteGraphStore:
     """Own one Campaign's durable Graph and final ActionPermit authority."""
 
@@ -1006,8 +1124,25 @@ class SQLiteGraphStore:
         self.campaign_id = campaign_id
         from pajin.runtime.host_recovery import prepare_store_enrollment
 
-        enrollment = prepare_store_enrollment(
-            self.path, kind="graph-sqlite", campaign_id=campaign_id,
+        memory_database = pinned_memory_sqlite_for_path(
+            self.path,
+            owner_authority=_PINNED_GRAPH_SQLITE_OWNER,
+        )
+        if memory_database is None and is_governed_pinned_sqlite_namespace(
+            self.path,
+            store_kind="governed-web-graph",
+        ):
+            raise SQLiteGraphStoreError(
+                "governed Graph database namespace is historical and never writable"
+            )
+        enrollment = (
+            None
+            if memory_database is not None
+            else prepare_store_enrollment(
+                self.path,
+                kind="graph-sqlite",
+                campaign_id=campaign_id,
+            )
         )
         if initialize:
             _initialize(self.path, campaign_id)
@@ -1030,6 +1165,51 @@ class SQLiteGraphStore:
         self.approved_permit_store = self.permit_store
         if enrollment is not None:
             enrollment.complete()
+
+    @classmethod
+    def create_governed_in_memory(
+        cls,
+        path: Path,
+        *,
+        campaign_id: str,
+        fresh_authority: object,
+        checkpoint_observer: Callable[[PinnedSQLiteCheckpoint], None],
+    ) -> tuple[SQLiteGraphStore, GovernedGraphDatabaseAuthority]:
+        """Create a path-independent live Store with one frozen final database."""
+
+        if cls is not SQLiteGraphStore:
+            raise TypeError("governed in-memory Graph Store cannot construct subclasses")
+        database = PinnedMemorySQLite.create(
+            path,
+            store_kind="governed-web-graph",
+            campaign_id=campaign_id,
+            schema_digest=_SCHEMA_DIGEST,
+            max_bytes=_MAX_GRAPH_BYTES,
+            owner_authority=_PINNED_GRAPH_SQLITE_OWNER,
+            checkpoint_metadata=_governed_graph_checkpoint_metadata,
+            checkpoint_observer=checkpoint_observer,
+            fresh_authority=fresh_authority,
+        )
+        try:
+            store = cls(path, campaign_id=campaign_id)
+            return (
+                store,
+                GovernedGraphDatabaseAuthority(
+                    store=store,
+                    _database=database,
+                    _guard=_GOVERNED_GRAPH_DATABASE_AUTHORITY_GUARD,
+                ),
+            )
+        except BaseException:
+            database.close(owner_authority=_PINNED_GRAPH_SQLITE_OWNER)
+            raise
+
+    def runtime_file_identity(self) -> tuple[tuple[int, int], tuple[int, int]]:
+        """Return the exact live backing identity for authority pinning."""
+
+        if type(self) is not SQLiteGraphStore:
+            raise TypeError("SQLite Graph Store identity rejects subclasses")
+        return _file_identity(self.path)
 
     def create_backup(
         self,
@@ -1128,6 +1308,109 @@ def load_verified_current_graph_snapshot(
         snapshot_id=snapshot_id,
     )
     return snapshot
+
+
+def load_verified_current_graph_snapshot_from_descriptor(
+    descriptor: int,
+    *,
+    parent_descriptor: int,
+    database_name: str,
+    campaign_id: str,
+    snapshot_id: str,
+) -> GraphSnapshot | None:
+    """Verify one current Snapshot through an already pinned POSIX file descriptor.
+
+    The descriptor, rather than a caller-controlled pathname, selects the SQLite
+    database inode.  This is intended for long-lived read authorities that must
+    remain bound across pathname rename/swap races.
+    """
+
+    if (
+        os.name != "posix"
+        or type(descriptor) is not int
+        or descriptor < 0
+        or type(parent_descriptor) is not int
+        or parent_descriptor < 0
+    ):
+        raise ValueError("pinned SQLite Graph descriptor is invalid")
+    if (
+        type(database_name) is not str
+        or not database_name
+        or database_name in {".", ".."}
+        or "/" in database_name
+        or "\x00" in database_name
+    ):
+        raise ValueError("pinned SQLite Graph database name is invalid")
+    if fullmatch(r"^[a-z0-9][a-z0-9-]{2,79}$", campaign_id) is None:
+        raise ValueError("SQLite Graph Store campaign ID is invalid")
+    if fullmatch(r"^graph-snapshot_[a-f0-9]{64}$", snapshot_id) is None:
+        raise ValueError("Graph Snapshot ID is invalid")
+    before = _descriptor_file_state(descriptor)
+    parent_before = _descriptor_directory_state(parent_descriptor)
+    _require_descriptor_entry_identity(
+        parent_descriptor,
+        database_name=database_name,
+        expected_file_state=before,
+    )
+    _require_absent_descriptor_sidecars(parent_descriptor, database_name=database_name)
+    descriptor_root = Path("/dev/fd")
+    if not descriptor_root.is_dir():  # pragma: no cover - Linux fallback
+        descriptor_root = Path("/proc/self/fd")
+    if not descriptor_root.is_dir():  # pragma: no cover - nonstandard POSIX
+        raise SQLiteGraphStoreError(
+            "pinned SQLite Graph descriptor paths are unavailable"
+        )
+    target = f"file:{quote((descriptor_root / str(descriptor)).as_posix(), safe='/')}?mode=ro"
+    connection = sqlite3.connect(
+        target,
+        uri=True,
+        isolation_level=None,
+        timeout=_BUSY_TIMEOUT_MS / 1_000,
+    )
+    try:
+        if _descriptor_file_state(descriptor) != before:
+            raise SQLiteGraphStoreError(
+                "pinned SQLite Graph descriptor changed while it was opened"
+            )
+        connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("PRAGMA trusted_schema = OFF")
+        connection.execute("BEGIN")
+        try:
+            _require_absent_descriptor_sidecars(
+                parent_descriptor,
+                database_name=database_name,
+            )
+            _validate_schema(connection, campaign_id=campaign_id)
+            snapshot, _events = _verified_current_snapshot_from_connection(
+                connection,
+                campaign_id=campaign_id,
+                snapshot_id=snapshot_id,
+            )
+            connection.execute("COMMIT")
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+    finally:
+        connection.close()
+    if _descriptor_file_state(descriptor) != before:
+        raise SQLiteGraphStoreError(
+            "pinned SQLite Graph descriptor changed during Snapshot verification"
+        )
+    if _descriptor_directory_state(parent_descriptor) != parent_before:
+        raise SQLiteGraphStoreError(
+            "pinned SQLite Graph parent changed during Snapshot verification"
+        )
+    _require_descriptor_entry_identity(
+        parent_descriptor,
+        database_name=database_name,
+        expected_file_state=before,
+    )
+    _require_absent_descriptor_sidecars(parent_descriptor, database_name=database_name)
+    return _canonical_snapshot(snapshot) if snapshot is not None else None
 
 
 def load_verified_current_graph_snapshot_consistency(
@@ -3848,15 +4131,22 @@ def _verified_projections(
                 edges.setdefault(edge.edge_id, edge)
         revision = projection.revision
         expected_head = events[revision - 1].event_digest if revision else None
+        expected_nodes = tuple(nodes[key] for key in sorted(nodes))
+        expected_edges = tuple(edges[key] for key in sorted(edges))
         if (
             projection.event_log_head_digest != expected_head
-            or projection.nodes != tuple(nodes[key] for key in sorted(nodes))
-            or projection.edges != tuple(edges[key] for key in sorted(edges))
+            or projection.nodes != expected_nodes
+            or projection.edges != expected_edges
         ):
             raise SQLiteGraphStoreError(
                 "SQLite Graph backup Projection differs from its Event Log prefix"
             )
-        projections[projection.revision] = projection
+        # Every stored field and every nested model was validated above, including
+        # exact equality with replayed events. Share only those equal internal
+        # objects across prefixes; public readers still return independent copies.
+        projections[projection.revision] = projection.model_copy(
+            update={"nodes": expected_nodes, "edges": expected_edges}
+        )
     if 0 not in projections:
         raise SQLiteGraphStoreError("SQLite Graph backup has no genesis projection")
     return projections
@@ -4329,6 +4619,9 @@ def _fsync_graph_directory(path: Path) -> None:
 def _absolute_path(path: Path) -> Path:
     """Normalize lexical components without following a symlink leaf."""
 
+    pinned = pinned_workspace_relative_path(path, label="SQLite Graph Store path")
+    if pinned is not None:
+        return pinned
     return Path(os.path.abspath(os.fspath(Path(path).expanduser())))
 
 
@@ -4369,7 +4662,8 @@ def _prepare_store_file(path: Path) -> tuple[bool, int]:
 
 def _prepare_private_parent(directory: Path) -> None:
     current = Path(directory.anchor)
-    for component in directory.parts[1:]:
+    components = directory.parts[1:] if directory.is_absolute() else directory.parts
+    for component in components:
         current /= component
         try:
             component_stat = current.lstat()
@@ -4425,6 +4719,14 @@ def _reject_sidecar_links(path: Path) -> None:
 
 
 def _file_identity(path: Path) -> tuple[tuple[int, int], tuple[int, int]]:
+    memory_database = pinned_memory_sqlite_for_path(
+        path,
+        owner_authority=_PINNED_GRAPH_SQLITE_OWNER,
+    )
+    if memory_database is not None:
+        return memory_database.runtime_identity(
+            owner_authority=_PINNED_GRAPH_SQLITE_OWNER
+        )
     parent_stat = path.parent.lstat()
     file_stat = path.lstat()
     if (
@@ -4443,15 +4745,110 @@ def _file_identity(path: Path) -> tuple[tuple[int, int], tuple[int, int]]:
     )
 
 
-def _initialize(path: Path, campaign_id: str) -> None:
-    created, file_size = _prepare_store_file(path)
-    initialize_empty_file = created or file_size == 0
-    try:
-        connection = _open_write_connection(path)
+def _descriptor_file_state(descriptor: int) -> tuple[int, int, int, int, int, int, int]:
+    file_stat = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_nlink != 1
+        or (os.name == "posix" and file_stat.st_uid != os.geteuid())
+        or (os.name == "posix" and stat.S_IMODE(file_stat.st_mode) & 0o077)
+    ):
+        raise SQLiteGraphStoreError(
+            "pinned SQLite Graph descriptor is not a private regular file"
+        )
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_uid,
+        stat.S_IMODE(file_stat.st_mode),
+        file_stat.st_size,
+        file_stat.st_mtime_ns,
+        file_stat.st_ctime_ns,
+    )
+
+
+def _descriptor_directory_state(
+    descriptor: int,
+) -> tuple[int, int, int, int, int, int]:
+    directory_stat = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(directory_stat.st_mode)
+        or (os.name == "posix" and directory_stat.st_uid != os.geteuid())
+        or (os.name == "posix" and stat.S_IMODE(directory_stat.st_mode) & 0o077)
+    ):
+        raise SQLiteGraphStoreError(
+            "pinned SQLite Graph parent descriptor is not owner-only"
+        )
+    return (
+        directory_stat.st_dev,
+        directory_stat.st_ino,
+        directory_stat.st_uid,
+        stat.S_IMODE(directory_stat.st_mode),
+        directory_stat.st_mtime_ns,
+        directory_stat.st_ctime_ns,
+    )
+
+
+def _require_descriptor_entry_identity(
+    parent_descriptor: int,
+    *,
+    database_name: str,
+    expected_file_state: tuple[int, int, int, int, int, int, int],
+) -> None:
+    entry_stat = os.stat(
+        database_name,
+        dir_fd=parent_descriptor,
+        follow_symlinks=False,
+    )
+    if (
+        not stat.S_ISREG(entry_stat.st_mode)
+        or entry_stat.st_nlink != 1
+        or (entry_stat.st_dev, entry_stat.st_ino)
+        != expected_file_state[:2]
+    ):
+        raise SQLiteGraphStoreError(
+            "pinned SQLite Graph descriptor differs from its parent entry"
+        )
+
+
+def _require_absent_descriptor_sidecars(
+    parent_descriptor: int,
+    *,
+    database_name: str,
+) -> None:
+    for suffix in ("-journal", "-wal", "-shm"):
         try:
+            os.stat(
+                f"{database_name}{suffix}",
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            continue
+        raise SQLiteGraphStoreError(
+            "pinned SQLite Graph read requires absent journal and WAL sidecars"
+        )
+
+
+def _initialize(path: Path, campaign_id: str) -> None:
+    memory_database = pinned_memory_sqlite_for_path(
+        path,
+        owner_authority=_PINNED_GRAPH_SQLITE_OWNER,
+    )
+    if memory_database is None:
+        created, file_size = _prepare_store_file(path)
+        initialize_empty_file = created or file_size == 0
+    else:
+        initialize_empty_file = True
+    try:
+        with _graph_connection(path, readonly=False) as connection:
             if initialize_empty_file:
                 journal_mode = connection.execute("PRAGMA journal_mode = DELETE").fetchone()
-                if journal_mode is None or str(journal_mode[0]).lower() != "delete":
+                expected_journal_mode = "memory" if memory_database is not None else "delete"
+                if (
+                    journal_mode is None
+                    or str(journal_mode[0]).lower() != expected_journal_mode
+                ):
                     raise SQLiteGraphStoreError("SQLite Graph Store requires DELETE journal mode")
             connection.execute("BEGIN IMMEDIATE")
             tables = _application_tables(connection)
@@ -4518,36 +4915,84 @@ def _initialize(path: Path, campaign_id: str) -> None:
                 _migrate_cleanup_schema(connection)
             _validate_schema(connection, campaign_id=campaign_id)
             connection.execute("COMMIT")
-        except BaseException:
-            if connection.in_transaction:
-                connection.execute("ROLLBACK")
-            raise
-        finally:
-            connection.close()
     except sqlite3.Error as exc:
         raise SQLiteGraphStoreError("SQLite Graph Store initialization failed") from exc
 
 
 @contextmanager
-def _write_transaction(path: Path) -> Iterator[sqlite3.Connection]:
-    connection = _open_write_connection(path)
+def _graph_connection(path: Path, *, readonly: bool) -> Iterator[sqlite3.Connection]:
+    memory_database = pinned_memory_sqlite_for_path(
+        path,
+        owner_authority=_PINNED_GRAPH_SQLITE_OWNER,
+    )
+    if memory_database is not None:
+        with memory_database.connection(
+            readonly=readonly,
+            owner_authority=_PINNED_GRAPH_SQLITE_OWNER,
+        ) as connection:
+            yield connection
+        return
+    connection = _open_readonly_connection(path) if readonly else _open_write_connection(path)
     try:
-        connection.execute("BEGIN IMMEDIATE")
         yield connection
-        connection.execute("COMMIT")
-    except BaseException:
-        if connection.in_transaction:
-            connection.execute("ROLLBACK")
-        raise
     finally:
         connection.close()
 
 
 @contextmanager
+def _write_transaction(path: Path) -> Iterator[sqlite3.Connection]:
+    with _graph_connection(path, readonly=False) as connection:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            yield connection
+            connection.execute("COMMIT")
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
+
+@contextmanager
 def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    memory_database = pinned_memory_sqlite_for_path(
+        path,
+        owner_authority=_PINNED_GRAPH_SQLITE_OWNER,
+    )
+    if memory_database is not None:
+        with memory_database.connection(
+            readonly=True,
+            owner_authority=_PINNED_GRAPH_SQLITE_OWNER,
+        ) as connection:
+            try:
+                connection.execute("BEGIN")
+                yield connection
+                connection.execute("COMMIT")
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
+        return
+    with _graph_connection(path, readonly=True) as connection:
+        try:
+            connection.execute("BEGIN")
+            yield connection
+            connection.execute("COMMIT")
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
+
+def _open_readonly_connection(path: Path) -> sqlite3.Connection:
     identity = _file_identity(path)
+    pinned = pinned_workspace_relative_path(path, label="SQLite Graph Store path")
+    target = (
+        f"file:{quote(pinned.as_posix(), safe='/')}?mode=ro"
+        if pinned is not None
+        else f"{path.as_uri()}?mode=ro"
+    )
     connection = sqlite3.connect(
-        f"{path.as_uri()}?mode=ro",
+        target,
         uri=True,
         isolation_level=None,
         timeout=_BUSY_TIMEOUT_MS / 1_000,
@@ -4560,16 +5005,7 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA query_only = ON")
     connection.execute("PRAGMA trusted_schema = OFF")
-    try:
-        connection.execute("BEGIN")
-        yield connection
-        connection.execute("COMMIT")
-    except BaseException:
-        if connection.in_transaction:
-            connection.execute("ROLLBACK")
-        raise
-    finally:
-        connection.close()
+    return connection
 
 
 def _open_write_connection(path: Path) -> sqlite3.Connection:
@@ -4635,13 +5071,19 @@ def _validate_schema_contract(
     user_version = cast(int, connection.execute("PRAGMA user_version").fetchone()[0])
     application_id = cast(int, connection.execute("PRAGMA application_id").fetchone()[0])
     journal_mode = connection.execute("PRAGMA journal_mode").fetchone()
+    database_list = connection.execute("PRAGMA database_list").fetchall()
     foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()
     trusted_schema = connection.execute("PRAGMA trusted_schema").fetchone()
+    journal_value = str(journal_mode[0]).lower() if journal_mode is not None else None
+    memory_main = any(
+        str(row[1]) == "main" and not str(row[2])
+        for row in database_list
+    )
     if (
         user_version != version
         or application_id != _APPLICATION_ID
-        or journal_mode is None
-        or str(journal_mode[0]).lower() != "delete"
+        or journal_value not in {"delete", "memory"}
+        or (journal_value == "memory" and not memory_main)
         or foreign_keys is None
         or foreign_keys[0] != 1
         or trusted_schema is None

@@ -116,6 +116,11 @@ class PolicyBoundProviderPort(StructuredModelPort):
                 "provider dual model budget must charge the supplied Campaign budget"
             )
         self._dual_model_usage_budget = dual_model_usage_budget
+        if not isinstance(gateway, ToolGateway) or not ToolGateway.is_bound_to_store(
+            gateway,
+            store,
+        ):
+            raise ValueError("provider Gateway must audit to the supplied RunStore")
         self._gateway = gateway
         self._store = store
 

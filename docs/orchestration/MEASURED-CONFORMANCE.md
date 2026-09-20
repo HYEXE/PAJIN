@@ -141,15 +141,32 @@ define the dedicated-host admission input; it is checked alongside the actual pl
 
 ## Verified expanded checkpoint
 
-The later implementation checkpoint `dd039ef3c261224f529d07f431dab2cbf7f8cbc9` passed
-ordinary CI (quality and 24 shards, 8,671 passed and 76 existing skipped), Web, Network,
-AI and SYS on their first attempts. OPS run 34695351995 failed in `target-resume` after
-15 of its 21 witness checks; the original 11 and additional 15 OPS checks had passed.
-Cleanup and the independent residue audit both found zero owned resources without fallback.
-The bounded public report does not identify the exact failed private command. A separate
-regression reproduced independent stress consuming the five-minute approval window. The
-probe scheduling correction above preserves expiry enforcement and awaits fresh verification
-at its own commit. The earlier full checkpoint below remains historical evidence only.
+Commit `39c66a2109b084a685b3047bd81b1c900fafc7d4` passed ordinary CI and all five
+required conformance families on their first attempts:
+
+| Workflow | Verified result |
+| --- | --- |
+| [CI 34697511883](https://github.com/HYEXE/PAJIN/actions/runs/34697511883) | Quality and 24 shards; 8,675 passed, 76 existing skipped |
+| [Web 34697548312](https://github.com/HYEXE/PAJIN/actions/runs/34697548312) | 1 actual test, 121.88 s |
+| [Network 34697549625](https://github.com/HYEXE/PAJIN/actions/runs/34697549625) | 1 actual test, 300.25 s |
+| [AI 34697550710](https://github.com/HYEXE/PAJIN/actions/runs/34697550710) | 1 actual test, 82.13 s |
+| [OPS 34697551793](https://github.com/HYEXE/PAJIN/actions/runs/34697551793) | 11 + 15 + 21 checks, 32 fresh-process witness cycles; 585.78 s combined |
+| [SYS 34697553124](https://github.com/HYEXE/PAJIN/actions/runs/34697553124) | Both profiles passed 1 test and 4 Worker executions each; 87.30 s combined |
+
+All 24 duration artifacts identify this clean commit and zero exit status, with 8,751
+unique test IDs. OPS/SYS source commitment independently matches every tracked input at
+that commit: `c7545b3b1542fc1d3a124efb4b1383ad5aa069e97d0126291bd29b14ff3ed14f`.
+Every conformance family passed its cleanup gate; OPS/SYS additionally retained bounded
+public summaries and independent zero-residue observations without fallback removal.
+These results cover this commit, not later local EFFECT-007, GRAPH-PERF-006 or UX-014 work.
+
+The failed OPS attempt at `dd039ef` and a Replay lease test failure at `0d7343a` remain
+separate evidence. The first bounded public OPS report did not establish the exact
+private-command cause. A separate regression reproduced stress consuming the approval
+window, and moved independent stress after approved continuation without extending expiry.
+Replay regression separately demonstrated expiry between scheduling and executor start;
+a live lease check immediately before execution now prevents that side effect. Successful
+runs at older commits did not substitute for the complete new-commit verification above.
 
 Commit `1fd37d16d05887f9ff7956ccea4986b77cd4fe6c` passed ordinary CI and all five required
 conformance families on their first attempts, including both newly added operational paths:

@@ -298,14 +298,18 @@ def test_v15_upgrade_preserves_checkpoints_and_pins_keys_only_after_verification
     repository = ControlPlaneRepository(settings.database_url)
     try:
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_review_notification_receipts")
             connection.exec_driver_sql("DROP TABLE cp_checkpoint_key_identities")
             if repository.dialect_name == "postgresql":
+                connection.exec_driver_sql(
+                    "DROP FUNCTION pajin_cp_reject_review_notification_receipt_mutation()"
+                )
                 # A true v15 server has neither the v16 table nor its trigger function.
                 connection.exec_driver_sql(
                     "DROP FUNCTION pajin_cp_reject_checkpoint_key_identity_mutation()"
                 )
             connection.execute(
-                text("DELETE FROM cp_schema_version WHERE version = :version"),
+                text("DELETE FROM cp_schema_version WHERE version >= :version"),
                 {"version": CHECKPOINT_KEY_IDENTITY_SCHEMA_VERSION},
             )
             before = connection.exec_driver_sql("SELECT * FROM cp_checkpoints").all()
@@ -403,7 +407,7 @@ def test_missing_key_identity_table_is_not_repaired_as_an_empty_registry(tmp_pat
     try:
         with repository.engine.begin() as connection:
             connection.exec_driver_sql("DROP TABLE cp_checkpoint_key_identities")
-        with pytest.raises(SchemaInitializationError, match="schema-v15"):
+        with pytest.raises(SchemaInitializationError, match="partial or unknown"):
             repository.initialize()
         assert "cp_checkpoint_key_identities" not in inspect(repository.engine).get_table_names()
     finally:

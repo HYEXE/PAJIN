@@ -40,7 +40,8 @@ REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION = 13
 TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION = 14
 MEASURED_REVIEW_SCHEMA_VERSION = 15
 CHECKPOINT_KEY_IDENTITY_SCHEMA_VERSION = 16
-CURRENT_SCHEMA_VERSION = CHECKPOINT_KEY_IDENTITY_SCHEMA_VERSION
+REVIEW_NOTIFICATION_RECEIPT_SCHEMA_VERSION = 17
+CURRENT_SCHEMA_VERSION = REVIEW_NOTIFICATION_RECEIPT_SCHEMA_VERSION
 MAX_JOB_LEASE_LIFETIME_SECONDS = 24 * 60 * 60
 _MIGRATION_BACKFILL_BATCH_SIZE = 500
 _JSON_AUTHORITY_BATCH_SIZE = 8
@@ -2396,3 +2397,66 @@ class CheckpointKeyIdentityRecord(Base):
     key_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     key_commitment: Mapped[str] = mapped_column(String(64), nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+V16_CONTROL_PLANE_TABLES = CURRENT_CONTROL_PLANE_TABLES
+
+
+def _build_v16_metadata() -> MetaData:
+    """Freeze schema v16 before independent review notification receipts."""
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V16_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V16_METADATA = _build_v16_metadata()
+REVIEW_NOTIFICATION_RECEIPT_TABLES = frozenset({"cp_review_notification_receipts"})
+CURRENT_CONTROL_PLANE_TABLES = frozenset(
+    {*V16_CONTROL_PLANE_TABLES, *REVIEW_NOTIFICATION_RECEIPT_TABLES}
+)
+
+
+class ReviewNotificationReceiptRecord(Base):
+    """One immutable receipt per assignment recipient, outside the review revision budget."""
+
+    __tablename__ = "cp_review_notification_receipts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["review_id", "assignment_revision"],
+            ["cp_measured_review_revisions.review_id", "cp_measured_review_revisions.revision"],
+        ),
+        CheckConstraint(
+            "assignment_revision >= 2 AND assignment_revision <= 200",
+            name="ck_cp_review_receipt_revision",
+        ),
+        CheckConstraint(
+            "length(actor) > 0 AND length(actor) <= 200", name="ck_cp_review_receipt_actor"
+        ),
+        CheckConstraint("actor_role IN ('operator', 'approver')", name="ck_cp_review_receipt_role"),
+        CheckConstraint(
+            "length(request_key) > 0 AND length(request_key) <= 128",
+            name="ck_cp_review_receipt_key",
+        ),
+        CheckConstraint(
+            _lower_hex_check("assignment_digest", 64), name="ck_cp_review_receipt_assignment"
+        ),
+        CheckConstraint(
+            _lower_hex_check("request_digest", 64), name="ck_cp_review_receipt_request"
+        ),
+        CheckConstraint(_lower_hex_check("record_digest", 64), name="ck_cp_review_receipt_digest"),
+        UniqueConstraint("actor", "request_key", name="uq_cp_review_receipt_request"),
+        UniqueConstraint("record_digest", name="uq_cp_review_receipt_digest"),
+    )
+
+    review_id: Mapped[str] = mapped_column(String(39), primary_key=True)
+    assignment_revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor: Mapped[str] = mapped_column(String(200), primary_key=True)
+    actor_role: Mapped[str] = mapped_column(String(16), nullable=False)
+    assignment_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    request_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    record_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)

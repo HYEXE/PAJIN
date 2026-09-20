@@ -16,6 +16,8 @@ _EXPECTED_PUBLIC_NON_SAFE_ROUTES = frozenset(
         ("POST", "/v1/measured-reviews/{review_id}/retest"),
         ("POST", "/v1/measured-reviews/{review_id}/assignment"),
         ("POST", "/v1/measured-reviews/{review_id}/notification-ack"),
+        ("POST", "/v2/measured-reviews/{review_id}/notification-ack"),
+        ("POST", "/v2/measured-reviews/{review_id}/follow-up"),
         ("POST", "/v1/urgent-stops/{alert_id}/acknowledgment"),
         ("POST", "/v1/campaign-drafts/{draft_digest}/compile"),
         ("POST", "/v1/replay/source-artifacts"),

@@ -90,5 +90,11 @@ The first remote attempt at `dd039ef` reached `target-resume` with 15 witness ch
 failing; its exact private-command cause is not available in the public report. Independent
 cleanup succeeded. A deterministic regression separately reproduced the scheduling risk; the
 corrected local Linux run passed all 21 checks and 32 fresh-process cycles in 187.20 seconds.
-Nine independent resource queries found no owned containers, networks or volumes. The corrected
-commit still requires fresh measured conformance.
+Nine independent resource queries found no owned containers, networks or volumes.
+
+The final remote [OPS run 34697551793](https://github.com/HYEXE/PAJIN/actions/runs/34697551793)
+passed on `39c66a2109b084a685b3047bd81b1c900fafc7d4`, together with ordinary CI and all
+other required conformance families at that exact commit. It completed the original 11,
+additional 15 and witness 21 checks, including 32 fresh-process cycles, in a combined
+585.78 seconds. Exact source/image checks and independent zero-residue verification
+passed without fallback removal. This does not certify later local source changes.

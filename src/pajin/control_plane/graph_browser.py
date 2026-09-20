@@ -17,7 +17,7 @@ from pajin.control_plane.graph_pages import CanonicalGraphPageContent, build_gra
 from pajin.control_plane.graph_views import _validated_graph_database
 from pajin.control_plane.models import Principal, PrincipalRole
 from pajin.domain.models import StrictModel
-from pajin.graph.history import read_snapshot_history
+from pajin.graph.history_cache import VerifiedSnapshotHistoryCache
 from pajin.graph.sqlite_store import SQLiteGraphStoreError
 from pajin.runtime.safe_files import parse_strict_json_bytes
 
@@ -114,6 +114,7 @@ class GraphCampaignBrowser:
         if len(set(paths.values())) != len(paths):
             raise ValueError("Graph Campaigns require distinct databases")
         self.databases = MappingProxyType(paths)
+        self._history = VerifiedSnapshotHistoryCache()
 
     def path(self, campaign: str) -> Path:
         if campaign not in self.databases:
@@ -130,7 +131,7 @@ class GraphCampaignBrowser:
                 offset, expected = decoded.offset, decoded.state
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail="History cursor is invalid") from exc
-        result = read_snapshot_history(
+        result = self._history.load(
             self.path(campaign),
             campaign_id=campaign,
             offset=offset,
@@ -157,7 +158,7 @@ class GraphCampaignBrowser:
     def page(
         self, campaign: str, snapshot_id: str, *, state: str, limit: int, cursor: str | None
     ) -> HistoricalGraphPage:
-        result = read_snapshot_history(
+        result = self._history.load(
             self.path(campaign), campaign_id=campaign, snapshot_id=snapshot_id, expected_state=state
         )
         if result.snapshot is None:

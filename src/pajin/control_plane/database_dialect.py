@@ -1297,6 +1297,7 @@ _APPEND_ONLY_TABLE_SUFFIXES = {
     "cp_target_attestation_registry_versions": "target_attestation_registry_version",
     "cp_measured_review_revisions": "measured_review_revision",
     "cp_checkpoint_key_identities": "checkpoint_key_identity",
+    "cp_review_notification_receipts": "review_notification_receipt",
 }
 
 

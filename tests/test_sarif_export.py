@@ -25,6 +25,7 @@ from pajin.domain.validation import (
     VersionedValidationDecisionSet,
     VersionedValidationIndex,
 )
+from pajin.runtime.pinned_workspace import PinnedOutputRoot
 from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.workflow.validation_artifacts import (
     VERSIONED_VALIDATION_DECISIONS_PATH,
@@ -164,6 +165,14 @@ def _sealed_validation_run(tmp_path: Path) -> RunStore:
     store.append_event("test.versioned-validation.created", {})
     store.seal()
     return store
+
+
+def _run_file_snapshot(run_path: Path) -> dict[str, bytes]:
+    return {
+        item.relative_to(run_path).as_posix(): item.read_bytes()
+        for item in run_path.rglob("*")
+        if item.is_file()
+    }
 
 
 def test_verified_sarif_export_is_deterministic_bound_and_minimized(tmp_path: Path) -> None:
@@ -317,7 +326,7 @@ def test_sarif_writer_rejects_a_symbolic_link_leaf(tmp_path: Path) -> None:
     assert outside.read_text(encoding="utf-8") == "must remain unchanged"
 
 
-def test_sarif_writer_rejects_corrupt_content_before_replacing_output(tmp_path: Path) -> None:
+def test_verified_sarif_handle_rejects_dataclass_replace_before_write(tmp_path: Path) -> None:
     store = _sealed_validation_run(tmp_path)
     authority = verify_run_integrity(store.path)
     exported = sarif.load_verified_sarif_export(
@@ -328,13 +337,294 @@ def test_sarif_writer_rejects_corrupt_content_before_replacing_output(tmp_path: 
     output = tmp_path / "existing.sarif"
     output.write_text("keep existing output", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="differs from its verified digest"):
-        sarif.write_verified_sarif_export(
-            replace(exported, content=exported.content + " "),
-            output,
-        )
+    with pytest.raises(TypeError, match="dataclass instances"):
+        replace(exported, content=exported.content + " ")
 
     assert output.read_text(encoding="utf-8") == "keep existing output"
+
+
+def test_verified_sarif_handle_rejects_path_replace_and_public_construction(
+    tmp_path: Path,
+) -> None:
+    store = _sealed_validation_run(tmp_path)
+    authority = verify_run_integrity(store.path)
+    exported = sarif.load_verified_sarif_export(
+        store.path,
+        expected_run_id=store.run_id,
+        expected_root_digest=authority.root_digest,
+    )
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    injected = store.path / "unsealed-injected.sarif"
+
+    with pytest.raises(TypeError, match="dataclass instances"):
+        replace(exported, source_run_path=decoy)
+    with pytest.raises(TypeError, match="opaque handle"):
+        sarif.VerifiedSarifExport(
+            source_run_path=decoy,
+            source_run_id=exported.source_run_id,
+            source_root_digest=exported.source_root_digest,
+            finding_set_digest=exported.finding_set_digest,
+            sarif_digest=exported.sarif_digest,
+            finding_count=exported.finding_count,
+            content=exported.content,
+        )
+    with pytest.raises(TypeError, match="cannot be subclassed"):
+
+        class ForgedSarifExport(sarif.VerifiedSarifExport):
+            pass
+
+    assert not injected.exists()
+
+
+def test_serializable_sarif_projection_never_grants_write_authority(tmp_path: Path) -> None:
+    store = _sealed_validation_run(tmp_path)
+    authority = verify_run_integrity(store.path)
+    exported = sarif.load_verified_sarif_export(
+        store.path,
+        expected_run_id=store.run_id,
+        expected_root_digest=authority.root_digest,
+    )
+    forged_projection = replace(exported.projection, content=exported.content + " ")
+    output = tmp_path / "projection-must-not-write.sarif"
+
+    with pytest.raises(TypeError, match="exact verified export handle"):
+        sarif.write_verified_sarif_export(forged_projection, output)  # type: ignore[arg-type]
+
+    assert not output.exists()
+
+
+def test_uninitialized_exact_sarif_object_never_grants_write_authority(tmp_path: Path) -> None:
+    forged = object.__new__(sarif.VerifiedSarifExport)
+    output = tmp_path / "uninitialized-must-not-write.sarif"
+
+    with pytest.raises(TypeError, match="factory-issued"):
+        sarif.write_verified_sarif_export(forged, output)
+
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("relationship", ["same", "nested", "ancestor", "mixed-case"])
+def test_sarif_writer_rejects_every_source_path_relationship(
+    tmp_path: Path,
+    relationship: str,
+) -> None:
+    store = _sealed_validation_run(tmp_path / "runs")
+    authority = verify_run_integrity(store.path)
+    exported = sarif.load_verified_sarif_export(
+        store.path,
+        expected_run_id=store.run_id,
+        expected_root_digest=authority.root_digest,
+    )
+    destinations = {
+        "same": store.path,
+        "nested": store.path / "nested" / "findings.sarif",
+        "ancestor": store.path.parent,
+        "mixed-case": store.path.with_name(store.path.name.swapcase()) / "findings.sarif",
+    }
+
+    with pytest.raises(ValueError, match="outside the immutable source Run"):
+        sarif.write_verified_sarif_export(exported, destinations[relationship])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX symbolic-link semantics")
+def test_sarif_writer_rejects_symbolic_link_parent_before_write(tmp_path: Path) -> None:
+    store = _sealed_validation_run(tmp_path / "runs")
+    authority = verify_run_integrity(store.path)
+    exported = sarif.load_verified_sarif_export(
+        store.path,
+        expected_run_id=store.run_id,
+        expected_root_digest=authority.root_digest,
+    )
+    real_parent = tmp_path / "real-output"
+    real_parent.mkdir()
+    alias_parent = tmp_path / "linked-output"
+    alias_parent.symlink_to(real_parent, target_is_directory=True)
+    output = alias_parent / "findings.sarif"
+
+    with pytest.raises(ValueError, match="symbolic link or alias"):
+        sarif.write_verified_sarif_export(exported, output)
+
+    assert list(real_parent.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory identity semantics")
+def test_sarif_writer_rejects_destination_parent_swap_without_consuming_handle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _sealed_validation_run(tmp_path / "runs")
+    authority = verify_run_integrity(store.path)
+    exported = sarif.load_verified_sarif_export(
+        store.path,
+        expected_run_id=store.run_id,
+        expected_root_digest=authority.root_digest,
+    )
+    output_parent = tmp_path / "exports"
+    output_parent.mkdir()
+    displaced_parent = tmp_path / "exports-displaced"
+    output = output_parent / "findings.sarif"
+
+    def swap_parent(_output: Path) -> None:
+        output_parent.rename(displaced_parent)
+        output_parent.mkdir()
+
+    monkeypatch.setattr(sarif, "_before_verified_sarif_write", swap_parent)
+    with pytest.raises(ValueError, match="parent path changed"):
+        sarif.write_verified_sarif_export(exported, output)
+
+    assert list(output_parent.iterdir()) == []
+    assert list(displaced_parent.iterdir()) == []
+    output_parent.rmdir()
+    displaced_parent.rename(output_parent)
+    monkeypatch.setattr(sarif, "_before_verified_sarif_write", lambda _output: None)
+
+    assert sarif.write_verified_sarif_export(exported, output) == output
+    assert output.read_text(encoding="utf-8") == exported.content
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory identity semantics")
+def test_sarif_writer_rejects_source_parent_swap_without_consuming_handle(
+    tmp_path: Path,
+) -> None:
+    runs_parent = tmp_path / "runs"
+    store = _sealed_validation_run(runs_parent)
+    authority = verify_run_integrity(store.path)
+    exported = sarif.load_verified_sarif_export(
+        store.path,
+        expected_run_id=store.run_id,
+        expected_root_digest=authority.root_digest,
+    )
+    relative_run_path = store.path.relative_to(runs_parent)
+    displaced_parent = tmp_path / "runs-displaced"
+    runs_parent.rename(displaced_parent)
+    runs_parent.mkdir()
+    (runs_parent / relative_run_path).parent.mkdir(parents=True, exist_ok=True)
+    (displaced_parent / relative_run_path).rename(runs_parent / relative_run_path)
+    output = tmp_path / "exports" / "findings.sarif"
+
+    with pytest.raises(ValueError, match="authority changed"):
+        sarif.write_verified_sarif_export(exported, output)
+
+    assert not output.exists()
+    (displaced_parent / relative_run_path).parent.mkdir(parents=True, exist_ok=True)
+    (runs_parent / relative_run_path).rename(displaced_parent / relative_run_path)
+    empty_parent = (runs_parent / relative_run_path).parent
+    while empty_parent != runs_parent:
+        empty_parent.rmdir()
+        empty_parent = empty_parent.parent
+    runs_parent.rmdir()
+    displaced_parent.rename(runs_parent)
+
+    assert sarif.write_verified_sarif_export(exported, output) == output
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory identity semantics")
+@pytest.mark.parametrize("relationship", ["direct", "nested", "symlink", "mixed-case"])
+def test_sarif_writer_never_mutates_any_other_sealed_run(
+    tmp_path: Path,
+    relationship: str,
+) -> None:
+    source = _sealed_validation_run(tmp_path / "source-runs")
+    source_authority = verify_run_integrity(source.path)
+    exported = sarif.load_verified_sarif_export(
+        source.path,
+        expected_run_id=source.run_id,
+        expected_root_digest=source_authority.root_digest,
+    )
+    victim = _sealed_validation_run(tmp_path / "victim-runs")
+    victim_authority = verify_run_integrity(victim.path)
+    victim_files = _run_file_snapshot(victim.path)
+    alias = tmp_path / "victim-alias"
+    if relationship == "symlink":
+        alias.symlink_to(victim.path, target_is_directory=True)
+    destinations = {
+        "direct": victim.path / "injected.sarif",
+        "nested": victim.path / "new" / "nested" / "injected.sarif",
+        "symlink": alias / "injected.sarif",
+        "mixed-case": (
+            victim.path.with_name(victim.path.name.swapcase()) / "injected.sarif"
+        ),
+    }
+
+    with pytest.raises(ValueError):
+        sarif.write_verified_sarif_export(exported, destinations[relationship])
+
+    assert _run_file_snapshot(victim.path) == victim_files
+    assert verify_run_integrity(victim.path).root_digest == victim_authority.root_digest
+    external = tmp_path / f"external-{relationship}" / "findings.sarif"
+    assert sarif.write_verified_sarif_export(exported, external) == external
+    assert external.read_text(encoding="utf-8") == exported.content
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory identity semantics")
+def test_sarif_writer_rejects_other_run_parent_swap_with_zero_delta_and_safe_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _sealed_validation_run(tmp_path / "source-runs")
+    source_authority = verify_run_integrity(source.path)
+    exported = sarif.load_verified_sarif_export(
+        source.path,
+        expected_run_id=source.run_id,
+        expected_root_digest=source_authority.root_digest,
+    )
+    victim = _sealed_validation_run(tmp_path / "victim-runs")
+    victim_authority = verify_run_integrity(victim.path)
+    victim_files = _run_file_snapshot(victim.path)
+    external_parent = tmp_path / "external"
+    displaced_parent = tmp_path / "external-displaced"
+    external_parent.mkdir()
+    output = external_parent / "findings.sarif"
+
+    def swap_parent(_output: Path) -> None:
+        external_parent.rename(displaced_parent)
+        victim.path.rename(external_parent)
+
+    monkeypatch.setattr(sarif, "_before_verified_sarif_write", swap_parent)
+    with pytest.raises(ValueError, match="Run authority"):
+        sarif.write_verified_sarif_export(exported, output)
+
+    assert not output.exists()
+    external_parent.rename(victim.path)
+    displaced_parent.rename(external_parent)
+    assert _run_file_snapshot(victim.path) == victim_files
+    assert verify_run_integrity(victim.path).root_digest == victim_authority.root_digest
+    monkeypatch.setattr(sarif, "_before_verified_sarif_write", lambda _output: None)
+
+    assert sarif.write_verified_sarif_export(exported, output) == output
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX pinned-CWD semantics")
+def test_sarif_load_and_write_preserve_relative_pinned_workspace_paths(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "pinned-output"
+    parked_root = tmp_path / "parked-output"
+    replacement_root = tmp_path / "replacement-output"
+    replacement_root.mkdir()
+
+    with PinnedOutputRoot.create(output_root) as pinned, pinned.activate():
+        store = _sealed_validation_run(Path("runs"))
+        authority = verify_run_integrity(store.path)
+        exported = sarif.load_verified_sarif_export(
+            store.path,
+            expected_run_id=store.run_id,
+            expected_root_digest=authority.root_digest,
+        )
+        output_root.rename(parked_root)
+        output_root.symlink_to(replacement_root, target_is_directory=True)
+
+        persisted = sarif.write_verified_sarif_export(
+            exported,
+            Path("exports/findings.sarif"),
+        )
+
+        assert persisted == Path("exports/findings.sarif")
+        assert exported.source_run_path.is_absolute() is False
+        assert (parked_root / persisted).read_text(encoding="utf-8") == exported.content
+        assert tuple(replacement_root.iterdir()) == ()
+        assert not pinned.original_path_identity_matches()
 
 
 @pytest.mark.parametrize(

@@ -26,6 +26,9 @@ type ReviewProjection = Annotated[
 MAX_REVIEW_REVISIONS = 200
 MAX_REVIEW_BYTES = 512 * 1024
 MAX_REVIEW_HISTORY_BYTES = 8 * 1024 * 1024
+MAX_NOTIFICATION_RECEIPTS = 2 * (MAX_REVIEW_REVISIONS - 1)
+type ReviewState = Literal["open", "awaiting-review", "changes-requested", "accepted"]
+type NoticeId = Annotated[str, Field(pattern=r"^review-notice_[a-f0-9]{64}$")]
 
 
 class ReviewModel(BaseModel):
@@ -47,6 +50,7 @@ class ReviewModel(BaseModel):
         "generic_finding_confirmed",
         "sarif_authorized",
         "external_delivery_authorized",
+        "acknowledged",
         mode="before",
         check_fields=False,
     )
@@ -164,10 +168,20 @@ class HumanAssessment(ReviewModel):
         return tuple(value) if type(value) is list else value
 
 
+class ReviewPredecessor(ReviewModel):
+    review_id: ReviewId = Field(alias="reviewId")
+    revision: int = Field(ge=MAX_REVIEW_REVISIONS, le=MAX_REVIEW_REVISIONS)
+    record_digest: Digest = Field(alias="recordDigest")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class OpenReview(ReviewModel):
     action: Literal["opened"] = "opened"
     title: str = Field(min_length=1, max_length=180)
     evidence: ReviewEvidence
+    predecessor: ReviewPredecessor | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class AssessReview(ReviewModel):
@@ -216,7 +230,9 @@ type ReviewCommand = Annotated[
 
 class ReviewRevision(ReviewModel):
     api_version: Literal[
-        "pajin.dev/measured-review-revision/v1", "pajin.dev/measured-review-revision/v2"
+        "pajin.dev/measured-review-revision/v1",
+        "pajin.dev/measured-review-revision/v2",
+        "pajin.dev/measured-review-revision/v3",
     ] = Field(default="pajin.dev/measured-review-revision/v1", alias="apiVersion")
     review_id: ReviewId = Field(alias="reviewId")
     revision: int = Field(ge=1, le=MAX_REVIEW_REVISIONS)
@@ -243,8 +259,17 @@ class ReviewRevision(ReviewModel):
         if (self.revision == 1) != isinstance(self.command, OpenReview):
             raise ValueError("only the first review revision can open the review")
         extended = isinstance(self.command, AssignReview | AcknowledgeReviewNotification)
+        followup = isinstance(self.command, OpenReview) and self.command.predecessor is not None
         if extended != (self.api_version == "pajin.dev/measured-review-revision/v2"):
             raise ValueError("assignment and notification commands require revision v2")
+        if followup != (self.api_version == "pajin.dev/measured-review-revision/v3"):
+            raise ValueError("a linked follow-up opening requires revision v3")
+        if (
+            isinstance(self.command, OpenReview)
+            and self.command.predecessor is not None
+            and self.command.predecessor.review_id == self.review_id
+        ):
+            raise ValueError("a review cannot be its own predecessor")
         expected_role = "approver" if isinstance(self.command, DecideReview) else "operator"
         if (
             not isinstance(self.command, AcknowledgeReviewNotification)
@@ -252,7 +277,9 @@ class ReviewRevision(ReviewModel):
         ):
             raise ValueError("review command actor role differs")
         digest = review_digest(
-            "pajin.measured-review.revision/v2"
+            "pajin.measured-review.revision/v3"
+            if followup
+            else "pajin.measured-review.revision/v2"
             if extended
             else "pajin.measured-review.revision/v1",
             self.model_dump(mode="json", by_alias=True, exclude={"record_digest"}),
@@ -300,6 +327,53 @@ class NotificationAckRequest(RevisionRequest):
     assignment_revision: int = Field(alias="assignmentRevision", ge=2, lt=MAX_REVIEW_REVISIONS)
 
 
+class FollowupReviewRequest(ReviewModel):
+    request_key: RequestKey = Field(alias="requestKey")
+    expected_revision: int = Field(alias="expectedRevision", ge=200, le=200)
+    expected_digest: Digest = Field(alias="expectedDigest")
+    title: str = Field(min_length=1, max_length=180)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class NotificationReceiptRequest(ReviewModel):
+    request_key: RequestKey = Field(alias="requestKey")
+    notification_id: NoticeId = Field(alias="notificationId")
+    assignment_revision: int = Field(alias="assignmentRevision", ge=2, le=MAX_REVIEW_REVISIONS)
+
+
+class NotificationReceipt(ReviewModel):
+    api_version: Literal["pajin.dev/review-notification-receipt/v1"] = Field(
+        default="pajin.dev/review-notification-receipt/v1", alias="apiVersion"
+    )
+    review_id: ReviewId = Field(alias="reviewId")
+    assignment_revision: int = Field(alias="assignmentRevision", ge=2, le=MAX_REVIEW_REVISIONS)
+    assignment_digest: Digest = Field(alias="assignmentDigest")
+    actor: Subject
+    actor_role: Literal["operator", "approver"] = Field(alias="actorRole")
+    recorded_at: datetime = Field(alias="recordedAt")
+    request_key: RequestKey = Field(alias="requestKey")
+    request_digest: Digest = Field(alias="requestDigest")
+    acknowledged: Literal[True] = True
+    execution_authorized: Literal[False] = Field(default=False, alias="executionAuthorized")
+    external_delivery_authorized: Literal[False] = Field(
+        default=False, alias="externalDeliveryAuthorized"
+    )
+    record_digest: str = Field(default="", alias="recordDigest", max_length=64)
+
+    @model_validator(mode="after")
+    def bind_record(self) -> Self:
+        if self.recorded_at.tzinfo is None or self.recorded_at.utcoffset() is None:
+            raise ValueError("notification receipt requires a timezone-aware timestamp")
+        material = self.model_dump(mode="json", by_alias=True, exclude={"record_digest"})
+        if len(json.dumps(material, ensure_ascii=False).encode()) > 4096:
+            raise ValueError("notification receipt exceeds its byte limit")
+        digest = review_digest("pajin.measured-review.notification-receipt/v1", material)
+        if self.record_digest and self.record_digest != digest:
+            raise ValueError("notification receipt digest differs")
+        object.__setattr__(self, "record_digest", digest)
+        return self
+
+
 class ReviewHistoryItem(ReviewModel):
     revision: int
     action: Literal[
@@ -313,12 +387,17 @@ class ReviewHistoryItem(ReviewModel):
 
 class MeasuredReviewView(ReviewModel):
     api_version: Literal[
-        "pajin.dev/measured-human-review/v1", "pajin.dev/measured-human-review/v2"
+        "pajin.dev/measured-human-review/v1",
+        "pajin.dev/measured-human-review/v2",
+        "pajin.dev/measured-human-review/v3",
     ] = Field(default="pajin.dev/measured-human-review/v1", alias="apiVersion")
     review_id: ReviewId = Field(alias="reviewId")
     revision: int
     record_digest: Digest = Field(alias="recordDigest")
     title: str
+    predecessor: ReviewPredecessor | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     evidence: ReviewEvidence
     state: Literal["open", "awaiting-review", "changes-requested", "accepted"]
     assessment: HumanAssessment | None

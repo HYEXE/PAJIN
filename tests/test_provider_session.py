@@ -35,10 +35,10 @@ from pajin.runtime.control import BudgetController, BudgetExceeded, DualModelUsa
 from pajin.runtime.store import RunStore
 from pajin.runtime.worker import WorkerResult, WorkerStatus
 from pajin.supervision.invocation_journal import SupervisorInvocationJournal
-from pajin.tools.gateway import GatewayOutcome, canonical_tool_request_digest
+from pajin.tools.gateway import GatewayOutcome, ToolGateway, canonical_tool_request_digest
 
 
-class StubProviderGateway:
+class StubProviderGateway(ToolGateway):
     def __init__(
         self,
         *,
@@ -50,6 +50,7 @@ class StubProviderGateway:
         bound_sources: bool = False,
         worker_transcript: str = "",
     ) -> None:
+        self._store: RunStore | None = None
         self.usage = usage
         self.executed = executed
         self.success = success
@@ -61,6 +62,9 @@ class StubProviderGateway:
         self.cancelled = False
         self.requests: list[ToolRequest] = []
         self.outcomes: list[GatewayOutcome] = []
+
+    def bind_store(self, store: RunStore) -> None:
+        self._store = store
 
     async def execute(
         self,
@@ -212,6 +216,7 @@ def _port(
         targets={str(registration.endpoint)},
     )
     store = RunStore.create(tmp_path, campaign.metadata.name)
+    gateway.bind_store(store)
     return (
         PolicyBoundProviderPort(
             registration=registration,
@@ -1443,6 +1448,35 @@ def test_provider_session_rejects_a_grant_forged_from_a_real_ledger_id(
             budget=BudgetController(sample_campaign.spec.budgets),
             gateway=StubProviderGateway(),  # type: ignore[arg-type]
             store=RunStore.create(tmp_path, sample_campaign.metadata.name),
+        )
+
+
+def test_provider_session_rejects_a_gateway_bound_to_a_different_store(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    registration = _registration()
+    ledger = CapabilityLedger(max_depth=sample_campaign.spec.budgets.max_spawn_depth)
+    grant = ledger.issue_root(
+        sample_campaign,
+        subject="agent:provider-session-test",
+        tools={f"provider.{registration.provider_id}.chat"},
+        targets={str(registration.endpoint)},
+    )
+    gateway_store = RunStore.create(tmp_path / "gateway", sample_campaign.metadata.name)
+    provider_store = RunStore.create(tmp_path / "provider", sample_campaign.metadata.name)
+    gateway = StubProviderGateway()
+    gateway.bind_store(gateway_store)
+
+    with pytest.raises(ValueError, match="Gateway must audit to the supplied RunStore"):
+        PolicyBoundProviderPort(
+            registration=registration,
+            campaign=sample_campaign,
+            grant=grant,
+            ledger=ledger,
+            budget=BudgetController(sample_campaign.spec.budgets),
+            gateway=gateway,
+            store=provider_store,
         )
 
 

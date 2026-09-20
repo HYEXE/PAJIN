@@ -3,6 +3,9 @@ import {
 } from "./protocol.js";
 
 const BASE = "/v1/measured-reviews";
+const WORK = "/v2/measured-reviews";
+const emptyFilters = () => ({ assignee: null, unassigned: false, state: null, unread: false });
+const CURSOR = /^[A-Za-z0-9_-]{1,2048}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const ID = /^review_[a-f0-9]{32}$/;
 const STATES = ["open", "awaiting-review", "changes-requested", "accepted"];
@@ -21,7 +24,7 @@ export function validateReviewEvidence(value) {
 }
 
 export function validateMeasuredReview(value) {
-  if (!value || !["pajin.dev/measured-human-review/v1", "pajin.dev/measured-human-review/v2"].includes(value.apiVersion)
+  if (!value || !["pajin.dev/measured-human-review/v1", "pajin.dev/measured-human-review/v2", "pajin.dev/measured-human-review/v3"].includes(value.apiVersion)
     || !ID.test(value.reviewId) || !Number.isInteger(value.revision)
     || value.revision < 1 || value.revision > 200 || !DIGEST.test(value.recordDigest)
     || typeof value.title !== "string" || !STATES.includes(value.state)
@@ -33,14 +36,28 @@ export function validateMeasuredReview(value) {
     throw new Error("The review response does not match the human review contract.");
   }
   validateReviewEvidence(value.evidence);
-  if (value.apiVersion.endsWith("/v2")) {
+  if (value.apiVersion.endsWith("/v3")) {
+    const parent = value.predecessor;
+    if (!parent || !ID.test(parent.reviewId) || parent.reviewId === value.reviewId || parent.revision !== 200
+      || !DIGEST.test(parent.recordDigest) || typeof parent.reason !== "string" || !parent.reason.trim() || parent.reason.length > 1000) {
+      throw new Error("The follow-up review does not identify its preserved predecessor.");
+    }
+  } else if (value.predecessor !== undefined) {
+    throw new Error("A linked predecessor requires the v3 review contract.");
+  }
+  if (value.apiVersion.endsWith("/v2") || (value.apiVersion.endsWith("/v3") && value.assignmentRevision !== undefined)) {
     if (!Number.isInteger(value.assignmentRevision) || value.assignmentRevision < 2 || value.assignmentRevision > value.revision
       || (value.assignee !== undefined && !SUBJECT.test(value.assignee))
       || (value.state === "accepted" && (!Number.isInteger(value.decisionRevision) || value.decisionRevision < 3 || value.decisionRevision > value.revision))) {
       throw new Error("The assignment does not match the versioned review history.");
     }
-  } else if (value.assignmentRevision !== undefined || value.assignee !== undefined || value.decisionRevision !== undefined) {
+  } else if (value.apiVersion.endsWith("/v1") && (value.assignmentRevision !== undefined || value.assignee !== undefined || value.decisionRevision !== undefined)) {
     throw new Error("Assignment history requires the v2 review contract.");
+  }
+  if (value.apiVersion.endsWith("/v3") && (
+    (value.assignee !== undefined && value.assignmentRevision === undefined)
+    || (value.state === "accepted" && (!Number.isInteger(value.decisionRevision) || value.decisionRevision < 3 || value.decisionRevision > value.revision)))) {
+    throw new Error("The follow-up state does not match its retained assignments and decisions.");
   }
   if (value.retest !== null) {
     validateReviewEvidence(value.retest.evidence);
@@ -63,8 +80,8 @@ export function createMeasuredReviews({ document, request, requestReport, access
   const detail = element("detail");
   const list = element("list");
   const source = element("source");
-  const forms = ["open", "assessment", "decision", "retest", "assignment"].map((name) => element(`${name}-form`));
-  const state = { sequence: 0, stepSequence: 0, busy: false, evidence: null, review: null, after: null, inboxAfter: null, assignees: null, keys: new Map() };
+  const forms = ["open", "assessment", "decision", "retest", "assignment", "followup"].map((name) => element(`${name}-form`));
+  const state = { sequence: 0, stepSequence: 0, busy: false, evidence: null, review: null, after: null, inboxAfter: null, assignees: null, filters: emptyFilters(), keys: new Map() };
   const fields = (form) => [...form.querySelectorAll("input, select, textarea, button")];
   const node = (tag, text, className = "") => {
     const result = document.createElement(tag);
@@ -76,23 +93,27 @@ export function createMeasuredReviews({ document, request, requestReport, access
     const role = access();
     const reading = role.connected && !state.busy;
     const writing = reading && role.operator;
+    const full = state.review?.revision === 200;
+    fields(element("filter-form")).forEach((field) => { field.disabled = !reading; });
+    element("filter-subject").disabled = !reading || element("filter-mode").value !== "specific";
     element("domain").disabled = !reading;
     element("load-source").disabled = !reading;
     element("refresh").disabled = !reading;
     element("more").disabled = !reading || state.after === null;
     element("more").hidden = state.after === null;
     fields(element("lookup-form")).forEach((field) => { field.disabled = !reading; });
+    detail.querySelectorAll("button").forEach((button) => { button.disabled = !reading; });
     list.querySelectorAll("button").forEach((button) => { button.disabled = !reading; });
     fields(forms[0]).forEach((field) => { field.disabled = !writing || !state.evidence; });
-    fields(forms[1]).forEach((field) => { field.disabled = !writing || !state.review; });
+    fields(forms[1]).forEach((field) => { field.disabled = !writing || !state.review || full; });
     const pending = state.review?.state === "awaiting-review";
     const selfReview = state.review && [state.review.assessmentAuthor, state.review.retestAuthor].includes(role.subject);
-    fields(forms[2]).forEach((field) => { field.disabled = !reading || !role.approver || !pending || selfReview; });
+    fields(forms[2]).forEach((field) => { field.disabled = !reading || !role.approver || !pending || selfReview || full; });
     const fresh = state.evidence && state.review && state.evidence.domain === state.review.evidence.domain
       && state.evidence.evidenceDigest !== state.review.evidence.evidenceDigest
       && state.evidence.evidenceDigest !== state.review.retest?.evidence.evidenceDigest;
     fields(forms[3]).forEach((field) => {
-      field.disabled = !writing || state.review?.state !== "accepted" || !fresh;
+      field.disabled = !writing || state.review?.state !== "accepted" || !fresh || full;
     });
     element("download").disabled = !reading || !state.review;
     element("history-load").disabled = !reading || !state.review;
@@ -101,6 +122,10 @@ export function createMeasuredReviews({ document, request, requestReport, access
     element("inbox-more").disabled = !reading || state.inboxAfter === null;
     element("inbox").querySelectorAll("button").forEach((button) => { button.disabled = !reading; });
     fields(forms[4]).forEach((field) => { field.disabled = !writing || !state.review || state.review.revision >= 200 || state.assignees === null; });
+    fields(forms[5]).forEach((field) => { field.disabled = !writing || !full; });
+    element("capacity-help").textContent = full
+      ? "This review has reached its history limit. Notifications can still be marked read. An Operator can open a linked follow-up below."
+      : "When a review reaches its history limit, a linked follow-up preserves the original audit and starts a new assessment.";
     element("decision-help").textContent = selfReview
       ? "Another authenticated Approver must review your contribution."
       : "An Approver reviews the complete current assessment and any attached retest.";
@@ -146,6 +171,7 @@ export function createMeasuredReviews({ document, request, requestReport, access
     state.after = null;
     state.inboxAfter = null; state.assignees = null;
     state.keys.clear();
+    resetFilters();
     forms.forEach((form) => form.reset());
     element("lookup-form").reset();
     element("domain").value = "web";
@@ -210,6 +236,18 @@ export function createMeasuredReviews({ document, request, requestReport, access
       node("p", view.reviewId, "review-digest"),
       node("p", "This human report does not confirm a general vulnerability or authorize execution. Downloading it does not reverify stored evidence."),
       evidenceView(view.evidence, true));
+    if (view.predecessor) {
+      detail.append(node("p", `Continues ${view.predecessor.reviewId} at revision ${view.predecessor.revision}. Original judgments and assignments are not inherited.`));
+      detail.append(node("p", view.predecessor.reason, "review-human-text"),
+        node("p", `Preserved original digest: ${view.predecessor.recordDigest}`, "review-digest"));
+      const original = node("button", "Open preserved original", "button button-quiet"); original.type = "button";
+      original.addEventListener("click", () => run("Loading the preserved original…", async (current) => {
+        const prior = await request(`${BASE}/${view.predecessor.reviewId}`);
+        if (current()) showReview(prior);
+      }));
+      detail.append(original);
+    }
+    element("followup-title").value = `Follow-up: ${view.title}`.slice(0, 180);
     if (view.assignmentRevision) detail.append(node("p", `Assigned to: ${view.assignee ?? "Unassigned"} · assignment revision ${view.assignmentRevision}. Assignment grants no permission.`));
     element("assignee").value = view.assignee ?? "";
     const assessment = view.assessment;
@@ -248,14 +286,17 @@ export function createMeasuredReviews({ document, request, requestReport, access
     if (focus) title.focus();
     updateAccess();
   }
-  async function save(kind, path, payload, current, focus = true) {
+  async function postIntent(kind, path, payload) {
     const signature = JSON.stringify([path, payload]);
     let pending = state.keys.get(kind);
     if (!pending || pending.signature !== signature) {
       pending = { signature, key: `review-${globalThis.crypto.randomUUID()}` };
       state.keys.set(kind, pending);
     }
-    const raw = await request(path, { method: "POST", body: JSON.stringify({ ...payload, requestKey: pending.key }) });
+    return request(path, { method: "POST", body: JSON.stringify({ ...payload, requestKey: pending.key }) });
+  }
+  async function save(kind, path, payload, current, focus = true) {
+    const raw = await postIntent(kind, path, payload);
     if (!current()) return;
     const result = validateMeasuredReview(raw);
     // A duplicate returns its original revision; reopen the latest state before editing it.
@@ -273,12 +314,47 @@ export function createMeasuredReviews({ document, request, requestReport, access
     element("workspace").hidden = true;
     updateAccess();
   }
+  function resetFilters() {
+    state.filters = emptyFilters(); state.after = state.inboxAfter = null;
+    element("filter-form").reset();
+    element("filter-mode").value = element("filter-subject").value = element("filter-state").value = "";
+    element("filter-unread").checked = false;
+    element("filter-status").textContent = "All reviews and notifications. Apply filters to narrow both lists.";
+  }
+  function readFilters() {
+    const mode = element("filter-mode").value;
+    if (!["", "me", "unassigned", "specific"].includes(mode)) throw new Error("Choose a valid assignee filter.");
+    const assignee = mode === "me" ? access().subject : mode === "specific" ? element("filter-subject").value.trim() : null;
+    const selectedState = element("filter-state").value || null;
+    if ((assignee !== null && !SUBJECT.test(assignee)) || (selectedState !== null && !STATES.includes(selectedState))) {
+      throw new Error("Choose a valid reviewer identity and review state.");
+    }
+    return { assignee, unassigned: mode === "unassigned", state: selectedState, unread: Boolean(element("filter-unread").checked) };
+  }
+  function query(cursor) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(state.filters)) if (value !== null && value !== false) params.set(key, String(value));
+    if (cursor) params.set("cursor", cursor);
+    return params.size ? `?${params}` : "";
+  }
+  function checkSearch(raw) {
+    if (!raw?.filters || Object.keys(emptyFilters()).some((key) => raw.filters[key] !== state.filters[key])
+      || !Number.isInteger(raw.scannedReviews) || raw.scannedReviews < 0 || raw.scannedReviews > 10
+      || (raw.nextCursor !== null && (typeof raw.nextCursor !== "string" || !CURSOR.test(raw.nextCursor)))) {
+      throw new Error("The search response does not match your applied filters.");
+    }
+  }
   async function loadList(after, current) {
-    const raw = await request(BASE + (after ? `?after=${encodeURIComponent(after)}` : ""));
+    const raw = await request(WORK + query(after));
     if (!current()) return;
-    if (!Array.isArray(raw?.items) || raw.items.length > 10
-      || (raw.nextAfter !== null && !ID.test(raw.nextAfter))
-      || raw.items.some((item) => !ID.test(item.reviewId) || typeof item.title !== "string" || !STATES.includes(item.state))) {
+    checkSearch(raw);
+    if (raw.apiVersion !== "pajin.dev/review-search/v1" || !Array.isArray(raw.items) || raw.items.length > 10
+      || raw.items.some((item) => !ID.test(item.reviewId) || typeof item.title !== "string" || !STATES.includes(item.state)
+        || !Number.isInteger(item.revision) || item.revision < 1 || item.revision > 200
+        || !["web", "network", "ai"].includes(item.domain)
+        || (item.assignee !== null && !SUBJECT.test(item.assignee))
+        || !Number.isInteger(item.unreadNotifications) || item.unreadNotifications < 0 || item.unreadNotifications > 199
+        || item.historyFull !== (item.revision === 200))) {
       throw new Error("Saved review list is not valid.");
     }
     const rows = raw.items.map((item) => {
@@ -290,12 +366,12 @@ export function createMeasuredReviews({ document, request, requestReport, access
         const review = await request(`${BASE}/${item.reviewId}`);
         if (valid()) { showReview(review); status.textContent = "Saved review loaded."; }
       }));
-      row.append(button);
+      row.append(button, node("p", `Assigned to: ${item.assignee ?? "Unassigned"} · ${item.unreadNotifications} unread notification(s) for you${item.historyFull ? " · history limit reached" : ""}`));
       return row;
     });
     list.replaceChildren(...rows);
-    state.after = raw.nextAfter;
-    status.textContent = rows.length ? "Saved reviews loaded. Select a review to continue." : "No saved reviews. Load evidence to start one.";
+    state.after = raw.nextCursor;
+    status.textContent = `${rows.length} matching review(s) in ${raw.scannedReviews} reviewed records.${raw.nextCursor ? " More records are available." : " End of records."}`;
   }
   element("load-source").addEventListener("click", () => run("Verifying the configured benchmark evidence…", async (current) => {
     state.evidence = null;
@@ -332,11 +408,12 @@ export function createMeasuredReviews({ document, request, requestReport, access
     status.textContent = "Configured reviewers loaded.";
   }));
   async function loadInbox(after, current) {
-    const value = await request("/v1/measured-review-inbox" + (after ? `?after=${encodeURIComponent(after)}` : ""));
+    const value = await request("/v2/measured-review-inbox" + query(after));
     if (!current()) return;
-    if (value?.apiVersion !== "pajin.dev/review-inbox/v1" || value.externalDeliveryAuthorized !== false
+    checkSearch(value);
+    if (value?.apiVersion !== "pajin.dev/review-inbox/v2" || value.externalDeliveryAuthorized !== false
       || !Number.isInteger(value.scannedReviews) || value.scannedReviews < 0 || value.scannedReviews > 10
-      || (value.nextAfter !== null && !ID.test(value.nextAfter)) || !Array.isArray(value.items) || value.items.length > 2000
+      || !Array.isArray(value.items) || value.items.length > 2000
       || value.items.some((item) => !/^review-notice_[a-f0-9]{64}$/.test(item.notificationId)
         || !ID.test(item.reviewId) || !Number.isInteger(item.assignmentRevision) || item.assignmentRevision < 2
         || !Number.isInteger(item.currentRevision) || item.assignmentRevision > item.currentRevision || item.currentRevision > 200
@@ -344,7 +421,7 @@ export function createMeasuredReviews({ document, request, requestReport, access
         || (item.assignee !== null && !SUBJECT.test(item.assignee)) || !Number.isFinite(Date.parse(item.recordedAt)))) {
       throw new Error("Your assignment notification response is invalid.");
     }
-    state.inboxAfter = value.nextAfter;
+    state.inboxAfter = value.nextCursor;
     element("inbox").replaceChildren(...value.items.map((item) => {
       const row = document.createElement("li");
       row.append(node("p", `${item.acknowledged ? "Read" : "Unread"} · assigned to ${item.assignee ?? "Unassigned"} · ${item.actor} · ${item.recordedAt}`));
@@ -353,18 +430,24 @@ export function createMeasuredReviews({ document, request, requestReport, access
         const review = await request(`${BASE}/${item.reviewId}`);
         if (valid()) { showReview(review); status.textContent = "Assigned review loaded."; }
       })); row.append(open);
-      if (!item.acknowledged && item.currentRevision >= 200) {
-        row.append(node("p", "Review history is full. This notification remains unread."));
-      } else if (!item.acknowledged && !(access().operator || access().approver)) {
+      if (!item.acknowledged && !(access().operator || access().approver)) {
         row.append(node("p", "Your current role permits reading this notification only."));
       } else if (!item.acknowledged) {
         const ack = node("button", "Mark read", "button button-quiet"); ack.type = "button";
         ack.addEventListener("click", () => run("Recording your acknowledgment…", async (valid) => {
-          const latest = validateMeasuredReview(await request(`${BASE}/${item.reviewId}`));
+          const kind = `ack-${item.notificationId}`;
+          const receipt = await postIntent(kind, `${WORK}/${item.reviewId}/notification-ack`, {
+            notificationId: item.notificationId, assignmentRevision: item.assignmentRevision,
+          });
           if (!valid()) return;
-          await save(`ack-${item.notificationId}`, `${BASE}/${item.reviewId}/notification-ack`, {
-            expectedRevision: latest.revision, assignmentRevision: item.assignmentRevision,
-          }, valid, false);
+          if (receipt?.apiVersion !== "pajin.dev/review-notification-receipt/v1" || receipt.reviewId !== item.reviewId
+            || receipt.assignmentRevision !== item.assignmentRevision || `review-notice_${receipt.assignmentDigest}` !== item.notificationId
+            || receipt.actor !== access().subject || !["operator", "approver"].includes(receipt.actorRole)
+            || !access()[receipt.actorRole] || receipt.acknowledged !== true || !DIGEST.test(receipt.recordDigest)
+            || !DIGEST.test(receipt.requestDigest) || receipt.requestKey !== state.keys.get(kind)?.key
+            || !Number.isFinite(Date.parse(receipt.recordedAt)) || receipt.executionAuthorized !== false || receipt.externalDeliveryAuthorized !== false) {
+            throw new Error("The saved notification receipt does not match your acknowledgment.");
+          }
           if (valid()) {
             await loadInbox(after, valid);
             if (valid()) element("inbox-status").focus();
@@ -373,7 +456,7 @@ export function createMeasuredReviews({ document, request, requestReport, access
       }
       return row;
     }));
-    element("inbox-status").textContent = `${value.items.length} assignment notification(s) across ${value.scannedReviews} reviewed record(s).${value.nextAfter ? " More review records are available." : " End of records."} Notifications stay inside this application.`;
+    element("inbox-status").textContent = `${value.items.length} assignment notification(s) across ${value.scannedReviews} reviewed record(s).${value.nextCursor ? " More review records are available." : " End of records."} Notifications stay inside this application.`;
     status.textContent = "Your saved assignment notifications loaded.";
   }
   element("inbox-refresh").addEventListener("click", () => run("Loading your assignment notifications…", (current) => loadInbox(null, current)));
@@ -384,6 +467,29 @@ export function createMeasuredReviews({ document, request, requestReport, access
     const payload = { expectedRevision: state.review.revision, assignee: element("assignee").value || null, reason: element("assignment-reason").value };
     run("Saving work assignment…", (current) => save("assignment", `${BASE}/${state.review.reviewId}/assignment`, payload, current));
   });
+  forms[5].addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!state.review || state.review.revision !== 200 || !access().operator) return;
+    const payload = { expectedRevision: 200, expectedDigest: state.review.recordDigest,
+      title: element("followup-title").value, reason: element("followup-reason").value };
+    run("Opening a linked follow-up…", (current) => save("followup", `${WORK}/${state.review.reviewId}/follow-up`, payload, current));
+  });
+  async function applyFilters(current, reset = false) {
+    if (reset) resetFilters();
+    else state.filters = readFilters();
+    state.after = state.inboxAfter = null;
+    list.replaceChildren(); element("inbox").replaceChildren();
+    const filter = state.filters;
+    element("filter-status").textContent = `Assignee: ${filter.assignee ?? (filter.unassigned ? "Unassigned" : "All")} · state: ${filter.state ?? "All"} · ${filter.unread ? "Unread only" : "Read and unread"}.`;
+    await loadList(null, current);
+    if (current()) await loadInbox(null, current);
+    if (current()) element("filter-status").focus();
+  }
+  element("filter-form").addEventListener("submit", (event) => {
+    event.preventDefault(); run("Applying review filters…", (current) => applyFilters(current));
+  });
+  element("filter-reset").addEventListener("click", () => run("Clearing review filters…", (current) => applyFilters(current, true)));
+  element("filter-mode").addEventListener("change", updateAccess);
   element("more").addEventListener("click", () => run("Loading the next saved reviews…", (current) => loadList(state.after, current)));
   element("lookup-form").addEventListener("submit", (event) => {
     event.preventDefault();

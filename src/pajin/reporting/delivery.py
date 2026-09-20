@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import ctypes
 import hmac
 import os
 import sqlite3
 import stat
+import sys
+import unicodedata
+from _thread import LockType
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, Literal, Protocol, Self, cast
+from threading import Lock
+from typing import Annotated, Literal, NoReturn, Protocol, Self, SupportsIndex, cast, final
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import (
@@ -36,7 +41,7 @@ from pajin.discovery.canonicalization import canonical_json_bytes
 from pajin.domain.models import StrictModel
 from pajin.reporting.sarif import (
     VerifiedSarifExport,
-    load_verified_sarif_export,
+    _reload_verified_sarif_export,
 )
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.secrets import SecretBroker, SecretLease, SecretLeaseStatus, SecretMaterial
@@ -933,6 +938,145 @@ _SCHEMA_DIGEST = sha256(
 ).hexdigest()
 
 
+_JOURNAL_TRANSITION_FACTORY_TOKEN = object()
+_JournalTransitionKind = Literal[
+    "register",
+    "begin-attempt",
+    "record-accepted",
+    "record-not-received",
+]
+
+
+@final
+class _JournalTransitionAuthority:
+    """Opaque one-use authority for one exact coordinator-approved journal transition."""
+
+    __slots__ = (
+        "_binding",
+        "_consumed",
+        "_factory_token",
+        "_journal",
+        "_lock",
+        "_operation",
+    )
+
+    _binding: tuple[str, ...]
+    _consumed: bool
+    _factory_token: object
+    _journal: SQLiteExternalDeliveryJournal
+    _lock: LockType
+    _operation: _JournalTransitionKind
+
+    def __new__(cls, *_args: object, **_kwargs: object) -> _JournalTransitionAuthority:
+        raise TypeError("journal transition authorities are coordinator-issued only")
+
+    def __init_subclass__(cls) -> None:
+        raise TypeError("journal transition authorities cannot be subclassed")
+
+    def __setattr__(self, _name: str, _value: object) -> NoReturn:
+        raise AttributeError("journal transition authorities are immutable")
+
+    def __delattr__(self, _name: str) -> NoReturn:
+        raise AttributeError("journal transition authorities are immutable")
+
+    def __copy__(self) -> NoReturn:
+        raise TypeError("journal transition authorities cannot be copied")
+
+    def __deepcopy__(self, _memo: object) -> NoReturn:
+        raise TypeError("journal transition authorities cannot be copied")
+
+    def __reduce__(self) -> NoReturn:
+        raise TypeError("journal transition authorities cannot be serialized")
+
+    def __reduce_ex__(self, _protocol: SupportsIndex) -> NoReturn:
+        raise TypeError("journal transition authorities cannot be serialized")
+
+
+def _mint_journal_transition(
+    journal: SQLiteExternalDeliveryJournal,
+    *,
+    operation: _JournalTransitionKind,
+    binding: tuple[str, ...],
+) -> _JournalTransitionAuthority:
+    authority = object.__new__(_JournalTransitionAuthority)
+    object.__setattr__(authority, "_factory_token", _JOURNAL_TRANSITION_FACTORY_TOKEN)
+    object.__setattr__(authority, "_journal", journal)
+    object.__setattr__(authority, "_operation", operation)
+    object.__setattr__(authority, "_binding", binding)
+    object.__setattr__(authority, "_consumed", False)
+    object.__setattr__(authority, "_lock", Lock())
+    return authority
+
+
+def _require_journal_transition_type(
+    authority: _JournalTransitionAuthority | None,
+) -> _JournalTransitionAuthority:
+    if type(authority) is not _JournalTransitionAuthority:
+        raise ExternalDeliveryError(
+            "External delivery journal mutation requires coordinator transition authority"
+        )
+    try:
+        token = object.__getattribute__(authority, "_factory_token")
+        lock = object.__getattribute__(authority, "_lock")
+    except AttributeError as exc:
+        raise ExternalDeliveryError(
+            "External delivery journal transition authority is invalid"
+        ) from exc
+    if token is not _JOURNAL_TRANSITION_FACTORY_TOKEN or not isinstance(lock, LockType):
+        raise ExternalDeliveryError("External delivery journal transition authority is invalid")
+    return authority
+
+
+@contextmanager
+def _authorized_journal_transition(
+    authority: _JournalTransitionAuthority | None,
+    *,
+    journal: SQLiteExternalDeliveryJournal,
+    operation: _JournalTransitionKind,
+    binding: tuple[str, ...],
+) -> Iterator[None]:
+    current = _require_journal_transition_type(authority)
+    lock = object.__getattribute__(current, "_lock")
+    with lock:
+        if (
+            object.__getattribute__(current, "_journal") is not journal
+            or object.__getattribute__(current, "_operation") != operation
+            or object.__getattribute__(current, "_binding") != binding
+            or object.__getattribute__(current, "_consumed")
+        ):
+            raise ExternalDeliveryError(
+                "External delivery journal transition authority differs or was consumed"
+            )
+        yield
+        object.__setattr__(current, "_consumed", True)
+
+
+def _registration_transition_binding(
+    intent: ExternalDeliveryIntent,
+    authorization: ExternalDeliveryAuthorization,
+) -> tuple[str, ...]:
+    return intent.intent_digest, authorization.authorization_digest
+
+
+def _attempt_transition_binding(
+    record: ExternalDeliveryRecord,
+    attempt_ordinal: int,
+) -> tuple[str, ...]:
+    return record.state_digest, str(attempt_ordinal)
+
+
+def _outcome_transition_binding(
+    record: ExternalDeliveryRecord,
+    response: ExternalDeliverySinkResponse,
+    receipt: ExternalDeliveryReceipt | None,
+) -> tuple[str, ...]:
+    return (
+        record.state_digest,
+        response.response_digest,
+        receipt.receipt_digest if receipt is not None else "",
+    )
+
+
 class SQLiteExternalDeliveryJournal:
     """Host-local append-only intent and outcome journal with no automatic retry."""
 
@@ -944,18 +1088,31 @@ class SQLiteExternalDeliveryJournal:
     ) -> None:
         self.path = Path(os.path.abspath(path))
         self._clock = clock or (lambda: datetime.now(UTC))
-        _initialize_journal(self.path)
+        self._parent_identity = _initialize_journal(self.path)
 
     def register(
         self,
         intent: ExternalDeliveryIntent,
         authorization: ExternalDeliveryAuthorization,
+        *,
+        _transition: _JournalTransitionAuthority | None = None,
     ) -> ExternalDeliveryRecord:
         intent = _canonical_model(intent, ExternalDeliveryIntent)
         authorization = _canonical_model(authorization, ExternalDeliveryAuthorization)
         _require_authorization_binding(intent, authorization)
         try:
-            with _write_transaction(self.path) as connection:
+            with (
+                _authorized_journal_transition(
+                    _transition,
+                    journal=self,
+                    operation="register",
+                    binding=_registration_transition_binding(intent, authorization),
+                ),
+                _write_transaction(
+                    self.path,
+                    expected_parent_identity=self._parent_identity,
+                ) as connection,
+            ):
                 _validate_schema(connection)
                 existing = connection.execute(
                     "SELECT * FROM external_delivery_intents WHERE intent_id = ?",
@@ -970,12 +1127,12 @@ class SQLiteExternalDeliveryJournal:
                     return current
                 connection.execute(
                     """
-                    INSERT INTO external_delivery_intents (
-                        intent_id, intent_digest, idempotency_key, sink_digest,
-                        payload_digest, authorization_id, authorization_digest,
-                        canonical_intent, canonical_authorization
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                        INSERT INTO external_delivery_intents (
+                            intent_id, intent_digest, idempotency_key, sink_digest,
+                            payload_digest, authorization_id, authorization_digest,
+                            canonical_intent, canonical_authorization
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
                     (
                         intent.intent_id,
                         intent.intent_digest,
@@ -1001,7 +1158,10 @@ class SQLiteExternalDeliveryJournal:
                     response=None,
                     receipt=None,
                 )
-                return _record_from_row(connection, _load_intent(connection, intent.intent_id))
+                return _record_from_row(
+                    connection,
+                    _load_intent(connection, intent.intent_id),
+                )
         except ExternalDeliveryError:
             raise
         except (OSError, sqlite3.Error, TypeError, ValidationError, ValueError) as exc:
@@ -1012,12 +1172,24 @@ class SQLiteExternalDeliveryJournal:
         record: ExternalDeliveryRecord,
         *,
         attempt_ordinal: int,
+        _transition: _JournalTransitionAuthority | None = None,
     ) -> ExternalDeliveryRecord:
         expected = _canonical_model(record, ExternalDeliveryRecord)
         if type(attempt_ordinal) is not int or attempt_ordinal not in {1, 2}:
             raise ExternalDeliveryError("External delivery attempt ordinal is invalid")
         try:
-            with _write_transaction(self.path) as connection:
+            with (
+                _authorized_journal_transition(
+                    _transition,
+                    journal=self,
+                    operation="begin-attempt",
+                    binding=_attempt_transition_binding(expected, attempt_ordinal),
+                ),
+                _write_transaction(
+                    self.path,
+                    expected_parent_identity=self._parent_identity,
+                ) as connection,
+            ):
                 _validate_schema(connection)
                 current = _record_from_row(
                     connection,
@@ -1057,21 +1229,40 @@ class SQLiteExternalDeliveryJournal:
         record: ExternalDeliveryRecord,
         response: ExternalDeliverySinkResponse,
         receipt: ExternalDeliveryReceipt,
+        *,
+        _transition: _JournalTransitionAuthority | None = None,
     ) -> ExternalDeliveryRecord:
-        return self._record_outcome(record, response=response, receipt=receipt)
+        return self._record_outcome(
+            record,
+            response=response,
+            receipt=receipt,
+            transition=_transition,
+            operation="record-accepted",
+        )
 
     def record_not_received(
         self,
         record: ExternalDeliveryRecord,
         response: ExternalDeliverySinkResponse,
+        *,
+        _transition: _JournalTransitionAuthority | None = None,
     ) -> ExternalDeliveryRecord:
-        return self._record_outcome(record, response=response, receipt=None)
+        return self._record_outcome(
+            record,
+            response=response,
+            receipt=None,
+            transition=_transition,
+            operation="record-not-received",
+        )
 
     def inspect(self, intent_id: str) -> ExternalDeliveryRecord:
         if not isinstance(intent_id, str) or not intent_id:
             raise ExternalDeliveryError("External delivery Intent ID is invalid")
         try:
-            with _readonly_connection(self.path) as connection:
+            with _readonly_connection(
+                self.path,
+                expected_parent_identity=self._parent_identity,
+            ) as connection:
                 _validate_schema(connection)
                 return _record_from_row(connection, _load_intent(connection, intent_id))
         except ExternalDeliveryError:
@@ -1085,6 +1276,8 @@ class SQLiteExternalDeliveryJournal:
         *,
         response: ExternalDeliverySinkResponse,
         receipt: ExternalDeliveryReceipt | None,
+        transition: _JournalTransitionAuthority | None,
+        operation: Literal["record-accepted", "record-not-received"],
     ) -> ExternalDeliveryRecord:
         expected = _canonical_model(record, ExternalDeliveryRecord)
         response = _canonical_model(response, ExternalDeliverySinkResponse)
@@ -1092,7 +1285,18 @@ class SQLiteExternalDeliveryJournal:
             _canonical_model(receipt, ExternalDeliveryReceipt) if receipt is not None else None
         )
         try:
-            with _write_transaction(self.path) as connection:
+            with (
+                _authorized_journal_transition(
+                    transition,
+                    journal=self,
+                    operation=operation,
+                    binding=_outcome_transition_binding(expected, response, receipt),
+                ),
+                _write_transaction(
+                    self.path,
+                    expected_parent_identity=self._parent_identity,
+                ) as connection,
+            ):
                 _validate_schema(connection)
                 current = _record_from_row(
                     connection,
@@ -1236,7 +1440,12 @@ class ExternalDeliveryCoordinator:
         sink = self._sinks.resolve(intent.sink_id)
         _require_exact_delivery_context(export, sink, intent)
         self._verify_authorization(intent, authorization)
-        return self._journal.register(intent, authorization)
+        transition = _mint_journal_transition(
+            self._journal,
+            operation="register",
+            binding=_registration_transition_binding(intent, authorization),
+        )
+        return self._journal.register(intent, authorization, _transition=transition)
 
     def dispatch_once(
         self,
@@ -1244,7 +1453,7 @@ class ExternalDeliveryCoordinator:
         export: VerifiedSarifExport,
         lease: SecretLease,
     ) -> ExternalDeliveryRecord:
-        current, sink = self._verified_current_context(record, export)
+        current, sink, current_export = self._verified_current_context(record, export)
         attempt = current.attempt_count + 1
         if current.state not in {
             ExternalDeliveryState.READY_INITIAL,
@@ -1259,7 +1468,19 @@ class ExternalDeliveryCoordinator:
             attempt_ordinal=attempt,
             evaluated_at=self._now(),
         )
-        claimed = self._journal.begin_attempt(current, attempt_ordinal=attempt)
+        payload = current_export.content.encode("utf-8", errors="strict")
+        if sha256(payload).hexdigest() != current.intent.payload_digest:
+            raise ExternalDeliveryError("External delivery payload differs from durable intent")
+        begin_transition = _mint_journal_transition(
+            self._journal,
+            operation="begin-attempt",
+            binding=_attempt_transition_binding(current, attempt),
+        )
+        claimed = self._journal.begin_attempt(
+            current,
+            attempt_ordinal=attempt,
+            _transition=begin_transition,
+        )
         try:
             material = self._secrets.materialize(
                 lease.lease_id,
@@ -1272,7 +1493,6 @@ class ExternalDeliveryCoordinator:
                 operation="dispatch",
                 attempt_ordinal=attempt,
             )
-            payload = export.content.encode("utf-8", errors="strict")
             http_response = self._transport.dispatch(
                 sink,
                 current.intent,
@@ -1292,7 +1512,17 @@ class ExternalDeliveryCoordinator:
                     "Mutating delivery response did not authenticate acceptance"
                 )
             receipt = _build_receipt(claimed, response)
-            return self._journal.record_accepted(claimed, response, receipt)
+            outcome_transition = _mint_journal_transition(
+                self._journal,
+                operation="record-accepted",
+                binding=_outcome_transition_binding(claimed, response, receipt),
+            )
+            return self._journal.record_accepted(
+                claimed,
+                response,
+                receipt,
+                _transition=outcome_transition,
+            )
         except ExternalDeliveryError as exc:
             raise ExternalDeliveryOutcomeUnknownError(
                 "External delivery outcome is unknown; reconciliation is required"
@@ -1308,7 +1538,7 @@ class ExternalDeliveryCoordinator:
         export: VerifiedSarifExport,
         lease: SecretLease,
     ) -> ExternalDeliveryRecord:
-        current, sink = self._verified_current_context(record, export)
+        current, sink, _current_export = self._verified_current_context(record, export)
         if current.state is not ExternalDeliveryState.DISPATCH_STARTED_OUTCOME_UNKNOWN:
             raise ExternalDeliveryError("External delivery reconciliation is not required")
         attempt = current.attempt_count
@@ -1347,8 +1577,27 @@ class ExternalDeliveryCoordinator:
             )
             if response.outcome == "accepted":
                 receipt = _build_receipt(current, response)
-                return self._journal.record_accepted(current, response, receipt)
-            return self._journal.record_not_received(current, response)
+                outcome_transition = _mint_journal_transition(
+                    self._journal,
+                    operation="record-accepted",
+                    binding=_outcome_transition_binding(current, response, receipt),
+                )
+                return self._journal.record_accepted(
+                    current,
+                    response,
+                    receipt,
+                    _transition=outcome_transition,
+                )
+            outcome_transition = _mint_journal_transition(
+                self._journal,
+                operation="record-not-received",
+                binding=_outcome_transition_binding(current, response, None),
+            )
+            return self._journal.record_not_received(
+                current,
+                response,
+                _transition=outcome_transition,
+            )
         except ExternalDeliveryError:
             raise
         except (OSError, RuntimeError, TypeError, ValidationError, ValueError) as exc:
@@ -1358,15 +1607,15 @@ class ExternalDeliveryCoordinator:
         self,
         record: ExternalDeliveryRecord,
         export: VerifiedSarifExport,
-    ) -> tuple[ExternalDeliveryRecord, ExternalDeliverySink]:
+    ) -> tuple[ExternalDeliveryRecord, ExternalDeliverySink, VerifiedSarifExport]:
         record = _canonical_model(record, ExternalDeliveryRecord)
         current = self._journal.inspect(record.intent.intent_id)
         if current != record:
             raise ExternalDeliveryError("External delivery request differs from journal head")
         sink = self._sinks.resolve(current.intent.sink_id)
-        _require_exact_delivery_context(export, sink, current.intent)
+        current_export = _require_exact_delivery_context(export, sink, current.intent)
         self._verify_authorization(current.intent, current.authorization)
-        return current, sink
+        return current, sink, current_export
 
     def _verify_authorization(
         self,
@@ -1395,6 +1644,13 @@ def build_external_delivery_intent(
 
     sink = _canonical_model(sink, ExternalDeliverySink)
     current = _require_exact_export(export)
+    return _build_external_delivery_intent_from_current(current, sink)
+
+
+def _build_external_delivery_intent_from_current(
+    current: VerifiedSarifExport,
+    sink: ExternalDeliverySink,
+) -> ExternalDeliveryIntent:
     payload = current.content.encode("utf-8", errors="strict")
     if len(payload) > _MAX_PAYLOAD_BYTES:
         raise ExternalDeliveryError("External delivery payload exceeds the byte limit")
@@ -1443,28 +1699,23 @@ def _require_exact_delivery_context(
     export: VerifiedSarifExport,
     sink: ExternalDeliverySink,
     intent: ExternalDeliveryIntent,
-) -> None:
+) -> VerifiedSarifExport:
     current = _require_exact_export(export)
-    expected = build_external_delivery_intent(current, sink)
+    expected = _build_external_delivery_intent_from_current(current, sink)
     if expected != intent:
         raise ExternalDeliveryError("External delivery intent differs from export or Sink")
+    return current
 
 
 def _require_exact_export(export: VerifiedSarifExport) -> VerifiedSarifExport:
-    if not isinstance(export, VerifiedSarifExport):
+    if type(export) is not VerifiedSarifExport:
         raise TypeError("External delivery requires a verified SARIF export")
-    payload = export.content.encode("utf-8", errors="strict")
+    current = _reload_verified_sarif_export(export)
+    payload = current.content.encode("utf-8", errors="strict")
     if len(payload) > _MAX_PAYLOAD_BYTES:
         raise ExternalDeliveryError("External delivery SARIF payload is invalid")
-    if sha256(payload).hexdigest() != export.sarif_digest:
+    if sha256(payload).hexdigest() != current.sarif_digest:
         raise ExternalDeliveryError("External delivery SARIF digest differs")
-    current = load_verified_sarif_export(
-        export.source_run_path,
-        expected_run_id=export.source_run_id,
-        expected_root_digest=export.source_root_digest,
-    )
-    if current != export:
-        raise ExternalDeliveryError("External delivery SARIF authority changed")
     return current
 
 
@@ -1844,21 +2095,662 @@ def _event_digest(
     )
 
 
-def _initialize_journal(path: Path) -> None:
-    _require_safe_journal_path(path)
-    _require_safe_journal_sidecars(path)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if os.name == "posix":
-        path.parent.chmod(0o700)
-    _require_safe_journal_path(path)
-    existing_size = path.stat().st_size if path.exists() else 0
+_JournalDirectoryIdentity = tuple[int, int, int, int]
+
+
+def _journal_directory_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _journal_guard_available() -> bool:
+    required = (os.open, os.mkdir, os.stat)
+    return bool(
+        os.name == "posix"
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and all(operation in os.supports_dir_fd for operation in required)
+        and os.stat in os.supports_follow_symlinks
+    )
+
+
+def _journal_directory_identity(status: os.stat_result) -> _JournalDirectoryIdentity:
+    if not stat.S_ISDIR(status.st_mode):
+        raise ExternalDeliveryError("External delivery journal ancestor is not a directory")
+    return status.st_dev, status.st_ino, status.st_mode, getattr(status, "st_uid", -1)
+
+
+def _journal_component_key(value: str) -> str:
+    return unicodedata.normalize("NFC", value).casefold()
+
+
+def _journal_entries(directory_fd: int) -> tuple[str, ...]:
+    try:
+        return tuple(os.listdir(directory_fd))
+    except OSError as exc:
+        raise ExternalDeliveryError(
+            "External delivery journal ancestor cannot be inspected"
+        ) from exc
+
+
+def _reject_journal_run_root(directory_fd: int) -> None:
+    keys = {_journal_component_key(item) for item in _journal_entries(directory_fd)}
+    if {"events.jsonl", "run-integrity.jsonl"}.issubset(keys):
+        raise ExternalDeliveryError(
+            "External delivery journal must not be inside any Run authority"
+        )
+
+
+def _reject_journal_casefold_collision(
+    directory_fd: int,
+    requested: str,
+) -> None:
+    requested_key = _journal_component_key(requested)
+    if any(
+        _journal_component_key(item) == requested_key and item != requested
+        for item in _journal_entries(directory_fd)
+    ):
+        raise ExternalDeliveryError(
+            "External delivery journal path contains a mixed-case or Unicode alias"
+        )
+
+
+def _open_journal_directory_component(
+    parent_fd: int,
+    component: str,
+    *,
+    create: bool,
+) -> int:
+    if not component or component in {".", ".."} or "/" in component or "\x00" in component:
+        raise ExternalDeliveryError("External delivery journal path component is invalid")
+    _reject_journal_casefold_collision(parent_fd, component)
+    try:
+        return os.open(component, _journal_directory_flags(), dir_fd=parent_fd)
+    except FileNotFoundError:
+        if not create:
+            raise ExternalDeliveryError("External delivery journal parent path changed") from None
+        with suppress(FileExistsError):
+            os.mkdir(component, mode=0o700, dir_fd=parent_fd)
+        try:
+            return os.open(component, _journal_directory_flags(), dir_fd=parent_fd)
+        except OSError as exc:
+            raise ExternalDeliveryError("External delivery journal ancestor is unsafe") from exc
+    except OSError as exc:
+        raise ExternalDeliveryError("External delivery journal ancestor is unsafe") from exc
+
+
+def _open_journal_parent(
+    parent: Path,
+    *,
+    create: bool,
+) -> tuple[int, _JournalDirectoryIdentity]:
+    if not parent.is_absolute():
+        raise ExternalDeliveryError("External delivery journal requires an absolute parent")
+    try:
+        descriptor = os.open(parent.anchor, _journal_directory_flags())
+    except OSError as exc:
+        raise ExternalDeliveryError("External delivery journal anchor is unsafe") from exc
+    try:
+        identity = _journal_directory_identity(os.fstat(descriptor))
+        _reject_journal_run_root(descriptor)
+        for component in parent.parts[1:]:
+            child = _open_journal_directory_component(
+                descriptor,
+                component,
+                create=create,
+            )
+            os.close(descriptor)
+            descriptor = child
+            identity = _journal_directory_identity(os.fstat(descriptor))
+            _reject_journal_run_root(descriptor)
+        _reject_journal_run_ancestry(descriptor)
+        return descriptor, identity
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _reject_journal_run_ancestry(descriptor: int) -> None:
+    current = os.dup(descriptor)
+    try:
+        while True:
+            _reject_journal_run_root(current)
+            identity = _journal_directory_identity(os.fstat(current))[:2]
+            parent = os.open("..", _journal_directory_flags(), dir_fd=current)
+            parent_identity = _journal_directory_identity(os.fstat(parent))[:2]
+            if parent_identity == identity:
+                os.close(parent)
+                break
+            os.close(current)
+            current = parent
+    finally:
+        os.close(current)
+
+
+def _require_current_journal_parent(
+    parent: Path,
+    expected: _JournalDirectoryIdentity,
+) -> None:
+    descriptor, current = _open_journal_parent(parent, create=False)
+    os.close(descriptor)
+    if current != expected:
+        raise ExternalDeliveryError("External delivery journal parent path changed")
+
+
+def _journal_regular_entry_at(
+    parent_fd: int,
+    name: str,
+    *,
+    required: bool,
+) -> os.stat_result | None:
+    _reject_journal_casefold_collision(parent_fd, name)
+    try:
+        metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        if required:
+            raise ExternalDeliveryError("External delivery journal file is missing") from None
+        return None
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise ExternalDeliveryError(
+            "External delivery journal entry is not a single-link regular file"
+        )
+    return metadata
+
+
+def _require_journal_entries_at(
+    parent_fd: int,
+    name: str,
+    *,
+    require_main: bool,
+) -> os.stat_result | None:
+    main = _journal_regular_entry_at(parent_fd, name, required=require_main)
+    for suffix in ("-journal", "-wal", "-shm"):
+        _journal_regular_entry_at(parent_fd, f"{name}{suffix}", required=False)
+    return main
+
+
+def _journal_file_identity_at(parent_fd: int, name: str) -> tuple[int, int, int, int]:
+    metadata = _journal_regular_entry_at(parent_fd, name, required=True)
+    assert metadata is not None
+    return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
+
+
+def _before_external_delivery_journal_open(_path: Path) -> None:
+    """Test seam before SQLite can create or mutate the journal path."""
+
+
+def _after_external_delivery_journal_parent_lockdown(_path: Path) -> None:
+    """Test seam after parent permissions change but before journal publication."""
+
+
+def _before_external_delivery_journal_replace(_path: Path) -> None:
+    """Test seam before a committed memory transaction is published by dirfd."""
+
+
+_MAX_JOURNAL_FILE_BYTES = 32 * 1024 * 1024
+_LINUX_AT_EMPTY_PATH = 0x1000
+
+
+def _read_journal_at(
+    parent_fd: int,
+    name: str,
+    *,
+    expected_identity: tuple[int, int, int, int] | None = None,
+) -> tuple[bytes, tuple[int, int, int, int]]:
+    _require_journal_entries_at(parent_fd, name, require_main=True)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise ExternalDeliveryError("External delivery journal could not be opened safely") from exc
+    try:
+        before = os.fstat(descriptor)
+        identity = before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or (expected_identity is not None and identity != expected_identity)
+            or before.st_size > _MAX_JOURNAL_FILE_BYTES
+        ):
+            raise ExternalDeliveryError("External delivery journal file identity differs")
+        chunks: list[bytes] = []
+        remaining = _MAX_JOURNAL_FILE_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        after = os.fstat(descriptor)
+        after_identity = after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+        if len(content) > _MAX_JOURNAL_FILE_BYTES or after_identity != identity:
+            raise ExternalDeliveryError("External delivery journal changed while reading")
+        return content, identity
+    finally:
+        os.close(descriptor)
+
+
+def _memory_journal_connection(content: bytes) -> sqlite3.Connection:
+    connection = sqlite3.connect(
+        ":memory:",
+        isolation_level=None,
+        timeout=_BUSY_TIMEOUT_MS / 1_000,
+    )
+    try:
+        if content:
+            connection.deserialize(content)
+        connection.row_factory = sqlite3.Row
+        _configure_connection(connection)
+        return connection
+    except BaseException:
+        connection.close()
+        raise
+
+
+def _write_all(descriptor: int, content: bytes) -> None:
+    remaining = memoryview(content)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise ExternalDeliveryError("External delivery journal write made no progress")
+        remaining = remaining[written:]
+
+
+def _read_all_from_descriptor(descriptor: int) -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    remaining = _MAX_JOURNAL_FILE_BYTES + 1
+    while remaining:
+        chunk = os.read(descriptor, min(1024 * 1024, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    content = b"".join(chunks)
+    if len(content) > _MAX_JOURNAL_FILE_BYTES:
+        raise ExternalDeliveryError("External delivery journal serialization is too large")
+    return content
+
+
+def _open_trusted_journal_staging_directory(target_device: int) -> int:
+    candidates = (Path("/private/tmp"), Path("/tmp"), Path("/var/tmp"))
+    visited: set[tuple[int, int]] = set()
+    for candidate in candidates:
+        resolved = Path(os.path.realpath(candidate))
+        try:
+            descriptor, _identity = _open_journal_parent(resolved, create=False)
+        except ExternalDeliveryError:
+            continue
+        metadata = os.fstat(descriptor)
+        directory_key = metadata.st_dev, metadata.st_ino
+        mode = stat.S_IMODE(metadata.st_mode)
+        if directory_key in visited:
+            os.close(descriptor)
+            continue
+        visited.add(directory_key)
+        if (
+            metadata.st_dev != target_device
+            or metadata.st_uid != 0
+            or ((mode & 0o022) != 0 and (mode & stat.S_ISVTX) == 0)
+        ):
+            os.close(descriptor)
+            continue
+        return descriptor
+    raise ExternalDeliveryError(
+        "External delivery journal has no trusted same-filesystem staging directory"
+    )
+
+
+def _open_anonymous_journal_file(staging_fd: int) -> int:
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    if sys.platform.startswith("linux"):
+        temporary_flag = getattr(os, "O_TMPFILE", 0)
+        if temporary_flag == 0:
+            raise ExternalDeliveryError(
+                "External delivery journal requires anonymous filesystem staging"
+            )
+        try:
+            descriptor = os.open(".", flags | temporary_flag, 0o600, dir_fd=staging_fd)
+        except OSError as exc:
+            raise ExternalDeliveryError(
+                "External delivery journal anonymous staging is unavailable"
+            ) from exc
+    elif sys.platform == "darwin":
+        descriptor = -1
+        for _attempt in range(32):
+            candidate = f".pajin-delivery-anonymous-{os.urandom(16).hex()}.tmp"
+            try:
+                descriptor = os.open(
+                    candidate,
+                    flags | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=staging_fd,
+                )
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                raise ExternalDeliveryError(
+                    "External delivery journal anonymous staging is unavailable"
+                ) from exc
+            os.unlink(candidate, dir_fd=staging_fd)
+            os.fsync(staging_fd)
+            break
+        if descriptor < 0:
+            raise ExternalDeliveryError(
+                "External delivery journal anonymous staging name is unavailable"
+            )
+    else:  # pragma: no cover - guarded journal publication is POSIX platform specific
+        raise ExternalDeliveryError(
+            "External delivery journal requires anonymous filesystem staging"
+        )
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 0:
+        os.close(descriptor)
+        raise ExternalDeliveryError("External delivery journal staging file is not anonymous")
+    return descriptor
+
+
+def _prepare_anonymous_journal_file(staging_fd: int, content: bytes) -> int:
+    if not content or len(content) > _MAX_JOURNAL_FILE_BYTES:
+        raise ExternalDeliveryError("External delivery journal serialization is invalid")
+    descriptor = _open_anonymous_journal_file(staging_fd)
+    try:
+        _write_all(descriptor, content)
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 0
+            or metadata.st_size != len(content)
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise ExternalDeliveryError("External delivery journal anonymous staging differs")
+        staged = _read_all_from_descriptor(descriptor)
+        if not hmac.compare_digest(sha256(staged).digest(), sha256(content).digest()):
+            raise ExternalDeliveryError("External delivery journal anonymous staging differs")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _clone_anonymous_journal_at(
+    source_fd: int,
+    destination_fd: int,
+    destination_name: str,
+) -> None:
+    try:
+        library = ctypes.CDLL(None, use_errno=True)
+        ctypes.set_errno(0)
+        if sys.platform == "darwin":
+            operation = library.fclonefileat
+            operation.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+            operation.restype = ctypes.c_int
+            result = int(
+                operation(
+                    source_fd,
+                    destination_fd,
+                    os.fsencode(destination_name),
+                    0,
+                )
+            )
+        elif sys.platform.startswith("linux"):
+            operation = library.linkat
+            operation.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+            ]
+            operation.restype = ctypes.c_int
+            result = int(
+                operation(
+                    source_fd,
+                    b"",
+                    destination_fd,
+                    os.fsencode(destination_name),
+                    _LINUX_AT_EMPTY_PATH,
+                )
+            )
+        else:  # pragma: no cover - guarded journal publication is POSIX specific
+            raise ExternalDeliveryError(
+                "External delivery journal atomic publication is unavailable"
+            )
+    except AttributeError as exc:
+        raise ExternalDeliveryError(
+            "External delivery journal atomic publication is unavailable"
+        ) from exc
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise ExternalDeliveryError(
+            "External delivery journal atomic publication failed closed"
+        ) from OSError(error_number, os.strerror(error_number))
+
+
+def _materialize_staged_journal_at(
+    staging_fd: int,
+    source_fd: int,
+    content: bytes,
+) -> str:
+    candidate = f".pajin-delivery-{os.urandom(16).hex()}.tmp"
+    _reject_journal_casefold_collision(staging_fd, candidate)
+    _clone_anonymous_journal_at(source_fd, staging_fd, candidate)
+    try:
+        staged, _identity = _read_journal_at(staging_fd, candidate)
+        if not hmac.compare_digest(sha256(staged).digest(), sha256(content).digest()):
+            raise ExternalDeliveryError("External delivery journal staging differs")
+        os.fsync(staging_fd)
+        return candidate
+    except BaseException:
+        with suppress(FileNotFoundError):
+            os.unlink(candidate, dir_fd=staging_fd)
+        raise
+
+
+def _rollback_journal_publication(
+    parent_fd: int,
+    name: str,
+    *,
+    published_identity: tuple[int, int, int, int],
+    staging_fd: int,
+    rollback_name: str | None,
+    expected_digest: bytes,
+) -> None:
+    current_identity = _journal_file_identity_at(parent_fd, name)
+    if current_identity != published_identity:
+        raise ExternalDeliveryError("External delivery journal publication changed before rollback")
+    if rollback_name is None:
+        os.unlink(name, dir_fd=parent_fd)
+    else:
+        os.rename(
+            rollback_name,
+            name,
+            src_dir_fd=staging_fd,
+            dst_dir_fd=parent_fd,
+        )
+    os.fsync(parent_fd)
+    if rollback_name is not None:
+        restored, _identity = _read_journal_at(parent_fd, name)
+        if not hmac.compare_digest(sha256(restored).digest(), expected_digest):
+            raise ExternalDeliveryError("External delivery journal rollback differs")
+
+
+def _require_journal_before_publication(
+    parent_fd: int,
+    name: str,
+    *,
+    expected_identity: tuple[int, int, int, int] | None,
+    expected_digest: bytes,
+) -> tuple[bytes, tuple[int, int, int, int]] | None:
+    if expected_identity is None:
+        if _journal_regular_entry_at(parent_fd, name, required=False) is not None:
+            raise ExternalDeliveryError(
+                "External delivery journal appeared before initial publication"
+            )
+        return None
+    current, current_identity = _read_journal_at(
+        parent_fd,
+        name,
+        expected_identity=expected_identity,
+    )
+    if not hmac.compare_digest(sha256(current).digest(), expected_digest):
+        raise ExternalDeliveryError("External delivery journal changed before replacement")
+    return current, current_identity
+
+
+def _publish_journal_at(
+    parent_fd: int,
+    name: str,
+    *,
+    path: Path,
+    expected_parent_identity: _JournalDirectoryIdentity,
+    expected_identity: tuple[int, int, int, int] | None,
+    expected_digest: bytes,
+    content: bytes,
+) -> tuple[int, int, int, int]:
+    if not content or len(content) > _MAX_JOURNAL_FILE_BYTES:
+        raise ExternalDeliveryError("External delivery journal serialization is invalid")
+    staging_fd = _open_trusted_journal_staging_directory(os.fstat(parent_fd).st_dev)
+    staged_fd = -1
+    rollback_fd = -1
+    staged_name: str | None = None
+    rollback_name: str | None = None
+    published_identity: tuple[int, int, int, int] | None = None
+    try:
+        staged_fd = _prepare_anonymous_journal_file(staging_fd, content)
+        existing = _require_journal_before_publication(
+            parent_fd,
+            name,
+            expected_identity=expected_identity,
+            expected_digest=expected_digest,
+        )
+        if existing is not None:
+            current, current_identity = existing
+            rollback_fd = _prepare_anonymous_journal_file(staging_fd, current)
+            staged_name = _materialize_staged_journal_at(
+                staging_fd,
+                staged_fd,
+                content,
+            )
+            rollback_name = _materialize_staged_journal_at(
+                staging_fd,
+                rollback_fd,
+                current,
+            )
+            _require_journal_before_publication(
+                parent_fd,
+                name,
+                expected_identity=current_identity,
+                expected_digest=expected_digest,
+            )
+        _require_current_journal_parent(path.parent, expected_parent_identity)
+        _reject_journal_run_ancestry(parent_fd)
+        if expected_identity is None:
+            _require_journal_before_publication(
+                parent_fd,
+                name,
+                expected_identity=None,
+                expected_digest=expected_digest,
+            )
+            _clone_anonymous_journal_at(staged_fd, parent_fd, name)
+        else:
+            assert staged_name is not None
+            os.rename(
+                staged_name,
+                name,
+                src_dir_fd=staging_fd,
+                dst_dir_fd=parent_fd,
+            )
+            staged_name = None
+        published_identity = _journal_file_identity_at(parent_fd, name)
+        os.fsync(parent_fd)
+        written, written_identity = _read_journal_at(parent_fd, name)
+        if not hmac.compare_digest(sha256(written).digest(), sha256(content).digest()):
+            raise ExternalDeliveryError("External delivery journal publication differs")
+        _reject_journal_run_ancestry(parent_fd)
+        _require_current_journal_parent(path.parent, expected_parent_identity)
+        return written_identity
+    except BaseException:
+        if published_identity is not None:
+            try:
+                _rollback_journal_publication(
+                    parent_fd,
+                    name,
+                    published_identity=published_identity,
+                    staging_fd=staging_fd,
+                    rollback_name=rollback_name,
+                    expected_digest=expected_digest,
+                )
+                rollback_name = None
+            except BaseException as rollback_error:
+                raise ExternalDeliveryError(
+                    "External delivery journal publication could not be rolled back safely"
+                ) from rollback_error
+        raise
+    finally:
+        if staged_fd >= 0:
+            os.close(staged_fd)
+        if rollback_fd >= 0:
+            os.close(rollback_fd)
+        if staged_name is not None:
+            with suppress(FileNotFoundError):
+                os.unlink(staged_name, dir_fd=staging_fd)
+        if rollback_name is not None:
+            with suppress(FileNotFoundError):
+                os.unlink(rollback_name, dir_fd=staging_fd)
+        os.close(staging_fd)
+
+
+def _initialize_journal(path: Path) -> _JournalDirectoryIdentity:
+    parent_fd = -1
+    parent_identity: _JournalDirectoryIdentity
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(
-            path,
-            isolation_level=None,
-            timeout=_BUSY_TIMEOUT_MS / 1_000,
-        )
+        if _journal_guard_available():
+            parent_fd, parent_identity = _open_journal_parent(path.parent, create=True)
+            _require_journal_entries_at(parent_fd, path.name, require_main=False)
+            _before_external_delivery_journal_open(path)
+            _require_current_journal_parent(path.parent, parent_identity)
+            _require_journal_entries_at(parent_fd, path.name, require_main=False)
+            os.fchmod(parent_fd, 0o700)
+            parent_identity = _journal_directory_identity(os.fstat(parent_fd))
+            _after_external_delivery_journal_parent_lockdown(path)
+        else:  # pragma: no cover - exercised by non-POSIX CI
+            _require_safe_journal_path(path)
+            _require_safe_journal_sidecars(path)
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            parent_identity = _journal_directory_identity(path.parent.stat())
+        _require_safe_journal_path(path)
+        _require_safe_journal_sidecars(path)
+        if parent_fd >= 0:
+            existing = _journal_regular_entry_at(parent_fd, path.name, required=False)
+            if existing is None:
+                initial_content = b""
+                journal_identity = None
+            else:
+                initial_content, journal_identity = _read_journal_at(
+                    parent_fd,
+                    path.name,
+                )
+            existing_size = len(initial_content)
+        else:  # pragma: no cover - exercised by non-POSIX CI
+            existing_size = path.stat().st_size if path.exists() else 0
+            initial_content = b""
+        if parent_fd >= 0:
+            connection = _memory_journal_connection(initial_content)
+        else:  # pragma: no cover - exercised by non-POSIX CI
+            connection = sqlite3.connect(
+                path,
+                isolation_level=None,
+                timeout=_BUSY_TIMEOUT_MS / 1_000,
+            )
         connection.row_factory = sqlite3.Row
         _configure_connection(connection)
         connection.execute("BEGIN IMMEDIATE")
@@ -1867,10 +2759,11 @@ def _initialize_journal(path: Path) -> None:
                 raise ExternalDeliveryError(
                     "Existing external delivery journal has no trusted schema"
                 )
-            mode = connection.execute("PRAGMA journal_mode = DELETE").fetchone()
-            if mode is None or str(mode[0]).lower() != "delete":
+            required_mode = "MEMORY" if parent_fd >= 0 else "DELETE"
+            mode = connection.execute(f"PRAGMA journal_mode = {required_mode}").fetchone()
+            if mode is None or str(mode[0]).lower() != required_mode.lower():
                 raise ExternalDeliveryError(
-                    "External delivery journal requires DELETE journal mode"
+                    "External delivery journal requires its exact journal mode"
                 )
             for statement in _SCHEMA_OBJECT_SQL.values():
                 connection.execute(statement)
@@ -1885,7 +2778,19 @@ def _initialize_journal(path: Path) -> None:
             connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
         _validate_schema(connection)
         connection.execute("COMMIT")
-        if os.name == "posix":
+        if parent_fd >= 0:
+            _publish_journal_at(
+                parent_fd,
+                path.name,
+                path=path,
+                expected_parent_identity=parent_identity,
+                expected_identity=journal_identity,
+                expected_digest=sha256(initial_content).digest(),
+                content=connection.serialize(),
+            )
+            _require_current_journal_parent(path.parent, parent_identity)
+            _require_journal_entries_at(parent_fd, path.name, require_main=True)
+        elif os.name == "posix":  # pragma: no cover - POSIX uses the guarded branch
             path.chmod(0o600)
     except BaseException:
         if connection is not None and connection.in_transaction:
@@ -1894,13 +2799,24 @@ def _initialize_journal(path: Path) -> None:
     finally:
         if connection is not None:
             connection.close()
+        if parent_fd >= 0:
+            os.close(parent_fd)
     _require_safe_journal_path(path)
     _require_safe_journal_sidecars(path)
+    return parent_identity
 
 
 @contextmanager
-def _write_transaction(path: Path) -> Iterator[sqlite3.Connection]:
-    with _journal_connection(path, readonly=False) as connection:
+def _write_transaction(
+    path: Path,
+    *,
+    expected_parent_identity: _JournalDirectoryIdentity,
+) -> Iterator[sqlite3.Connection]:
+    with _journal_connection(
+        path,
+        readonly=False,
+        expected_parent_identity=expected_parent_identity,
+    ) as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:
             yield connection
@@ -1912,8 +2828,16 @@ def _write_transaction(path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @contextmanager
-def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
-    with _journal_connection(path, readonly=True) as connection:
+def _readonly_connection(
+    path: Path,
+    *,
+    expected_parent_identity: _JournalDirectoryIdentity,
+) -> Iterator[sqlite3.Connection]:
+    with _journal_connection(
+        path,
+        readonly=True,
+        expected_parent_identity=expected_parent_identity,
+    ) as connection:
         connection.execute("BEGIN")
         try:
             yield connection
@@ -1925,28 +2849,87 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @contextmanager
-def _journal_connection(path: Path, *, readonly: bool) -> Iterator[sqlite3.Connection]:
+def _journal_connection(
+    path: Path,
+    *,
+    readonly: bool,
+    expected_parent_identity: _JournalDirectoryIdentity,
+) -> Iterator[sqlite3.Connection]:
     _require_safe_journal_path(path)
     _require_safe_journal_sidecars(path)
-    identity = _file_identity(path)
-    target: str | Path = f"{path.as_uri()}?mode=ro" if readonly else path
-    connection = sqlite3.connect(
-        target,
-        uri=readonly,
-        isolation_level=None,
-        timeout=_BUSY_TIMEOUT_MS / 1_000,
-    )
-    connection.row_factory = sqlite3.Row
-    _configure_connection(connection)
-    if _file_identity(path) != identity:
-        connection.close()
-        raise ExternalDeliveryError("External delivery journal changed while opening")
+    parent_fd = -1
+    connection: sqlite3.Connection | None = None
+    verified_connection = False
+    initial_content = b""
     try:
+        if _journal_guard_available():
+            parent_fd, parent_identity = _open_journal_parent(path.parent, create=False)
+            if parent_identity != expected_parent_identity:
+                raise ExternalDeliveryError("External delivery journal parent path changed")
+            initial_content, identity = _read_journal_at(parent_fd, path.name)
+        else:  # pragma: no cover - exercised by non-POSIX CI
+            identity = _file_identity(path)
+        if parent_fd >= 0:
+            connection = _memory_journal_connection(initial_content)
+        else:  # pragma: no cover - exercised by non-POSIX CI
+            target: str | Path = f"{path.as_uri()}?mode=ro" if readonly else path
+            connection = sqlite3.connect(
+                target,
+                uri=readonly,
+                isolation_level=None,
+                timeout=_BUSY_TIMEOUT_MS / 1_000,
+            )
+        connection.row_factory = sqlite3.Row
+        _configure_connection(connection)
+        current_identity = (
+            _journal_file_identity_at(parent_fd, path.name)
+            if parent_fd >= 0
+            else _file_identity(path)
+        )
+        if current_identity != identity:
+            raise ExternalDeliveryError("External delivery journal changed while opening")
+        verified_connection = True
         yield connection
+        if parent_fd >= 0:
+            if connection.in_transaction:
+                raise ExternalDeliveryError("External delivery journal transaction did not finish")
+            if readonly:
+                current, _ = _read_journal_at(
+                    parent_fd,
+                    path.name,
+                    expected_identity=identity,
+                )
+                if not hmac.compare_digest(
+                    sha256(current).digest(),
+                    sha256(initial_content).digest(),
+                ):
+                    raise ExternalDeliveryError(
+                        "External delivery journal changed during inspection"
+                    )
+            else:
+                _before_external_delivery_journal_replace(path)
+                _publish_journal_at(
+                    parent_fd,
+                    path.name,
+                    path=path,
+                    expected_parent_identity=expected_parent_identity,
+                    expected_identity=identity,
+                    expected_digest=sha256(initial_content).digest(),
+                    content=connection.serialize(),
+                )
     finally:
-        connection.close()
-        _require_safe_journal_path(path)
-        _require_safe_journal_sidecars(path)
+        if connection is not None:
+            connection.close()
+        try:
+            if parent_fd >= 0 and verified_connection:
+                _require_current_journal_parent(path.parent, expected_parent_identity)
+                _require_journal_entries_at(parent_fd, path.name, require_main=True)
+        finally:
+            if parent_fd >= 0:
+                os.close(parent_fd)
+        if verified_connection:
+            _require_safe_journal_path(path)
+            _require_safe_journal_sidecars(path)
 
 
 def _configure_connection(connection: sqlite3.Connection) -> None:
@@ -1970,7 +2953,7 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         or user_version is None
         or int(user_version[0]) != _SCHEMA_VERSION
         or journal_mode is None
-        or str(journal_mode[0]).lower() != "delete"
+        or str(journal_mode[0]).lower() not in {"delete", "memory"}
     ):
         raise ExternalDeliveryError("External delivery journal metadata differs")
     rows = connection.execute(

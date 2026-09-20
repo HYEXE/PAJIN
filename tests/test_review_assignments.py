@@ -201,11 +201,12 @@ def test_assignment_ui_recovers_from_failed_write_and_discards_old_auth(assigned
     client, url, _, _ = assigned_api
     opened = client.get(url, headers=_auth(OPERATOR_TOKEN)).json()
     assigned = assign(client, url).json()
-    unread = client.get(INBOX, headers=_auth(APPROVER_TOKEN)).json()
+    unread = client.get("/v2/measured-review-inbox", headers=_auth(APPROVER_TOKEN)).json()
     acknowledged = client.post(
-        url + "/notification-ack",
+        url.replace(BASE, "/v2/measured-reviews") + "/notification-ack",
         headers=_auth(APPROVER_TOKEN),
-        json={"requestKey": "ui-ack", "expectedRevision": 2, "assignmentRevision": 2},
+        json={"requestKey": "review-00000000-0000-4000-8000-000000000002",
+              "notificationId": unread["items"][0]["notificationId"], "assignmentRevision": 2},
     )
     assert acknowledged.status_code == 200
     fixture = tmp_path / "assignment-ui.json"
@@ -216,7 +217,7 @@ def test_assignment_ui_recovers_from_failed_write_and_discards_old_auth(assigned
                 assigned=assigned,
                 unread=unread,
                 acked=acknowledged.json(),
-                read=client.get(INBOX, headers=_auth(APPROVER_TOKEN)).json(),
+                read=client.get("/v2/measured-review-inbox", headers=_auth(APPROVER_TOKEN)).json(),
             )
         )
     )

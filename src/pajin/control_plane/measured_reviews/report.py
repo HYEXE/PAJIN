@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from pajin.control_plane.measured_reviews.models import ReviewEvidence, ReviewRevision
+from pajin.control_plane.measured_reviews.models import (
+    MAX_NOTIFICATION_RECEIPTS,
+    NotificationReceipt,
+    ReviewEvidence,
+    ReviewRevision,
+)
 from pajin.control_plane.measured_reviews.state import rebuild_review
 
 
@@ -37,7 +42,11 @@ def _evidence(evidence: ReviewEvidence) -> str:
     )
 
 
-def render_review_report(history: Sequence[ReviewRevision]) -> str:
+def render_review_report(
+    history: Sequence[ReviewRevision],
+    *,
+    receipts: Sequence[NotificationReceipt] = (),
+) -> str:
     view = rebuild_review(history)
     lines = [
         "# PAJIN human review report",
@@ -57,6 +66,49 @@ def render_review_report(history: Sequence[ReviewRevision]) -> str:
         "",
         _evidence(view.evidence),
     ]
+    if view.predecessor is not None:
+        lines.extend(
+            [
+                "## Preserved predecessor",
+                "",
+                f"Review: `{view.predecessor.review_id}`; revision: {view.predecessor.revision}",
+                f"Revision digest: `{view.predecessor.record_digest}`",
+                "",
+                _block(view.predecessor.reason),
+                "The original audit remains unchanged. "
+                "Its acceptance and assignee are not inherited.",
+                "",
+            ]
+        )
+    if len(receipts) > MAX_NOTIFICATION_RECEIPTS:
+        raise ValueError("notification receipt count exceeds its bound")
+    if receipts:
+        lines.extend(
+            [
+                "## Independent notification receipts",
+                "",
+                "These acknowledgments do not consume human-review revisions.",
+                "",
+            ]
+        )
+        for receipt in receipts:
+            receipt = NotificationReceipt.model_validate_json(receipt.model_dump_json())
+            if (
+                receipt.review_id != view.review_id
+                or receipt.assignment_revision > len(history)
+                or history[receipt.assignment_revision - 1].record_digest
+                != receipt.assignment_digest
+            ):
+                raise ValueError("notification receipt differs from this review history")
+            lines.extend(
+                [
+                    f"- Assignment revision {receipt.assignment_revision}; "
+                    f"actor `{receipt.actor}`; "
+                    f"recorded {receipt.recorded_at.isoformat()}; "
+                    f"receipt `{receipt.record_digest}`.",
+                ]
+            )
+        lines.append("")
     if view.assignment_revision:
         lines.extend(
             [

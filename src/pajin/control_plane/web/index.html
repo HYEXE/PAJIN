@@ -1042,6 +1042,15 @@
         </form>
         <div class="review-navigation">
           <h3>Saved reviews</h3>
+          <form id="measured-review-filter-form" autocomplete="off" aria-describedby="measured-review-filter-status">
+            <div class="field-row">
+              <div class="field field-grow"><label for="measured-review-filter-mode">Assignee filter</label><select id="measured-review-filter-mode" disabled><option value="">All assignees</option><option value="me">Assigned to me</option><option value="unassigned">Unassigned</option><option value="specific">Specific reviewer</option></select></div>
+              <div class="field field-grow"><label for="measured-review-filter-subject">Reviewer identity</label><input id="measured-review-filter-subject" maxlength="200" pattern="[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}" spellcheck="false" disabled></div>
+              <div class="field field-grow"><label for="measured-review-filter-state">Review state</label><select id="measured-review-filter-state" disabled><option value="">All states</option><option value="open">Open</option><option value="awaiting-review">Awaiting review</option><option value="changes-requested">Changes requested</option><option value="accepted">Accepted</option></select></div>
+            </div>
+            <div class="review-actions"><label class="check-control"><input id="measured-review-filter-unread" type="checkbox" disabled> Unread notifications for me</label><button class="button button-primary" type="submit" disabled>Apply filters</button><button id="measured-review-filter-reset" class="button button-quiet" type="button" disabled>Clear filters</button></div>
+          </form>
+          <p id="measured-review-filter-status" role="status" aria-live="polite" tabindex="-1">Filters apply to saved reviews and your assignment notifications.</p>
           <ul id="measured-review-list" class="review-list"></ul>
           <button id="measured-review-more" class="button button-quiet" type="button" disabled hidden>Next reviews</button>
           <form id="measured-review-lookup-form" autocomplete="off">
@@ -1062,6 +1071,15 @@
         </section>
         <div id="measured-review-workspace" hidden>
           <article id="measured-review-detail" class="review-detail"></article>
+          <p id="measured-review-capacity-help"></p>
+          <details class="review-editor"><summary>Continue a full review · Operator</summary>
+            <p>At 200 revisions, open a linked follow-up with the same retained evidence. Its state starts at Open and requires a new assessment and review. The original audit history remains available. Marking notifications read does not use review revisions.</p>
+            <form id="measured-review-followup-form" autocomplete="off">
+              <div class="field"><label for="measured-review-followup-title">Follow-up title</label><input id="measured-review-followup-title" required maxlength="180" disabled></div>
+              <div class="field"><label for="measured-review-followup-reason">Reason for continuation</label><textarea id="measured-review-followup-reason" required maxlength="1000" rows="2" disabled></textarea></div>
+              <button class="button button-primary" type="submit" disabled>Open linked follow-up</button>
+            </form>
+          </details>
           <details class="review-editor"><summary>Assign review work</summary>
             <button id="measured-review-assignee-refresh" class="button button-quiet" type="button" disabled>Load configured reviewers</button>
             <p id="measured-review-assignee-status">Load configured reviewers before assigning work.</p>

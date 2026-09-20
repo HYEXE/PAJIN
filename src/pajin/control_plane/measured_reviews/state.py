@@ -130,13 +130,16 @@ def rebuild_review(revisions: Sequence[ReviewRevision]) -> MeasuredReviewView:
         previous = revision
     return MeasuredReviewView.model_validate(
         {
-            "apiVersion": "pajin.dev/measured-human-review/v2"
+            "apiVersion": "pajin.dev/measured-human-review/v3"
+            if opened.predecessor is not None
+            else "pajin.dev/measured-human-review/v2"
             if assignments.revision
             else "pajin.dev/measured-human-review/v1",
             "review_id": first.review_id,
             "revision": previous.revision,
             "record_digest": previous.record_digest,
             "title": opened.title,
+            "predecessor": opened.predecessor,
             "evidence": opened.evidence,
             "state": state,
             "assessment": assessment,
@@ -147,7 +150,9 @@ def rebuild_review(revisions: Sequence[ReviewRevision]) -> MeasuredReviewView:
             "reviewer": reviewer,
             "assignee": assignments.assignee,
             "assignment_revision": assignments.revision,
-            "decision_revision": decision_revision if assignments.revision else None,
+            "decision_revision": decision_revision
+            if assignments.revision or opened.predecessor is not None
+            else None,
             "history": tuple(
                 ReviewHistoryItem(
                     revision=r.revision,

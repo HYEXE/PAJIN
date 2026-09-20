@@ -26,6 +26,7 @@ from pajin.domain.validation import (
     VersionedValidationIndex,
     candidate_atomic_claims,
 )
+from pajin.runtime.pinned_workspace import pinned_workspace_relative_path
 from pajin.runtime.store import (
     RunIntegritySeal,
     RunStore,
@@ -54,6 +55,11 @@ _VERSIONED_VALIDATION_PATHS = (
     VERSIONED_VALIDATION_FINDINGS_PATH,
     VERSIONED_VALIDATION_REPORT_PATH,
 )
+
+
+def _normalized_validation_run_path(path: Path) -> Path:
+    pinned = pinned_workspace_relative_path(path, label="validation Run path")
+    return pinned if pinned is not None else path.resolve()
 
 
 class ValidationSnapshotSemantics(StrEnum):
@@ -133,7 +139,7 @@ def load_source_validation_artifacts(
 ) -> FindingValidationSet:
     """Reload the sealed, pre-replay source snapshot without reinterpreting it."""
 
-    root = run_path.resolve()
+    root = _normalized_validation_run_path(run_path)
     authority = _validation_authority(
         root,
         verified_snapshot=verified_snapshot,
@@ -184,7 +190,7 @@ def load_validation_snapshot(
 ) -> LoadedValidationSnapshot:
     """Load the newest supported projection, failing closed if versioned data is invalid."""
 
-    root = run_path.resolve()
+    root = _normalized_validation_run_path(run_path)
     initial = _validation_authority(
         root,
         verified_snapshot=verified_snapshot,
@@ -274,7 +280,7 @@ def _validation_authority(
             raise ValueError(
                 "verified validation snapshot cannot be combined with expected Run identity"
             )
-        if verified_snapshot.run_path.resolve() != root:
+        if _normalized_validation_run_path(verified_snapshot.run_path) != root:
             raise ValueError("verified validation snapshot belongs to another Run path")
         return verified_snapshot
     if (expected_run_id is None) != (expected_root_digest is None):

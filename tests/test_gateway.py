@@ -123,6 +123,16 @@ class NeverWorker:
         raise AssertionError(f"worker must not run for denied request: {job.execution_id}")
 
 
+class CountingMockAgentProbe(MockAgentProbe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prepare_calls = 0
+
+    def prepare(self, request: ToolRequest) -> WorkerJob:
+        self.prepare_calls += 1
+        return super().prepare(request)
+
+
 class RecordingWorker:
     def __init__(self) -> None:
         self.job: WorkerJob | None = None
@@ -456,6 +466,23 @@ class CancellingSecretBroker(SecretBroker):
         assert task is not None
         task.cancel()
         return lease
+
+
+class DriftingSecretBroker(SecretBroker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.drifted = False
+
+    def materialize(
+        self,
+        lease_id: str,
+        *,
+        audience: str,
+        scope: str | None = None,
+    ) -> SecretMaterial:
+        material = super().materialize(lease_id, audience=audience, scope=scope)
+        self.drifted = True
+        return material
 
 
 class ExceptionRaisingSecretBroker(SecretBroker):
@@ -1073,6 +1100,233 @@ def test_preparation_failure_does_not_consume_rate_reservation(
     )
     assert succeeded.executed
     assert rate_limits.snapshot()["reservationCounts"] == {campaign.metadata.name: 1}
+
+
+def test_worker_dispatch_guard_fails_before_tool_prepare_secret_or_dispatch(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    rules = sample_campaign.spec.rules_of_engagement.model_copy(
+        update={"max_requests_per_minute": 1}
+    )
+    campaign = sample_campaign.model_copy(
+        update={"spec": sample_campaign.spec.model_copy(update={"rules_of_engagement": rules})}
+    )
+    target = campaign.spec.targets[0]
+    tool = CountingMockAgentProbe()
+    registry = ToolRegistry()
+    registry.register(tool)
+    worker = RecordingWorker()
+    rate_limits = RequestRateLimitLedger()
+    store = RunStore.create(tmp_path, campaign.metadata.name)
+    observed: list[object] = []
+
+    def reject_drift(candidate: object) -> None:
+        observed.append(candidate)
+        raise ValueError("worker configuration drifted")
+
+    outcome = asyncio.run(
+        ToolGateway(
+            policy=PolicyEngine(),
+            tools=registry,
+            worker=worker,
+            store=store,
+            rate_limits=rate_limits,
+            worker_dispatch_guard=reject_drift,
+        ).execute(
+            campaign,
+            _grant(campaign, target.endpoint),
+            ToolRequest(
+                agent_id="agent:planner-local",
+                tool_id="mock.agent-probe",
+                target=target.endpoint,
+                method="POST",
+                arguments={"simulation": target.simulation},
+            ),
+            used_calls=0,
+        )
+    )
+
+    assert observed == [worker]
+    assert tool.prepare_calls == 0
+    assert worker.calls == 0
+    assert not outcome.executed
+    assert outcome.decision.allowed
+    assert outcome.result.error is not None
+    assert "tool preparation failed" in outcome.result.error
+    assert rate_limits.snapshot()["reservationCounts"] == {}
+    events = store.events_path.read_text(encoding="utf-8")
+    assert "tool.preparation_failed" in events
+    assert "tool.failed" in events
+    assert "secret.lease.issued" not in events
+    assert "worker.dispatched" not in events
+
+
+def test_worker_dispatch_guard_rechecks_after_prepare_before_secret_or_dispatch(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    rules = sample_campaign.spec.rules_of_engagement.model_copy(
+        update={"max_requests_per_minute": 1}
+    )
+    campaign = sample_campaign.model_copy(
+        update={"spec": sample_campaign.spec.model_copy(update={"rules_of_engagement": rules})}
+    )
+    target = campaign.spec.targets[0]
+    tool = CountingMockAgentProbe()
+    registry = ToolRegistry()
+    registry.register(tool)
+    worker = RecordingWorker()
+    rate_limits = RequestRateLimitLedger()
+    store = RunStore.create(tmp_path, campaign.metadata.name)
+    observed: list[object] = []
+
+    def reject_post_prepare_drift(candidate: object) -> None:
+        observed.append(candidate)
+        if len(observed) == 2:
+            raise ValueError("worker configuration drifted after prepare")
+
+    outcome = asyncio.run(
+        ToolGateway(
+            policy=PolicyEngine(),
+            tools=registry,
+            worker=worker,
+            store=store,
+            rate_limits=rate_limits,
+            worker_dispatch_guard=reject_post_prepare_drift,
+        ).execute(
+            campaign,
+            _grant(campaign, target.endpoint),
+            ToolRequest(
+                agent_id="agent:planner-local",
+                tool_id="mock.agent-probe",
+                target=target.endpoint,
+                method="POST",
+                arguments={"simulation": target.simulation},
+            ),
+            used_calls=0,
+        )
+    )
+
+    assert observed == [worker, worker]
+    assert tool.prepare_calls == 1
+    assert worker.calls == 0
+    assert not outcome.executed
+    assert outcome.decision.allowed
+    assert outcome.result.error is not None
+    assert "tool preparation failed" in outcome.result.error
+    assert rate_limits.snapshot()["reservationCounts"] == {}
+    events = store.events_path.read_text(encoding="utf-8")
+    assert "tool.rate_reservation_released" in events
+    assert "tool.preparation_failed" in events
+    assert "secret.lease.issued" not in events
+    assert "worker.dispatched" not in events
+
+
+def test_worker_dispatch_guard_rechecks_immediately_before_backend_run(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    target = sample_campaign.spec.targets[0]
+    tool = CountingMockAgentProbe()
+    registry = ToolRegistry()
+    registry.register(tool)
+    worker = RecordingWorker()
+    store = RunStore.create(tmp_path, sample_campaign.metadata.name)
+    observed: list[object] = []
+
+    def reject_run_boundary_drift(candidate: object) -> None:
+        observed.append(candidate)
+        if len(observed) == 3:
+            raise ValueError("worker configuration drifted at run boundary")
+
+    outcome = asyncio.run(
+        ToolGateway(
+            policy=PolicyEngine(),
+            tools=registry,
+            worker=worker,
+            store=store,
+            worker_dispatch_guard=reject_run_boundary_drift,
+        ).execute(
+            sample_campaign,
+            _grant(sample_campaign, target.endpoint),
+            ToolRequest(
+                agent_id="agent:planner-local",
+                tool_id="mock.agent-probe",
+                target=target.endpoint,
+                method="POST",
+                arguments={"simulation": target.simulation},
+            ),
+            used_calls=0,
+        )
+    )
+
+    assert observed == [worker, worker, worker]
+    assert tool.prepare_calls == 1
+    assert worker.calls == 0
+    assert outcome.executed
+    assert not outcome.result.success
+    assert outcome.worker_result is not None
+    assert outcome.worker_result.backend == "backend-error"
+    assert outcome.network_log_trusted is False
+    events = store.events_path.read_text(encoding="utf-8")
+    assert "worker.dispatched" in events
+    assert "worker.completed" in events
+    assert "tool.failed" in events
+
+
+def test_worker_dispatch_guard_rejects_drift_during_secret_materialization(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    target = sample_campaign.spec.targets[0]
+    registry = ToolRegistry()
+    registry.register(SingleSecretProbe())
+    worker = RecordingWorker()
+    secrets = DriftingSecretBroker()
+    secrets.register("gateway/cancel", "gateway-drift-secret")
+    store = RunStore.create(tmp_path, sample_campaign.metadata.name)
+
+    def reject_materialization_drift(candidate: object) -> None:
+        assert candidate is worker
+        if secrets.drifted:
+            raise ValueError("worker configuration drifted during secret materialization")
+
+    outcome = asyncio.run(
+        ToolGateway(
+            policy=PolicyEngine(),
+            tools=registry,
+            worker=worker,
+            store=store,
+            secrets=secrets,
+            worker_dispatch_guard=reject_materialization_drift,
+        ).execute(
+            sample_campaign,
+            _grant(sample_campaign, target.endpoint),
+            ToolRequest(
+                agent_id="agent:planner-local",
+                tool_id="mock.agent-probe",
+                target=target.endpoint,
+                method="POST",
+                arguments={"simulation": target.simulation},
+            ),
+            used_calls=0,
+        )
+    )
+
+    assert worker.calls == 0
+    assert outcome.executed
+    assert not outcome.result.success
+    assert outcome.worker_result is not None
+    assert outcome.worker_result.backend == "backend-error"
+    assert outcome.network_log_trusted is False
+    assert secrets.snapshot()[0]["status"] == "revoked"
+    events = store.events_path.read_text(encoding="utf-8")
+    assert "secret.lease.issued" in events
+    assert "secret.lease.revoked" in events
+    assert "worker.dispatched" in events
+    assert "worker.completed" in events
+    assert "tool.failed" in events
 
 
 def test_policy_audit_failure_releases_pre_dispatch_rate_reservation(

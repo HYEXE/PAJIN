@@ -10,8 +10,11 @@ from pajin.control_plane.measured_reviews.models import (
     AssessmentRequest,
     AssignmentRequest,
     DecisionRequest,
+    FollowupReviewRequest,
     MeasuredReviewView,
     NotificationAckRequest,
+    NotificationReceipt,
+    NotificationReceiptRequest,
     OpenReviewRequest,
     RetestRequest,
     ReviewDomain,
@@ -20,8 +23,15 @@ from pajin.control_plane.measured_reviews.models import (
     ReviewInbox,
     ReviewList,
     ReviewRevision,
+    ReviewState,
+    Subject,
 )
 from pajin.control_plane.measured_reviews.report import render_review_report
+from pajin.control_plane.measured_reviews.search import (
+    FilteredReviewInbox,
+    ReviewFilters,
+    ReviewSearchPage,
+)
 from pajin.control_plane.measured_reviews.service import MeasuredReviewService, require_review_role
 from pajin.control_plane.models import Principal, PrincipalRole
 
@@ -39,6 +49,7 @@ def register_measured_review_routes(
     approver = dependencies.require_roles(PrincipalRole.APPROVER)
 
     register_assignment_routes(app, service=service, dependencies=dependencies)
+    register_review_work_routes(app, service=service, dependencies=dependencies)
 
     @app.exception_handler(ReviewEvidenceUnavailable)
     async def evidence_unavailable(_request: Request, exc: ReviewEvidenceUnavailable) -> Response:
@@ -116,9 +127,9 @@ def register_measured_review_routes(
         review_id: ReviewId,
         principal: Annotated[Principal, Depends(read_role)],
     ) -> Response:
-        history = service.history(review_id, principal=principal)
+        history, receipts = service.report_inputs(review_id, principal=principal)
         return Response(
-            render_review_report(history),
+            render_review_report(history, receipts=receipts),
             media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{review_id}.md"'},
         )
@@ -164,3 +175,111 @@ def register_assignment_routes(
         principal: Annotated[Principal, Depends(acknowledger)],
     ) -> MeasuredReviewView:
         return service.submit(payload, principal=principal, review_id=review_id)
+
+
+def register_review_work_routes(
+    app: FastAPI,
+    *,
+    service: MeasuredReviewService,
+    dependencies: "ControlPlaneDependencies",
+) -> None:
+    read_role = dependencies.require_roles(
+        PrincipalRole.OPERATOR,
+        PrincipalRole.APPROVER,
+        PrincipalRole.AUDITOR,
+    )
+    operator = dependencies.require_roles(PrincipalRole.OPERATOR)
+    acknowledger = dependencies.require_roles(PrincipalRole.OPERATOR, PrincipalRole.APPROVER)
+
+    async def bounded_query(request: Request) -> None:
+        pairs = list(request.query_params.multi_items())
+        if (
+            await request.body()
+            or len(pairs) != len({k for k, _ in pairs})
+            or any(
+                k not in {"assignee", "unassigned", "state", "unread", "cursor"} for k, _ in pairs
+            )
+        ):
+            raise HTTPException(
+                status_code=400, detail="Review search accepts only its filter parameters"
+            )
+
+    def filters(
+        assignee: Annotated[Subject | None, Query()] = None,
+        unassigned: Annotated[bool, Query()] = False,
+        state: Annotated[ReviewState | None, Query()] = None,
+        unread: Annotated[bool, Query()] = False,
+    ) -> ReviewFilters:
+        try:
+            return ReviewFilters(
+                assignee=assignee, unassigned=unassigned, state=state, unread=unread
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Review filters conflict") from exc
+
+    @app.get(
+        "/v2/measured-reviews",
+        response_model=ReviewSearchPage,
+        dependencies=[Depends(bounded_query)],
+    )
+    def search_reviews(
+        principal: Annotated[Principal, Depends(read_role)],
+        selected: Annotated[ReviewFilters, Depends(filters)],
+        cursor: Annotated[str | None, Query(max_length=2048)] = None,
+    ) -> ReviewSearchPage:
+        try:
+            return service.search_reviews(principal=principal, filters=selected, cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="Review cursor does not match this search"
+            ) from exc
+
+    @app.get(
+        "/v2/measured-review-inbox",
+        response_model=FilteredReviewInbox,
+        dependencies=[Depends(bounded_query)],
+    )
+    def search_inbox(
+        principal: Annotated[Principal, Depends(read_role)],
+        selected: Annotated[ReviewFilters, Depends(filters)],
+        cursor: Annotated[str | None, Query(max_length=2048)] = None,
+    ) -> FilteredReviewInbox:
+        try:
+            return service.search_inbox(principal=principal, filters=selected, cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="Notification cursor does not match this search"
+            ) from exc
+
+    @app.post(
+        "/v2/measured-reviews/{review_id}/notification-ack", response_model=NotificationReceipt
+    )
+    def receipt(
+        review_id: ReviewId,
+        payload: NotificationReceiptRequest,
+        principal: Annotated[Principal, Depends(acknowledger)],
+    ) -> NotificationReceipt:
+        return service.acknowledge_notification(review_id, payload, principal=principal)
+
+    @app.get(
+        "/v2/measured-reviews/{review_id}/notification-receipts",
+        response_model=tuple[NotificationReceipt, ...],
+    )
+    async def receipts(
+        review_id: ReviewId,
+        request: Request,
+        principal: Annotated[Principal, Depends(read_role)],
+    ) -> tuple[NotificationReceipt, ...]:
+        if request.scope.get("query_string", b"") or await request.body():
+            raise HTTPException(status_code=400, detail="Receipt read accepts no query or body")
+        return await asyncio.to_thread(
+            service.notification_receipts, review_id, principal=principal
+        )
+
+    @app.post("/v2/measured-reviews/{review_id}/follow-up", response_model=MeasuredReviewView)
+    def followup(
+        review_id: ReviewId,
+        payload: FollowupReviewRequest,
+        principal: Annotated[Principal, Depends(operator)],
+    ) -> MeasuredReviewView:
+        return service.open_followup(review_id, payload, principal=principal)

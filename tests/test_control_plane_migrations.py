@@ -49,6 +49,7 @@ from pajin.control_plane.database import (
     REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION,
     REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION,
     REPLAY_TOOL_PERMIT_SCHEMA_VERSION,
+    REVIEW_NOTIFICATION_RECEIPT_SCHEMA_VERSION,
     SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
     TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION,
     V2_CONTROL_PLANE_TABLES,
@@ -1386,6 +1387,7 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
             TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION,
             MEASURED_REVIEW_SCHEMA_VERSION,
             CHECKPOINT_KEY_IDENTITY_SCHEMA_VERSION,
+            REVIEW_NOTIFICATION_RECEIPT_SCHEMA_VERSION,
         ]
 
         repository.initialize()
@@ -1403,6 +1405,7 @@ def test_exact_v10_schema_adds_append_only_projection_authority(tmp_path: Path) 
     try:
         repository.initialize()
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_review_notification_receipts")
             connection.exec_driver_sql("DROP TABLE cp_checkpoint_key_identities")
             connection.exec_driver_sql("DROP TABLE cp_measured_review_revisions")
             connection.exec_driver_sql("DROP TABLE cp_target_attestation_registry_versions")
@@ -1447,6 +1450,7 @@ def test_exact_v11_schema_adds_append_only_retest_source_authority(tmp_path: Pat
     try:
         repository.initialize()
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_review_notification_receipts")
             connection.exec_driver_sql("DROP TABLE cp_checkpoint_key_identities")
             connection.exec_driver_sql("DROP TABLE cp_measured_review_revisions")
             connection.exec_driver_sql("DROP TABLE cp_target_attestation_registry_versions")
@@ -1490,6 +1494,7 @@ def test_exact_v12_schema_adds_append_only_claim_binding_authority(tmp_path: Pat
     try:
         repository.initialize()
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_review_notification_receipts")
             connection.exec_driver_sql("DROP TABLE cp_checkpoint_key_identities")
             connection.exec_driver_sql("DROP TABLE cp_measured_review_revisions")
             connection.exec_driver_sql("DROP TABLE cp_target_attestation_registry_versions")
@@ -1534,6 +1539,7 @@ def test_exact_v13_schema_adds_target_registry_anti_rollback_authority(
     try:
         repository.initialize()
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_review_notification_receipts")
             connection.exec_driver_sql("DROP TABLE cp_checkpoint_key_identities")
             connection.exec_driver_sql("DROP TABLE cp_measured_review_revisions")
             connection.exec_driver_sql("DROP TABLE cp_target_attestation_registry_versions")

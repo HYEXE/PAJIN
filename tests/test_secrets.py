@@ -9,6 +9,7 @@ from pajin.runtime.secrets import (
     SecretBroker,
     SecretLeaseStatus,
     SecretMaterial,
+    redact_secret_values,
     redact_text,
     redact_value,
 )
@@ -235,3 +236,73 @@ def test_redaction_covers_common_serializations_and_mapping_keys() -> None:
     assert all(variant not in redacted for variant in variants)
     assert "<redacted-secret>" in redacted
     assert redacted_mapping == {"<redacted-secret>": {"encoded": "<redacted-secret>"}}
+
+
+def test_secret_value_redaction_matches_material_redaction() -> None:
+    secret = 'p\N{LATIN SMALL LETTER A WITH DIAERESIS}ss word/"token-1234'
+    material = SecretMaterial(
+        lease_id="lease_test",
+        binding="browser-session",
+        value=secret,
+    )
+    encoded = secret.encode("utf-8")
+    variants = {
+        secret,
+        encoded.hex(),
+        encoded.hex().upper(),
+        base64.b64encode(encoded).decode("ascii"),
+        base64.b64encode(encoded).decode("ascii").rstrip("="),
+        base64.urlsafe_b64encode(encoded).decode("ascii"),
+        base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("="),
+        quote(secret, safe=""),
+        quote_plus(secret, safe=""),
+        json.dumps(secret, ensure_ascii=False)[1:-1],
+        json.dumps(secret, ensure_ascii=True)[1:-1],
+    }
+    reflected = " | ".join(sorted(variants))
+
+    redacted = redact_secret_values(reflected, [secret])
+
+    assert redacted == redact_text(reflected, [material])
+    assert all(variant not in redacted for variant in variants)
+    assert "<redacted-secret>" in redacted
+
+
+def test_secret_value_redaction_rejects_oversized_material_before_expansion() -> None:
+    with pytest.raises(ValueError, match="between 1 and 16384"):
+        redact_secret_values("safe metadata", ["x" * 16_385])
+
+
+def test_secret_value_redaction_handles_equivalent_encoded_forms() -> None:
+    secret = "browser.user+tag@example.test"
+    encoded_hex = secret.encode().hex()
+    mixed_case_hex = "".join(
+        character.upper() if index % 2 else character.lower()
+        for index, character in enumerate(encoded_hex)
+    )
+    selective_percent = secret.replace(".", "%2e").replace("+", "%2B").replace("@", "%40")
+    double_percent = selective_percent.replace("%", "%25")
+    deeply_nested_percent = selective_percent
+    for _ in range(3):
+        deeply_nested_percent = quote(deeply_nested_percent, safe="")
+
+    for reflected in (
+        mixed_case_hex,
+        selective_percent,
+        double_percent,
+        deeply_nested_percent,
+    ):
+        redacted = redact_secret_values(f"metadata={reflected}", [secret])
+
+        assert reflected not in redacted
+        assert secret not in redacted
+
+
+@pytest.mark.parametrize("secret", ["<redacted-secret>", "********"])
+def test_secret_value_redaction_avoids_replacement_collision(secret: str) -> None:
+    reflected = f"metadata={secret}"
+
+    redacted = redact_secret_values(reflected, [secret])
+
+    assert redacted != reflected
+    assert secret not in redacted

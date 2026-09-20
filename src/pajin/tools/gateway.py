@@ -278,7 +278,10 @@ class ToolGateway:
         rate_limits: RequestRateLimitLedger | None = None,
         allow_secret_requests: bool = True,
         clock: Callable[[], datetime] | None = None,
+        worker_dispatch_guard: Callable[[WorkerBackend], None] | None = None,
     ) -> None:
+        if worker_dispatch_guard is not None and not callable(worker_dispatch_guard):
+            raise TypeError("Worker dispatch guard must be callable")
         self._policy = policy
         self._tools = tools
         self._worker = worker
@@ -287,6 +290,12 @@ class ToolGateway:
         self._rate_limits = rate_limits or RequestRateLimitLedger()
         self._allow_secret_requests = allow_secret_requests
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._worker_dispatch_guard = worker_dispatch_guard
+
+    def is_bound_to_store(self, store: RunStore) -> bool:
+        """Return whether this Gateway audits to the caller's exact RunStore object."""
+
+        return type(store) is RunStore and self._store is store
 
     async def execute(
         self,
@@ -301,6 +310,19 @@ class ToolGateway:
         preflight = self._preflight(campaign, grant, request, used_calls=used_calls)
         if isinstance(preflight, GatewayOutcome):
             return preflight
+        guard_failure = self._guard_worker_dispatch()
+        if guard_failure is not None:
+            self._release_rate_reservation(
+                preflight,
+                reason="worker-dispatch-guard-failed",
+            )
+            return self._fail_before_dispatch(
+                preflight.request,
+                preflight.decision,
+                event_type="tool.preparation_failed",
+                error=guard_failure,
+                job=preflight.job,
+            )
         secret_scope = self._open_secret_scope(preflight)
         if isinstance(secret_scope, GatewayOutcome):
             return secret_scope
@@ -326,6 +348,15 @@ class ToolGateway:
         if isinstance(approved, GatewayOutcome):
             return approved
         decision, request_cost, evaluated_at = approved
+        guard_failure = self._guard_worker_dispatch()
+        if guard_failure is not None:
+            self._record_policy(request, decision)
+            return self._fail_before_dispatch(
+                request,
+                decision,
+                event_type="tool.preparation_failed",
+                error=guard_failure,
+            )
         prepared = self._prepare_job(campaign, request, tool, spec, request_cost)
         if isinstance(prepared, str):
             self._record_policy(request, decision)
@@ -545,6 +576,20 @@ class ToolGateway:
             )
         return decision, request_cost, evaluated_at
 
+    def _guard_worker_dispatch(self) -> str | None:
+        if self._worker_dispatch_guard is None:
+            return None
+        try:
+            result = self._worker_dispatch_guard(self._worker)
+            if result is not None:
+                raise TypeError("Worker dispatch guard must return None")
+        except Exception as exc:
+            return "tool preparation failed; " + audit_safe_exception_diagnostic(
+                exc,
+                stage="worker-dispatch-guard",
+            )
+        return None
+
     @staticmethod
     def _network_request_cost(tool: Tool, spec: ToolSpec, request: ToolRequest) -> int | None:
         try:
@@ -757,6 +802,9 @@ class ToolGateway:
         revoked_leases: list[SecretLease] = []
         try:
             job = approval.job.model_copy(deep=True)
+            guard_failure = self._guard_worker_dispatch()
+            if guard_failure is not None:
+                raise RuntimeError(guard_failure)
             worker_result = (
                 await self._worker.run(job, secrets=list(secret_scope.materials))
                 if secret_scope.materials

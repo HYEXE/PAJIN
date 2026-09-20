@@ -201,7 +201,8 @@ def test_main_ci_workflow_separates_quality_from_twenty_four_test_shards() -> No
         [
             "uv", "run", "--locked", "mypy", "--platform", "linux", "--explicit-package-bases",
             "scripts/profile_graph_memory.py", "scripts/profile_graph_history.py",
-            "scripts/profile_graph_pages.py", "scripts/linux_boundary_conformance.py",
+            "scripts/profile_graph_pages.py", "scripts/profile_graph_history_readers.py",
+            "scripts/linux_boundary_conformance.py",
             "scripts/hybrid_operations_rehearsal.py", "scripts/operational_system_read.py",
             "scripts/operations_cold_checkpoint.py", "containers/system-agent/agent.py",
             "containers/system-agent/client.py", "containers/worker/worker_entry.py",

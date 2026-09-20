@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import ctypes
+import os
+import select
 import sqlite3
+import stat
+import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 
@@ -169,6 +176,14 @@ def _export(store: RunStore) -> VerifiedSarifExport:
         expected_run_id=store.run_id,
         expected_root_digest=authority.root_digest,
     )
+
+
+def _run_file_snapshot(run_path: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(run_path)): path.read_bytes()
+        for path in sorted(run_path.rglob("*"))
+        if path.is_file()
+    }
 
 
 def _sink(*, endpoint_host: str = "sink.example") -> delivery.ExternalDeliverySink:
@@ -393,6 +408,7 @@ def test_external_delivery_acceptance_is_exact_durable_and_secret_free(tmp_path:
     assert delivered.receipt.delivery_receipt_authority is True
     assert delivered.receipt.downstream_action_attested is False
     assert transport.dispatches == [(intent.idempotency_key, 1, exported.content.encode("utf-8"))]
+    assert sha256(transport.dispatches[0][2]).hexdigest() == intent.payload_digest
     assert (
         delivery.SQLiteExternalDeliveryJournal(
             journal.path,
@@ -415,6 +431,87 @@ def test_external_delivery_acceptance_is_exact_durable_and_secret_free(tmp_path:
             ),
         )
     assert len(transport.dispatches) == 1
+
+
+def test_forged_sarif_objects_fail_before_claim_secret_or_transport(tmp_path: Path) -> None:
+    transport = FakeTransport(dispatch_outcomes=["accepted"])
+    (
+        _store,
+        exported,
+        sink,
+        intent,
+        _authorization_value,
+        broker,
+        journal,
+        coordinator,
+        record,
+    ) = _context(tmp_path, transport=transport)
+    lease = _lease(broker, sink, intent, operation="dispatch", attempt_ordinal=1)
+    malformed_exact = object.__new__(VerifiedSarifExport)
+
+    class EqualityForgery:
+        def __eq__(self, _other: object) -> bool:
+            return True
+
+        @property
+        def content(self) -> str:
+            raise AssertionError("attacker content accessor must not run")
+
+    for forged in (malformed_exact, exported.projection, EqualityForgery()):
+        with pytest.raises(TypeError, match=r"verified SARIF export|factory-issued"):
+            coordinator.dispatch_once(record, forged, lease)  # type: ignore[arg-type]
+        assert journal.inspect(intent.intent_id) == record
+        assert broker.inspect(
+            lease.lease_id,
+            audience=sink.sink_id,
+            scope=intent.source_run_id,
+        ).remaining_uses == 1
+        assert transport.dispatches == []
+
+
+def test_verified_sarif_subclass_constructor_and_replace_are_not_authorities(
+    tmp_path: Path,
+) -> None:
+    transport = FakeTransport(dispatch_outcomes=["accepted"])
+    (
+        _store,
+        exported,
+        sink,
+        intent,
+        _authorization_value,
+        broker,
+        journal,
+        _coordinator,
+        record,
+    ) = _context(tmp_path, transport=transport)
+    lease = _lease(broker, sink, intent, operation="dispatch", attempt_ordinal=1)
+
+    with pytest.raises(TypeError, match="cannot be subclassed"):
+
+        class EqualityForgery(VerifiedSarifExport):
+            def __eq__(self, _other: object) -> bool:
+                return True
+
+    with pytest.raises(TypeError, match="opaque handle"):
+        VerifiedSarifExport(
+            source_run_path=exported.source_run_path,
+            source_run_id=exported.source_run_id,
+            source_root_digest=exported.source_root_digest,
+            finding_set_digest=exported.finding_set_digest,
+            sarif_digest=exported.sarif_digest,
+            finding_count=exported.finding_count,
+            content=exported.content + " ",
+        )
+    with pytest.raises(TypeError, match="dataclass instances"):
+        replace(exported, content=exported.content + " ")
+
+    assert journal.inspect(intent.intent_id) == record
+    assert broker.inspect(
+        lease.lease_id,
+        audience=sink.sink_id,
+        scope=intent.source_run_id,
+    ).remaining_uses == 1
+    assert transport.dispatches == []
 
 
 def test_unknown_dispatch_requires_authenticated_reconciliation_without_redispatch(
@@ -759,6 +856,499 @@ def test_journal_rejects_tampering_and_exact_registration_is_idempotent(tmp_path
     finally:
         connection.close()
     assert journal.inspect(intent.intent_id) == record
+
+
+def test_public_journal_mutators_cannot_bypass_coordinator_or_transport(
+    tmp_path: Path,
+) -> None:
+    store = _sealed_validation_run(tmp_path / "runs")
+    exported = _export(store)
+    sink = _sink()
+    intent = delivery.build_external_delivery_intent(exported, sink)
+    authorization = _authorization(intent)
+    broker = SecretBroker(clock=lambda: NOW)
+    broker.register(SECRET_REF, SECRET_VALUE)
+    journal = delivery.SQLiteExternalDeliveryJournal(
+        tmp_path / "delivery" / "journal.sqlite3",
+        clock=lambda: NOW,
+    )
+    transport = FakeTransport(
+        dispatch_outcomes=[OSError("connection closed")],
+        reconcile_outcomes=["accepted"],
+    )
+    coordinator = delivery.ExternalDeliveryCoordinator(
+        sinks=delivery.ExternalDeliverySinkRegistry((sink,)),
+        authorizations=delivery.ExternalDeliveryAuthorizationRegistry((authorization,)),
+        secrets=broker,
+        journal=journal,
+        transport=transport,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(delivery.ExternalDeliveryError, match="coordinator transition authority"):
+        journal.register(intent, authorization)
+    with sqlite3.connect(journal.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM external_delivery_intents").fetchone() == (
+            0,
+        )
+        assert connection.execute("SELECT COUNT(*) FROM external_delivery_events").fetchone() == (
+            0,
+        )
+
+    record = coordinator.register(exported, intent, authorization)
+    with pytest.raises(delivery.ExternalDeliveryError, match="coordinator transition authority"):
+        journal.begin_attempt(record, attempt_ordinal=1)
+    assert journal.inspect(intent.intent_id) == record
+
+    with pytest.raises(delivery.ExternalDeliveryOutcomeUnknownError):
+        coordinator.dispatch_once(
+            record,
+            exported,
+            _lease(broker, sink, intent, operation="dispatch", attempt_ordinal=1),
+        )
+    unknown = journal.inspect(intent.intent_id)
+    accepted = delivery.sign_external_delivery_sink_response(
+        delivery.ExternalDeliverySinkResponse(
+            intentId=intent.intent_id,
+            sinkId=sink.sink_id,
+            idempotencyKey=intent.idempotency_key,
+            payloadDigest=intent.payload_digest,
+            attemptOrdinal=1,
+            outcome="accepted",
+            externalReceiptId="forged-direct-receipt",
+            acceptedAt=NOW,
+        ),
+        secret_value=SECRET_VALUE,
+    )
+    forged_receipt = delivery._build_receipt(unknown, accepted)
+    not_received = delivery.sign_external_delivery_sink_response(
+        delivery.ExternalDeliverySinkResponse(
+            intentId=intent.intent_id,
+            sinkId=sink.sink_id,
+            idempotencyKey=intent.idempotency_key,
+            payloadDigest=intent.payload_digest,
+            attemptOrdinal=1,
+            outcome="not-received",
+        ),
+        secret_value=SECRET_VALUE,
+    )
+
+    with pytest.raises(delivery.ExternalDeliveryError, match="coordinator transition authority"):
+        journal.record_accepted(unknown, accepted, forged_receipt)
+    assert journal.inspect(intent.intent_id) == unknown
+    with pytest.raises(delivery.ExternalDeliveryError, match="coordinator transition authority"):
+        journal.record_not_received(unknown, not_received)
+    assert journal.inspect(intent.intent_id) == unknown
+
+    delivered = coordinator.reconcile(
+        unknown,
+        exported,
+        _lease(broker, sink, intent, operation="reconcile", attempt_ordinal=1),
+    )
+    assert delivered.state is delivery.ExternalDeliveryState.DELIVERED
+    assert transport.dispatches == [(intent.idempotency_key, 1, exported.content.encode("utf-8"))]
+    assert transport.reconciliations == [(intent.idempotency_key, 1)]
+
+
+@pytest.mark.parametrize("relationship", ["direct", "nested", "symlink", "mixed-case"])
+def test_journal_constructor_rejects_every_unrelated_sealed_run_ancestry_without_delta(
+    tmp_path: Path,
+    relationship: str,
+) -> None:
+    victim = _sealed_validation_run(tmp_path / f"victim-{relationship}")
+    victim_authority = verify_run_integrity(victim.path)
+    victim_files = _run_file_snapshot(victim.path)
+    if relationship == "direct":
+        journal_path = victim.path / "journal.sqlite3"
+    elif relationship == "nested":
+        journal_path = victim.path / "nested" / "journal.sqlite3"
+    elif relationship == "symlink":
+        alias = tmp_path / "victim-alias"
+        alias.symlink_to(victim.path, target_is_directory=True)
+        journal_path = alias / "journal.sqlite3"
+    else:
+        journal_path = victim.path.with_name(victim.path.name.swapcase()) / "journal.sqlite3"
+
+    with pytest.raises(
+        delivery.ExternalDeliveryError,
+        match=r"Run authority|ancestor is unsafe|mixed-case or Unicode alias",
+    ):
+        delivery.SQLiteExternalDeliveryJournal(journal_path, clock=lambda: NOW)
+
+    assert _run_file_snapshot(victim.path) == victim_files
+    assert verify_run_integrity(victim.path).root_digest == victim_authority.root_digest
+
+    safe_path = tmp_path / "safe-journals" / relationship / "journal.sqlite3"
+    safe_journal = delivery.SQLiteExternalDeliveryJournal(safe_path, clock=lambda: NOW)
+    assert safe_journal.path == safe_path
+    assert safe_path.is_file()
+    assert _run_file_snapshot(victim.path) == victim_files
+    assert verify_run_integrity(victim.path).root_digest == victim_authority.root_digest
+
+
+def test_journal_constructor_rejects_parent_rename_swap_before_victim_mutation_and_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    victim = _sealed_validation_run(tmp_path / "victim-runs")
+    victim_authority = verify_run_integrity(victim.path)
+    victim_files = _run_file_snapshot(victim.path)
+    victim_original_path = victim.path
+    journal_parent = tmp_path / "external-delivery"
+    displaced_parent = tmp_path / "external-delivery-displaced"
+    journal_parent.mkdir()
+    journal_path = journal_parent / "journal.sqlite3"
+
+    def swap_parent(_path: Path) -> None:
+        journal_parent.rename(displaced_parent)
+        victim_original_path.rename(journal_parent)
+
+    monkeypatch.setattr(delivery, "_before_external_delivery_journal_open", swap_parent)
+    with pytest.raises(
+        delivery.ExternalDeliveryError,
+        match=r"Run authority|parent path changed",
+    ):
+        delivery.SQLiteExternalDeliveryJournal(journal_path, clock=lambda: NOW)
+
+    assert not journal_path.exists()
+    assert _run_file_snapshot(journal_parent) == victim_files
+    assert verify_run_integrity(journal_parent).root_digest == victim_authority.root_digest
+
+    journal_parent.rename(victim_original_path)
+    displaced_parent.rename(journal_parent)
+    assert _run_file_snapshot(victim_original_path) == victim_files
+    assert verify_run_integrity(victim_original_path).root_digest == victim_authority.root_digest
+
+    monkeypatch.setattr(
+        delivery,
+        "_before_external_delivery_journal_open",
+        lambda _path: None,
+    )
+    safe_journal = delivery.SQLiteExternalDeliveryJournal(journal_path, clock=lambda: NOW)
+    assert safe_journal.path == journal_path
+    assert journal_path.is_file()
+
+
+def test_journal_transaction_publishes_only_to_held_parent_fd_during_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = FakeTransport(dispatch_outcomes=["accepted"])
+    (
+        _store,
+        _exported,
+        _sink_value,
+        intent,
+        _authorization_value,
+        _broker,
+        journal,
+        _coordinator,
+        record,
+    ) = _context(tmp_path, transport=transport)
+    victim = _sealed_validation_run(tmp_path / "victim-runs")
+    victim_authority = verify_run_integrity(victim.path)
+    victim_files = _run_file_snapshot(victim.path)
+    victim_original_path = victim.path
+    journal_parent = journal.path.parent
+    displaced_parent = tmp_path / "delivery-displaced"
+
+    def swap_parent(_path: Path) -> None:
+        journal_parent.rename(displaced_parent)
+        victim_original_path.rename(journal_parent)
+
+    monkeypatch.setattr(delivery, "_before_external_delivery_journal_replace", swap_parent)
+    transition = delivery._mint_journal_transition(
+        journal,
+        operation="begin-attempt",
+        binding=delivery._attempt_transition_binding(record, 1),
+    )
+    with pytest.raises(
+        delivery.ExternalDeliveryError,
+        match=r"Run authority|parent path changed",
+    ):
+        journal.begin_attempt(record, attempt_ordinal=1, _transition=transition)
+
+    assert transport.dispatches == []
+    assert object.__getattribute__(transition, "_consumed") is False
+    assert _run_file_snapshot(journal_parent) == victim_files
+    assert verify_run_integrity(journal_parent).root_digest == victim_authority.root_digest
+
+    journal_parent.rename(victim_original_path)
+    displaced_parent.rename(journal_parent)
+    monkeypatch.setattr(
+        delivery,
+        "_before_external_delivery_journal_replace",
+        lambda _path: None,
+    )
+    assert _run_file_snapshot(victim_original_path) == victim_files
+    assert verify_run_integrity(victim_original_path).root_digest == victim_authority.root_digest
+    current = journal.inspect(intent.intent_id)
+    assert current == record
+    current = journal.begin_attempt(record, attempt_ordinal=1, _transition=transition)
+    assert current.state is delivery.ExternalDeliveryState.DISPATCH_STARTED_OUTCOME_UNKNOWN
+    assert object.__getattribute__(transition, "_consumed") is True
+    assert (
+        delivery.SQLiteExternalDeliveryJournal(
+            journal.path,
+            clock=lambda: NOW,
+        ).inspect(intent.intent_id)
+        == current
+    )
+
+
+def test_journal_constructor_parent_inode_relocation_after_lockdown_has_zero_run_delta(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    victim = _sealed_validation_run(tmp_path / "victim-runs")
+    victim_authority = verify_run_integrity(victim.path)
+    victim_files = _run_file_snapshot(victim.path)
+    evidence = victim.path / "evidence"
+    assert evidence.is_dir()
+    assert not any(evidence.iterdir())
+    journal_parent = tmp_path / "authority"
+    journal_parent.mkdir(mode=0o711)
+    journal_parent.chmod(0o711)
+    journal_path = journal_parent / "journal.sqlite3"
+    swap_slot = tmp_path / "directory-swap-slot"
+    swapped = False
+
+    def swap_directories(left: Path, right: Path) -> None:
+        left.rename(swap_slot)
+        right.rename(left)
+        swap_slot.rename(right)
+
+    def relocate_locked_parent(_path: Path) -> None:
+        nonlocal swapped
+        assert stat.S_IMODE(journal_parent.stat().st_mode) == 0o700
+        swap_directories(journal_parent, evidence)
+        swapped = True
+
+    monkeypatch.setattr(
+        delivery,
+        "_after_external_delivery_journal_parent_lockdown",
+        relocate_locked_parent,
+    )
+    with pytest.raises(
+        delivery.ExternalDeliveryError,
+        match=r"Run authority|parent path changed",
+    ):
+        delivery.SQLiteExternalDeliveryJournal(journal_path, clock=lambda: NOW)
+
+    assert swapped is True
+    assert not (evidence / journal_path.name).exists()
+    assert _run_file_snapshot(victim.path) == victim_files
+    assert verify_run_integrity(victim.path).root_digest == victim_authority.root_digest
+
+    swap_directories(journal_parent, evidence)
+    monkeypatch.setattr(
+        delivery,
+        "_after_external_delivery_journal_parent_lockdown",
+        lambda _path: None,
+    )
+    assert _run_file_snapshot(victim.path) == victim_files
+    assert verify_run_integrity(victim.path).root_digest == victim_authority.root_digest
+    safe_journal = delivery.SQLiteExternalDeliveryJournal(journal_path, clock=lambda: NOW)
+    assert safe_journal.path == journal_path
+    assert journal_path.is_file()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires Darwin atomic rename swap")
+def test_journal_constructor_external_lockdown_relocation_never_writes_into_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    victim = _sealed_validation_run(tmp_path / "victim-runs")
+    victim_authority = verify_run_integrity(victim.path)
+    victim_files = _run_file_snapshot(victim.path)
+    evidence = victim.path / "evidence"
+    assert evidence.is_dir()
+    assert not any(evidence.iterdir())
+    journal_parent = tmp_path / "authority"
+    journal_parent.mkdir(mode=0o711)
+    journal_parent.chmod(0o711)
+    journal_path = journal_parent / "journal.sqlite3"
+    signal_read, signal_write = os.pipe()
+    child = os.fork()
+    if child == 0:  # pragma: no cover - assertions execute in the parent process
+        os.close(signal_read)
+        libc = ctypes.CDLL(None, use_errno=True)
+        renamex_np = libc.renamex_np
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        exit_code = 93
+        for _attempt in range(10_000):
+            if stat.S_IMODE(journal_parent.stat().st_mode) == 0o700:
+                if renamex_np(
+                    os.fsencode(journal_parent),
+                    os.fsencode(evidence),
+                    0x00000002,
+                ) == 0:
+                    os.write(signal_write, b"x")
+                    exit_code = 0
+                else:
+                    exit_code = 94
+                break
+            select.select([], [], [], 0.0005)
+        os.close(signal_write)
+        os._exit(exit_code)
+
+    os.close(signal_write)
+
+    def await_external_relocation(_path: Path) -> None:
+        readable, _, _ = select.select([signal_read], [], [], 6)
+        assert readable
+        assert os.read(signal_read, 1) == b"x"
+
+    monkeypatch.setattr(
+        delivery,
+        "_after_external_delivery_journal_parent_lockdown",
+        await_external_relocation,
+    )
+    try:
+        with pytest.raises(
+            delivery.ExternalDeliveryError,
+            match=r"Run authority|parent path changed",
+        ):
+            delivery.SQLiteExternalDeliveryJournal(journal_path, clock=lambda: NOW)
+    finally:
+        os.close(signal_read)
+        _, status = os.waitpid(child, 0)
+
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert not (evidence / journal_path.name).exists()
+    assert _run_file_snapshot(victim.path) == victim_files
+    assert verify_run_integrity(victim.path).root_digest == victim_authority.root_digest
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    renamex_np = libc.renamex_np
+    renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+    renamex_np.restype = ctypes.c_int
+    assert (
+        renamex_np(
+            os.fsencode(journal_parent),
+            os.fsencode(evidence),
+            0x00000002,
+        )
+        == 0
+    )
+    monkeypatch.setattr(
+        delivery,
+        "_after_external_delivery_journal_parent_lockdown",
+        lambda _path: None,
+    )
+    assert _run_file_snapshot(victim.path) == victim_files
+    assert verify_run_integrity(victim.path).root_digest == victim_authority.root_digest
+    safe_journal = delivery.SQLiteExternalDeliveryJournal(journal_path, clock=lambda: NOW)
+    assert safe_journal.path == journal_path
+    assert journal_path.is_file()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires Darwin atomic rename swap")
+def test_journal_constructor_stress_never_reopens_swapped_path_into_sealed_run(
+    tmp_path: Path,
+) -> None:
+    victim = _sealed_validation_run(tmp_path / "victim-runs")
+    victim_authority = verify_run_integrity(victim.path)
+    victim_files = _run_file_snapshot(victim.path)
+    journal_parent = tmp_path / "external-delivery"
+    swap_entry = tmp_path / "external-delivery-swap"
+    journal_parent.mkdir()
+    swap_entry.symlink_to(victim.path, target_is_directory=True)
+    signal_read, signal_write = os.pipe()
+    child = os.fork()
+    if child == 0:  # pragma: no cover - assertions execute in the parent process
+        os.close(signal_write)
+        os.set_blocking(signal_read, False)
+        libc = ctypes.CDLL(None, use_errno=True)
+        renamex_np = libc.renamex_np
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        swapped = False
+        exit_code = 0
+        try:
+            while True:
+                readable, _, _ = select.select([signal_read], [], [], 0)
+                if readable and os.read(signal_read, 1):
+                    break
+                if renamex_np(
+                    os.fsencode(journal_parent),
+                    os.fsencode(swap_entry),
+                    0x00000002,
+                ) != 0:
+                    exit_code = 91
+                    break
+                swapped = not swapped
+        finally:
+            if swapped and renamex_np(
+                os.fsencode(journal_parent),
+                os.fsencode(swap_entry),
+                0x00000002,
+            ) != 0:
+                exit_code = 92
+            os.close(signal_read)
+        os._exit(exit_code)
+
+    os.close(signal_read)
+    attempts = 2_000
+    succeeded = 0
+    rejected = 0
+    try:
+        for ordinal in range(attempts):
+            try:
+                delivery.SQLiteExternalDeliveryJournal(
+                    journal_parent / f"journal-{ordinal}.sqlite3",
+                    clock=lambda: NOW,
+                )
+            except (delivery.ExternalDeliveryError, OSError, sqlite3.Error):
+                rejected += 1
+            else:
+                succeeded += 1
+    finally:
+        os.write(signal_write, b"x")
+        os.close(signal_write)
+        _, status = os.waitpid(child, 0)
+
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert succeeded + rejected == attempts
+    assert rejected > 0
+    assert journal_parent.is_dir()
+    assert not journal_parent.is_symlink()
+    assert _run_file_snapshot(victim.path) == victim_files
+    assert verify_run_integrity(victim.path).root_digest == victim_authority.root_digest
+
+    safe_path = journal_parent / "journal-after-stress.sqlite3"
+    safe_journal = delivery.SQLiteExternalDeliveryJournal(safe_path, clock=lambda: NOW)
+    assert safe_journal.path == safe_path
+    assert safe_path.is_file()
+
+
+def test_existing_journal_reopen_rejects_sealed_run_parent_swap_without_delta(
+    tmp_path: Path,
+) -> None:
+    journal_parent = tmp_path / "external-delivery"
+    journal_path = journal_parent / "journal.sqlite3"
+    journal = delivery.SQLiteExternalDeliveryJournal(journal_path, clock=lambda: NOW)
+    displaced_parent = tmp_path / "external-delivery-displaced"
+    victim = _sealed_validation_run(tmp_path / "victim-runs")
+    victim_authority = verify_run_integrity(victim.path)
+    victim_files = _run_file_snapshot(victim.path)
+    victim_original_path = victim.path
+
+    journal_parent.rename(displaced_parent)
+    victim_original_path.rename(journal_parent)
+    with pytest.raises(delivery.ExternalDeliveryError, match="Run authority"):
+        journal.inspect("missing-intent")
+    assert not journal_path.exists()
+    assert _run_file_snapshot(journal_parent) == victim_files
+    assert verify_run_integrity(journal_parent).root_digest == victim_authority.root_digest
+
+    journal_parent.rename(victim_original_path)
+    displaced_parent.rename(journal_parent)
+    assert _run_file_snapshot(victim_original_path) == victim_files
+    assert verify_run_integrity(victim_original_path).root_digest == victim_authority.root_digest
+    reopened = delivery.SQLiteExternalDeliveryJournal(journal_path, clock=lambda: NOW)
+    assert reopened.path == journal_path
 
 
 def test_authorization_registry_rejects_unregistered_exactly_bound_authorization(

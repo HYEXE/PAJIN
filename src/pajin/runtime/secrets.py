@@ -12,7 +12,7 @@ from enum import StrEnum
 from hashlib import sha256
 from threading import Lock
 from typing import Any
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote, quote_plus, unquote, unquote_plus
 from uuid import uuid4
 
 from pydantic import Field, field_validator
@@ -23,7 +23,14 @@ _MIN_SECRET_LENGTH = 1
 _MAX_SECRET_LENGTH = 16_384
 _MIN_TRANSFORMED_VARIANT_LENGTH = 8
 _REDACTION_MARKER = "<redacted-secret>"
+_MAX_SERIALIZATION_DECODE_PASSES = 3
 _LEASE_SCOPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}\Z")
+
+
+def secret_broker_system_utc_now() -> datetime:
+    """Return the code-owned live UTC clock used by production secret brokers."""
+
+    return datetime.now(UTC)
 
 
 def _require_utf8(value: str, *, label: str) -> bytes:
@@ -106,7 +113,7 @@ class SecretBroker:
     """Keep plaintext credentials in memory and expose them only through one-use leases."""
 
     def __init__(self, *, clock: Callable[[], datetime] | None = None) -> None:
-        self._clock = clock or (lambda: datetime.now(UTC))
+        self._clock = clock or secret_broker_system_utc_now
         self._secrets: dict[str, str] = {}
         self._leases: dict[str, SecretLease] = {}
         self._lease_refs: dict[str, str] = {}
@@ -318,17 +325,135 @@ def _secret_variants(value: str) -> set[str]:
     }
 
 
-def redact_text(value: str, materials: list[SecretMaterial]) -> str:
+def _collision_safe_mask_character(variants: set[str]) -> str:
+    for candidate in ("#", "~", "^", "!", "?", "\N{FULL BLOCK}"):
+        if all(candidate not in variant for variant in variants):
+            return candidate
+    for codepoint in range(0xE000, 0xF900):
+        candidate = chr(codepoint)
+        if all(candidate not in variant for variant in variants):
+            return candidate
+    return ""
+
+
+def _redaction_replacement(
+    matched: str,
+    *,
+    variants: set[str],
+    collision_mask: str,
+) -> str:
+    replacement = (
+        _REDACTION_MARKER if len(matched) >= len(_REDACTION_MARKER) else "*" * len(matched)
+    )
+    if any(variant in replacement for variant in variants):
+        return collision_mask
+    return replacement
+
+
+def _replace_known_secret_variants(
+    value: str,
+    *,
+    secrets: list[str],
+    variants: set[str],
+    collision_mask: str,
+) -> tuple[str, bool]:
     redacted = value
-    variants = {
-        variant for material in materials for variant in _secret_variants(material.value) if variant
-    }
+    changed = False
     for variant in sorted(variants, key=len, reverse=True):
-        replacement = (
-            _REDACTION_MARKER if len(variant) >= len(_REDACTION_MARKER) else "*" * len(variant)
+        replacement = _redaction_replacement(
+            variant,
+            variants=variants,
+            collision_mask=collision_mask,
         )
-        redacted = redacted.replace(variant, replacement)
+        updated = redacted.replace(variant, replacement)
+        changed = changed or updated != redacted
+        redacted = updated
+    for secret in secrets:
+        encoded_hex = secret.encode("utf-8").hex()
+        if len(encoded_hex) < _MIN_TRANSFORMED_VARIANT_LENGTH:
+            continue
+        pattern = re.compile(re.escape(encoded_hex), re.IGNORECASE)
+
+        def replace_mixed_hex(match: re.Match[str]) -> str:
+            return _redaction_replacement(
+                match.group(),
+                variants=variants,
+                collision_mask=collision_mask,
+            )
+
+        updated, substitutions = pattern.subn(replace_mixed_hex, redacted)
+        changed = changed or substitutions > 0
+        redacted = updated
+    return redacted, changed
+
+
+def _has_bounded_encoded_secret(
+    value: str,
+    *,
+    secrets: list[str],
+    variants: set[str],
+    collision_mask: str,
+) -> bool:
+    frontier = {value}
+    seen = {value}
+    for _ in range(_MAX_SERIALIZATION_DECODE_PASSES):
+        next_frontier: set[str] = set()
+        for candidate in frontier:
+            for normalized in (unquote(candidate), unquote_plus(candidate)):
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                _, changed = _replace_known_secret_variants(
+                    normalized,
+                    secrets=secrets,
+                    variants=variants,
+                    collision_mask=collision_mask,
+                )
+                if changed:
+                    return True
+                next_frontier.add(normalized)
+        if not next_frontier:
+            break
+        frontier = next_frontier
+    else:
+        # Do not let arbitrarily nested serialization outwait the fixed decode budget.
+        return True
+    return False
+
+
+def redact_secret_values(value: str, values: Iterable[str]) -> str:
+    """Redact known secret values and bounded encoded equivalents."""
+
+    secrets: list[str] = []
+    for secret in values:
+        if secret == "":
+            continue
+        _validate_secret_value(secret)
+        secrets.append(secret)
+    variants = {variant for secret in secrets for variant in _secret_variants(secret) if variant}
+    collision_mask = _collision_safe_mask_character(variants)
+    redacted, _ = _replace_known_secret_variants(
+        value,
+        secrets=secrets,
+        variants=variants,
+        collision_mask=collision_mask,
+    )
+    if _has_bounded_encoded_secret(
+        redacted,
+        secrets=secrets,
+        variants=variants,
+        collision_mask=collision_mask,
+    ):
+        return _redaction_replacement(
+            value,
+            variants=variants,
+            collision_mask=collision_mask,
+        )
     return redacted
+
+
+def redact_text(value: str, materials: list[SecretMaterial]) -> str:
+    return redact_secret_values(value, (material.value for material in materials))
 
 
 def redact_value(value: Any, materials: list[SecretMaterial]) -> Any:

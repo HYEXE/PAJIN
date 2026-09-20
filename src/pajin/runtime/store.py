@@ -29,6 +29,11 @@ if sys.platform != "win32":
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from pajin.runtime.pinned_workspace import (
+    PinnedWorkspaceIdentity,
+    active_pinned_workspace_identity,
+    pinned_workspace_relative_path,
+)
 from pajin.runtime.safe_files import parse_strict_json_bytes, read_bounded_regular_bytes
 
 _HASH_PATTERN = r"^[a-f0-9]{64}$"
@@ -92,6 +97,11 @@ class RunIntegrityError(ValueError):
 
 def _canonical_path_key(value: str) -> str:
     return unicodedata.normalize("NFC", value).casefold()
+
+
+def _normalized_run_path(path: Path, *, label: str) -> Path:
+    pinned = pinned_workspace_relative_path(path, label=label)
+    return pinned if pinned is not None else path.resolve()
 
 
 def _validated_relative_artifact_path(value: str) -> str:
@@ -167,7 +177,8 @@ def _run_identity_key(run_path: Path) -> str:
     if run_stat.st_ino:
         identity = f"{run_stat.st_dev}:{run_stat.st_ino}"
     else:  # pragma: no cover - fallback for filesystems without stable inode numbers
-        identity = os.path.normcase(str(run_path.resolve()))
+        pinned = pinned_workspace_relative_path(run_path, label="Run path")
+        identity = os.path.normcase(str(pinned if pinned is not None else run_path.resolve()))
     return sha256(identity.encode("utf-8")).hexdigest()
 
 
@@ -347,7 +358,7 @@ def locked_run_snapshot(run_path: Path) -> Iterator[Path]:
     sealed-hash checks against non-cooperating filesystem mutation.
     """
 
-    root = run_path.resolve()
+    root = _normalized_run_path(run_path, label="Run snapshot path")
     with _serialized_run_mutation(root):
         yield root
 
@@ -926,9 +937,16 @@ def _artifact_paths(root: Path) -> list[str]:
             raise RunIntegrityError("Run artifacts cannot contain symbolic links")
         if not candidate.is_file():
             continue
-        resolved = candidate.resolve()
-        if root != resolved and root not in resolved.parents:
-            raise RunIntegrityError("Run artifact resolves outside the Run directory")
+        pinned = pinned_workspace_relative_path(candidate, label="Run artifact path")
+        if pinned is None:
+            resolved = candidate.resolve()
+            if root != resolved and root not in resolved.parents:
+                raise RunIntegrityError("Run artifact resolves outside the Run directory")
+        else:
+            try:
+                candidate.relative_to(root)
+            except ValueError as exc:
+                raise RunIntegrityError("Run artifact escaped the pinned Run directory") from exc
         relative = candidate.relative_to(root).as_posix()
         if relative in _RESERVED_ARTIFACTS:
             continue
@@ -979,7 +997,10 @@ def _verify_sealed_artifact(
         raise RunIntegrityError(f"sealed Run artifact is missing: {artifact.path}")
     if current_path != artifact.path:
         raise RunIntegrityError(f"sealed Run artifact path identity changed: {artifact.path}")
-    candidate = (root / artifact.path).resolve()
+    unresolved = root / artifact.path
+    candidate = pinned_workspace_relative_path(unresolved, label="sealed Run artifact path")
+    if candidate is None:
+        candidate = unresolved.resolve()
     if root not in candidate.parents or not candidate.is_file() or candidate.is_symlink():
         raise RunIntegrityError(f"sealed Run artifact is missing: {artifact.path}")
     if _artifact_record(root, artifact.path, event_index) != artifact:
@@ -1010,7 +1031,7 @@ def _index_sealed_artifacts(
 
 
 def _integrity_state(run_path: Path, *, allow_extensions: bool) -> _IntegrityState:
-    root = run_path.resolve()
+    root = _normalized_run_path(run_path, label="Run integrity path")
     if not root.is_dir():
         raise RunIntegrityError("Run path must be an existing directory")
     events = _load_events(root / "events.jsonl")
@@ -1097,7 +1118,7 @@ def load_verified_run_artifacts(
     """Load only requested sealed artifacts into one exact verified snapshot."""
 
     validated_requests = _validated_snapshot_requests(requests)
-    root = run_path.resolve()
+    root = _normalized_run_path(run_path, label="verified Run path")
     with locked_run_snapshot(root):
         initial = _integrity_state(root, allow_extensions=False)
         initial_verification = _verification_from_state(initial)
@@ -1241,11 +1262,17 @@ class RunStore:
     def __init__(self, run_id: str, path: Path) -> None:
         from pajin.runtime.host_recovery import prepare_store_enrollment
 
+        pinned_path = pinned_workspace_relative_path(path, label="RunStore path")
         enrollment = prepare_store_enrollment(
-            path.absolute(), kind="run-store", run_id=run_id,
+            pinned_path if pinned_path is not None else path.absolute(),
+            kind="run-store",
+            run_id=run_id,
         )
         self.run_id = run_id
-        self.path = path.resolve()
+        self.path = pinned_path if pinned_path is not None else path.resolve()
+        self._pinned_workspace_identity: PinnedWorkspaceIdentity | None = (
+            active_pinned_workspace_identity() if pinned_path is not None else None
+        )
         self.evidence_path = self.path / "evidence"
         self.events_path = self.path / "events.jsonl"
         self.integrity_path = self.path / "run-integrity.jsonl"
@@ -1267,7 +1294,7 @@ class RunStore:
         campaign_component = _validated_relative_artifact_path(campaign_name)
         if "/" in campaign_component:
             raise ValueError("campaign name must be one portable path component")
-        root_path = root.resolve()
+        root_path = _normalized_run_path(root, label="RunStore root")
         if not root_path.exists():
             root_path.mkdir(mode=_PRIVATE_DIRECTORY_MODE, parents=True)
         if not root_path.is_dir():
@@ -1430,6 +1457,7 @@ class RunStore:
     def artifact_exists(self, relative_path: str) -> bool:
         """Return whether one validated regular artifact path is already occupied."""
 
+        self._require_pinned_workspace()
         destination = self._safe_destination(relative_path)
         return destination.exists()
 
@@ -1517,9 +1545,17 @@ class RunStore:
 
     @contextmanager
     def _mutation(self) -> Iterator[None]:
+        self._require_pinned_workspace()
         with _serialized_run_mutation(self.path):
             self._rebase_mutation_state()
             yield
+
+    def _require_pinned_workspace(self) -> None:
+        if (
+            self._pinned_workspace_identity is not None
+            and active_pinned_workspace_identity() != self._pinned_workspace_identity
+        ):
+            raise RunIntegrityError("RunStore is outside its pinned workspace context")
 
     def _rebase_mutation_state(self) -> None:
         self._path_identities = None
