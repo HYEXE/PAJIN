@@ -137,6 +137,31 @@ def test_proxy_canonicalizes_path_and_hostname_before_scope_comparison(
     )
 
 
+@pytest.mark.parametrize(
+    "target",
+    (
+        "http://example.com/API/USERS/",
+        "http://example.com/%41PI/%55SERS/",
+        "http://example.com/REST/BASKET/7",
+        "http://example.com/REST/%42ASKET/7",
+    ),
+)
+def test_proxy_deny_rules_block_case_and_percent_encoded_path_aliases(
+    proxy_module: ModuleType,
+    target: str,
+) -> None:
+    proxy_module.POLICY = {
+        "allow": ["http://example.com/**"],
+        "deny": [
+            "http://example.com/api/users/**",
+            "http://example.com/rest/basket/**",
+        ],
+        "allowed_methods": ["GET"],
+    }
+
+    assert not proxy_module.request_allowed("GET", target, authority_only=False)
+
+
 def test_proxy_canonicalizes_query_unreserved_characters_before_scope_comparison(
     proxy_module: ModuleType,
 ) -> None:
@@ -180,7 +205,8 @@ def test_proxy_enforces_reserved_request_count(proxy_module: ModuleType) -> None
 
 
 def test_proxy_requires_explicit_large_request_limit_and_binds_complete_json(
-    proxy_module: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    proxy_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw = json.dumps({"messages": [{"content": "한" * 400_000}]}, ensure_ascii=False).encode()
     with pytest.raises(ValueError, match="byte limit"):
@@ -191,18 +217,25 @@ def test_proxy_requires_explicit_large_request_limit_and_binds_complete_json(
     proxy_module.POLICY = proxy_module.load_policy()
     assert proxy_module.content_length([("Content-Length", str(len(raw)))]) == len(raw)
     assert proxy_module.canonical_json_sha256(raw) is None
-    expected = json.dumps(json.loads(raw), sort_keys=True, ensure_ascii=False,
-                          separators=(",", ":")).encode()
-    assert proxy_module.canonical_json_sha256(
-        raw, max_bytes=policy["max_request_bytes"],
-    ) == sha256(expected).hexdigest()
+    expected = json.dumps(
+        json.loads(raw), sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode()
+    assert (
+        proxy_module.canonical_json_sha256(
+            raw,
+            max_bytes=policy["max_request_bytes"],
+        )
+        == sha256(expected).hexdigest()
+    )
     with pytest.raises(ValueError, match="byte limit"):
         proxy_module.content_length([("Content-Length", str(16 * 1024 * 1024 + 1))])
 
 
 @pytest.mark.parametrize("limit", [True, 0, 16 * 1024 * 1024 + 1, "2000000"])
 def test_proxy_rejects_invalid_large_request_policy(
-    proxy_module: ModuleType, monkeypatch: pytest.MonkeyPatch, limit: object,
+    proxy_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    limit: object,
 ) -> None:
     policy = {**proxy_module.POLICY, "max_request_bytes": limit}
     encoded = base64.b64encode(json.dumps(policy).encode()).decode()
@@ -233,10 +266,14 @@ class _MemoryWriter:
         return self.closed
 
 
-@pytest.mark.parametrize(("request_size", "response_size", "succeeds"),
-                         [(20, 4, True), (20, 9, False), (25, 4, False)])
+@pytest.mark.parametrize(
+    ("request_size", "response_size", "succeeds"), [(20, 4, True), (20, 9, False), (25, 4, False)]
+)
 def test_connect_request_extension_preserves_response_ceiling(
-    proxy_module: ModuleType, request_size: int, response_size: int, succeeds: bool,
+    proxy_module: ModuleType,
+    request_size: int,
+    response_size: int,
+    succeeds: bool,
 ) -> None:
     async def exercise():
         request_reader = asyncio.StreamReader()
@@ -246,8 +283,9 @@ def test_connect_request_extension_preserves_response_ceiling(
         response_reader.feed_eof()
         client = _MemoryWriter()
         upstream = _MemoryWriter()
-        operation = proxy_module.relay_tunnel(request_reader, response_reader, client, upstream,
-                                              byte_limit=8, request_byte_limit=24)
+        operation = proxy_module.relay_tunnel(
+            request_reader, response_reader, client, upstream, byte_limit=8, request_byte_limit=24
+        )
         if succeeds:
             await operation
             assert upstream.data == b"q" * request_size
@@ -758,6 +796,15 @@ def test_proxy_operation_caps_never_exceed_the_worker_exchange_deadline(
     assert proxy_module.exchange_timeout(60.0) == 0.1
     proxy_module.POLICY["max_exchange_seconds"] = 3_600.0
     assert proxy_module.exchange_timeout(10.0) == 10.0
+
+
+def test_provider_io_timeout_is_capped_by_exact_180_second_worker_deadline(
+    proxy_module: ModuleType,
+) -> None:
+    proxy_module.POLICY["max_exchange_seconds"] = 180.0
+
+    assert proxy_module.UPSTREAM_IO_TIMEOUT_SECONDS >= 180.0
+    assert proxy_module.exchange_timeout(proxy_module.UPSTREAM_IO_TIMEOUT_SECONDS) == 180.0
 
 
 def test_proxy_json_receipt_skips_deep_or_oversized_json(

@@ -29,7 +29,7 @@ STREAM_CLOSE_TIMEOUT_SECONDS = 1.0
 CLIENT_HEADER_TIMEOUT_SECONDS = 10.0
 CLIENT_IO_TIMEOUT_SECONDS = 5.0
 UPSTREAM_CONNECT_TIMEOUT_SECONDS = 10.0
-UPSTREAM_IO_TIMEOUT_SECONDS = 30.0
+UPSTREAM_IO_TIMEOUT_SECONDS = 3_600.0
 CONNECT_TUNNEL_TIMEOUT_SECONDS = 60.0
 RECEIPT_VERSION = "pajin.dev/egress-http-json-receipt/v1"
 HTTPS_CONNECT_RECEIPT_VERSION = "pajin.dev/egress-https-connect-receipt/v1"
@@ -163,8 +163,10 @@ def load_policy() -> dict[str, Any]:
         raise RuntimeError(f"max_response_bytes must be between 1024 and {MAX_RESPONSE_BYTES}")
     max_exchange_seconds = _policy_exchange_seconds(policy.get("max_exchange_seconds"))
     max_request_bytes = policy.get("max_request_bytes", MAX_REQUEST_BODY_BYTES)
-    if (type(max_request_bytes) is not int
-            or not 1 <= max_request_bytes <= MAX_LARGE_REQUEST_BODY_BYTES):
+    if (
+        type(max_request_bytes) is not int
+        or not 1 <= max_request_bytes <= MAX_LARGE_REQUEST_BODY_BYTES
+    ):
         raise RuntimeError("max_request_bytes must be a bounded positive integer")
 
     for rule in [*allow, *deny]:
@@ -345,6 +347,22 @@ def scope_matches(pattern_value: str, target_value: str, *, authority_only: bool
     return not pattern.query or pattern.query == target.query
 
 
+def deny_scope_matches(pattern_value: str, target_value: str, *, authority_only: bool) -> bool:
+    """Apply a conservative case-insensitive alias check to deny rules only."""
+
+    if scope_matches(pattern_value, target_value, authority_only=authority_only):
+        return True
+    pattern = parse_url(pattern_value, pattern=True)
+    target = parse_url(target_value)
+    if not authority_matches(pattern, target):
+        return False
+    if authority_only:
+        return True
+    if not fnmatchcase((target.path or "/").casefold(), (pattern.path or "/").casefold()):
+        return False
+    return not pattern.query or pattern.query.casefold() == target.query.casefold()
+
+
 POLICY = load_policy()
 
 
@@ -386,7 +404,7 @@ def request_allowed(method: str, target_url: str, *, authority_only: bool) -> bo
             for pattern in (parse_url(rule, pattern=True) for rule in POLICY["allow"])
         )
     for rule in deny_rules:
-        if scope_matches(rule, target_url, authority_only=authority_only):
+        if deny_scope_matches(rule, target_url, authority_only=authority_only):
             return False
     return any(
         scope_matches(rule, target_url, authority_only=authority_only) for rule in POLICY["allow"]
@@ -604,10 +622,13 @@ async def relay_tunnel(
     """Relay both tunnel directions and never detach the surviving peer."""
 
     tasks = (
-        asyncio.create_task(relay(
-            reader, upstream_writer,
-            byte_limit=request_byte_limit if request_byte_limit is not None else byte_limit,
-        )),
+        asyncio.create_task(
+            relay(
+                reader,
+                upstream_writer,
+                byte_limit=request_byte_limit if request_byte_limit is not None else byte_limit,
+            )
+        ),
         asyncio.create_task(relay(upstream_reader, writer, byte_limit=byte_limit)),
     )
     try:
@@ -692,7 +713,8 @@ async def handle_connect(
                 byte_limit=byte_limit,
                 request_byte_limit=(
                     int(POLICY["max_request_bytes"]) + 256 * 1024
-                    if int(POLICY.get("max_request_bytes", 0)) > MAX_REQUEST_BODY_BYTES else None
+                    if int(POLICY.get("max_request_bytes", 0)) > MAX_REQUEST_BODY_BYTES
+                    else None
                 ),
             ),
             timeout=exchange_timeout(CONNECT_TUNNEL_TIMEOUT_SECONDS),
@@ -784,9 +806,14 @@ async def handle_http(
         await close_writer(upstream_writer)
 
     receipt = response_json_receipt(response) if method in {"GET", "POST"} else None
-    request_digest = canonical_json_sha256(
-        request_body, max_bytes=int(POLICY.get("max_request_bytes", MAX_REQUEST_BODY_BYTES)),
-    ) if method == "POST" else None
+    request_digest = (
+        canonical_json_sha256(
+            request_body,
+            max_bytes=int(POLICY.get("max_request_bytes", MAX_REQUEST_BODY_BYTES)),
+        )
+        if method == "POST"
+        else None
+    )
     if receipt is not None and (method == "GET" or request_digest is not None):
         status, response_body_digest, response_json_digest = receipt
         fields: dict[str, object] = {

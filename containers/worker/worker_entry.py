@@ -52,7 +52,8 @@ _MCP_READER_JOIN_SECONDS = 5
 _MCP_PROCESS_REAP_SECONDS = 5
 _TLS_UNIQUE_BINDING_DOMAIN = b"pajin.replay.target-tls-unique-binding/v1\0"
 _OBSERVED_FAILURE: ContextVar[tuple[str, str] | None] = ContextVar(
-    "worker_observed_failure", default=None,
+    "worker_observed_failure",
+    default=None,
 )
 
 
@@ -87,8 +88,16 @@ def _failure_category(error: BaseException) -> str:
 def _failure_stage(stage: str) -> Iterator[None]:
     try:
         yield
-    except (KeyError, TypeError, AttributeError, ValueError,
-            OSError, RuntimeError, HTTPException, subprocess.TimeoutExpired) as error:
+    except (
+        KeyError,
+        TypeError,
+        AttributeError,
+        ValueError,
+        OSError,
+        RuntimeError,
+        HTTPException,
+        subprocess.TimeoutExpired,
+    ) as error:
         if _OBSERVED_FAILURE.get() is None:
             _OBSERVED_FAILURE.set((stage, _failure_category(error)))
         raise
@@ -96,8 +105,10 @@ def _failure_stage(stage: str) -> Iterator[None]:
 
 def _print_failure(error: BaseException, *, fallback_stage: str, exit_code: int) -> None:
     stage, category = _OBSERVED_FAILURE.get() or (fallback_stage, _failure_category(error))
-    print("invalid worker input or response" if exit_code == 65 else "worker action failed",
-          file=sys.stderr)
+    print(
+        "invalid worker input or response" if exit_code == 65 else "worker action failed",
+        file=sys.stderr,
+    )
     print(f"pajin-worker-failure-v1 stage={stage} category={category}", file=sys.stderr)
 
 
@@ -149,8 +160,9 @@ def _read_worker_input(stream: TextIO, *, large_provider: bool = False) -> dict[
             total_bytes += len(chunk.encode("utf-8"))
         except UnicodeError as exc:
             raise ValueError("worker input is not valid UTF-8 text") from exc
-        limit = (MAX_LARGE_PROVIDER_INPUT_BYTES + 100_000 if large_provider
-                 else MAX_WORKER_INPUT_BYTES)
+        limit = (
+            MAX_LARGE_PROVIDER_INPUT_BYTES + 100_000 if large_provider else MAX_WORKER_INPUT_BYTES
+        )
         if total_bytes > limit:
             raise ValueError("worker input exceeded byte limit")
         parts.append(chunk)
@@ -252,7 +264,7 @@ class _ObservingHTTPSHandler(HTTPSHandler):
 _HTTP_OPENER = build_opener(_NoRedirectHandler(), _ObservingHTTPSHandler())
 
 
-def _open_http(request: Request, *, timeout: int) -> Any:
+def _open_http(request: Request, *, timeout: float) -> Any:
     """Open one request with redirects disabled for every network action."""
 
     parsed = urlsplit(request.full_url)
@@ -1704,7 +1716,8 @@ def _provider_credential(secrets: dict[str, str]) -> str:
 
 def _provider_dispatch_payload(
     payload: dict[str, Any],
-    *, large_request: bool = False,
+    *,
+    large_request: bool = False,
 ) -> tuple[str, str, dict[str, Any], bool]:
     provider_id = _required_string(payload, "providerId", label="provider ID")
     if fullmatch(r"[a-z0-9][a-z0-9-]{1,30}", provider_id) is None:
@@ -1725,7 +1738,10 @@ def _provider_dispatch_payload(
     if not isinstance(stream, bool):
         raise TypeError("provider stream must be boolean")
     encoded = json.dumps(
-        provider_request, separators=(",", ":"), ensure_ascii=not large_request, allow_nan=False,
+        provider_request,
+        separators=(",", ":"),
+        ensure_ascii=not large_request,
+        allow_nan=False,
     ).encode("utf-8")
     if len(encoded) > (MAX_LARGE_PROVIDER_INPUT_BYTES if large_request else MAX_WORKER_INPUT_BYTES):
         raise ValueError("provider request exceeded byte limit")
@@ -1741,7 +1757,10 @@ def _provider_http_request(
     large_request: bool = False,
 ) -> Request:
     encoded = json.dumps(
-        provider_request, separators=(",", ":"), ensure_ascii=not large_request, allow_nan=False,
+        provider_request,
+        separators=(",", ":"),
+        ensure_ascii=not large_request,
+        allow_nan=False,
     ).encode("utf-8")
     return Request(
         target,
@@ -1759,12 +1778,15 @@ def _provider_http_request(
 def openai_chat_completion(
     payload: dict[str, Any],
     secrets: dict[str, str],
-    *, large_request: bool = False,
+    *,
+    large_request: bool = False,
+    request_timeout_seconds: float = 30.0,
 ) -> dict[str, Any]:
     with _failure_stage("provider-request"):
         credential = _provider_credential(secrets)
         provider_id, target, provider_request, stream = _provider_dispatch_payload(
-            payload, large_request=large_request,
+            payload,
+            large_request=large_request,
         )
         request = _provider_http_request(
             target,
@@ -1775,7 +1797,7 @@ def openai_chat_completion(
         )
     try:
         with _failure_stage("provider-open"):
-            response_context = _open_http(request, timeout=30)
+            response_context = _open_http(request, timeout=request_timeout_seconds)
         with _failure_stage("provider-read"), response_context as response:
             if stream:
                 return _normalize_stream_provider(
@@ -2265,6 +2287,25 @@ _UNPRIVILEGED_ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
 }
 _PROVIDER_ACTION = "openai-chat-completion"
 _LARGE_PROVIDER_ACTION = "openai-chat-completion-v2"
+_PINNED_PROVIDER_ACTION = "openai-chat-completion-v3"
+_PINNED_PROVIDER_TRANSPORT_VERSION = "pajin.web-analysis.provider-transport/v2"
+
+
+def _pinned_provider_timeout(payload: dict[str, Any]) -> float:
+    if set(payload) != {
+        "providerId",
+        "request",
+        "requestTimeoutSeconds",
+        "target",
+        "transportVersion",
+    }:
+        raise ValueError("pinned provider payload fields differ")
+    if payload["transportVersion"] != _PINNED_PROVIDER_TRANSPORT_VERSION:
+        raise ValueError("pinned provider transport version differs")
+    value = payload["requestTimeoutSeconds"]
+    if type(value) is not int or value != 180:
+        raise ValueError("pinned provider timeout must be the exact 180-second budget")
+    return float(value)
 
 
 def _dispatch_action(
@@ -2272,11 +2313,15 @@ def _dispatch_action(
     payload: dict[str, Any],
     secrets: dict[str, str],
 ) -> dict[str, Any]:
-    if action in {_PROVIDER_ACTION, _LARGE_PROVIDER_ACTION}:
+    if action in {_PROVIDER_ACTION, _LARGE_PROVIDER_ACTION, _PINNED_PROVIDER_ACTION}:
         if set(secrets) != {"provider-api-key"}:
             raise ValueError("provider action requires exactly one API key binding")
+        timeout = _pinned_provider_timeout(payload) if action == _PINNED_PROVIDER_ACTION else 30.0
         return openai_chat_completion(
-            payload, secrets, large_request=action == _LARGE_PROVIDER_ACTION,
+            payload,
+            secrets,
+            large_request=action == _LARGE_PROVIDER_ACTION,
+            request_timeout_seconds=timeout,
         )
     if secrets:
         raise ValueError("worker action does not accept secret bindings")
@@ -2284,7 +2329,15 @@ def _dispatch_action(
 
 
 def _supported_action(action: str) -> bool:
-    return action in {_PROVIDER_ACTION, _LARGE_PROVIDER_ACTION} or action in _UNPRIVILEGED_ACTIONS
+    return (
+        action
+        in {
+            _PROVIDER_ACTION,
+            _LARGE_PROVIDER_ACTION,
+            _PINNED_PROVIDER_ACTION,
+        }
+        or action in _UNPRIVILEGED_ACTIONS
+    )
 
 
 def main() -> int:
@@ -2298,9 +2351,12 @@ def main() -> int:
         return 64
     stage = "worker-input"
     try:
-        payload, secrets = _unwrap_worker_envelope(_read_worker_input(
-            sys.stdin, large_provider=action == _LARGE_PROVIDER_ACTION,
-        ))
+        payload, secrets = _unwrap_worker_envelope(
+            _read_worker_input(
+                sys.stdin,
+                large_provider=action == _LARGE_PROVIDER_ACTION,
+            )
+        )
         stage = "worker-action"
         result = _dispatch_action(action, payload, secrets)
     except (

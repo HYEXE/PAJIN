@@ -39,6 +39,120 @@ def _input(target: str = "https://fixture.invalid/v1/chat/completions") -> str:
     )
 
 
+def _pinned_input() -> str:
+    value = json.loads(_input())
+    value["payload"].update(
+        {
+            "requestTimeoutSeconds": 180,
+            "transportVersion": "pajin.web-analysis.provider-transport/v2",
+        }
+    )
+    return json.dumps(value)
+
+
+def _provider_response() -> io.BytesIO:
+    return io.BytesIO(
+        json.dumps(
+            {
+                "id": "fixture-result",
+                "model": "fixture",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+        ).encode()
+    )
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["openai-chat-completion", "openai-chat-completion-v2"],
+)
+def test_legacy_provider_actions_keep_fixed_30_second_open_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    action: str,
+) -> None:
+    worker = _worker_entry()
+    observed_timeouts: list[float] = []
+
+    def open_response(request: object, *, timeout: float) -> io.BytesIO:
+        observed_timeouts.append(timeout)
+        return _provider_response()
+
+    monkeypatch.setattr(worker, "_open_http", open_response)
+    monkeypatch.setattr(worker.sys, "argv", ["worker_entry.py", action])
+    monkeypatch.setattr(worker.sys, "stdin", io.StringIO(_input()))
+
+    assert worker.main() == 0
+    assert observed_timeouts == [30.0]
+    assert json.loads(capsys.readouterr().out)["content"] == "ok"
+
+
+def test_pinned_provider_action_passes_exact_180_second_open_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    worker = _worker_entry()
+    observed_timeouts: list[float] = []
+
+    def open_response(request: object, *, timeout: float) -> io.BytesIO:
+        observed_timeouts.append(timeout)
+        return _provider_response()
+
+    monkeypatch.setattr(worker, "_open_http", open_response)
+    monkeypatch.setattr(worker.sys, "argv", ["worker_entry.py", "openai-chat-completion-v3"])
+    monkeypatch.setattr(worker.sys, "stdin", io.StringIO(_pinned_input()))
+
+    assert worker.main() == 0
+    assert observed_timeouts == [180.0]
+    assert json.loads(capsys.readouterr().out)["content"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("drop_field", "replacement"),
+    [
+        ("requestTimeoutSeconds", None),
+        (None, {"requestTimeoutSeconds": 179}),
+        (None, {"transportVersion": "pajin.web-analysis.provider-transport/v1"}),
+        (None, {"unexpected": True}),
+    ],
+)
+def test_pinned_provider_action_rejects_unpinned_payload_before_http(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    drop_field: str | None,
+    replacement: dict[str, object] | None,
+) -> None:
+    worker = _worker_entry()
+    value = json.loads(_pinned_input())
+    if drop_field is not None:
+        value["payload"].pop(drop_field)
+    if replacement is not None:
+        value["payload"].update(replacement)
+    http_calls = 0
+
+    def fail_if_opened(*args: object, **kwargs: object) -> io.BytesIO:
+        nonlocal http_calls
+        http_calls += 1
+        return _provider_response()
+
+    monkeypatch.setattr(worker, "_open_http", fail_if_opened)
+    monkeypatch.setattr(worker.sys, "argv", ["worker_entry.py", "openai-chat-completion-v3"])
+    monkeypatch.setattr(worker.sys, "stdin", io.StringIO(json.dumps(value)))
+
+    assert worker.main() == 65
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert http_calls == 0
+    assert "stage=worker-action" in audit_safe_worker_failure(captured.err, exit_code=65)
+
+
 @pytest.mark.parametrize(
     ("error", "category", "exit_code"),
     [

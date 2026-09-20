@@ -2117,6 +2117,220 @@ def run_ctf_web_challenge(
     )
 
 
+@app.command("web-assess-local")
+def run_local_web_target(
+    origin: Annotated[str, typer.Option("--origin")] = "http://127.0.0.1:3000",
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/web-assessments"),
+    authorized_local_lab: Annotated[
+        bool,
+        typer.Option(
+            "--authorized-local-lab",
+            help=("Attest that the exact numeric loopback target is an authorized disposable lab."),
+        ),
+    ] = False,
+    headless: Annotated[
+        bool,
+        typer.Option("--headless/--headed"),
+    ] = True,
+) -> None:
+    """Assess an explicitly authorized local OWASP Juice Shop instance."""
+
+    with _cli_error_boundary("Local Web assessment failed", exit_code=2):
+        from pajin.web_assessment import (
+            issue_local_web_assessment_authorization,
+            juice_shop_plan,
+            run_local_web_assessment,
+        )
+
+        plan = juice_shop_plan(origin)
+        authorization = issue_local_web_assessment_authorization(
+            plan,
+            operator_confirmed_authorized_local_lab=authorized_local_lab,
+        )
+        artifacts = asyncio.run(
+            run_local_web_assessment(
+                plan=plan,
+                authorization=authorization,
+                output_root=output,
+                headless=headless,
+            )
+        )
+
+    table = Table(title="PAJIN Local Web Assessment")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Severity")
+    for issue in artifacts.result.issues:
+        table.add_row(issue.check, issue.status, issue.severity)
+    console.print(table)
+    console.print(
+        "Locally validated attack paths: "
+        + str(sum(path.status == "locally-validated" for path in artifacts.result.attack_paths))
+    )
+    _print_cli_field("Run ID", artifacts.result.run_id, label_style="bold green")
+    _print_cli_field("Sealed Run", artifacts.run_path.resolve())
+    _print_cli_field("Result", artifacts.result_path.resolve())
+    _print_cli_field("Report", artifacts.report_path.resolve())
+    console.print("No credentials were persisted and no external delivery was performed.")
+
+
+@app.command("web-campaign-observe-local")
+def observe_local_web_campaign(
+    origin: Annotated[str, typer.Option("--origin")] = "http://127.0.0.1:3000",
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/web-assessments"),
+    authorized_local_lab: Annotated[
+        bool,
+        typer.Option(
+            "--authorized-local-lab",
+            help=("Attest that the exact numeric loopback target is an authorized disposable lab."),
+        ),
+    ] = False,
+    headless: Annotated[
+        bool,
+        typer.Option("--headless/--headed"),
+    ] = True,
+) -> None:
+    """Run the bounded WEB-004 local observation flow without minting authority."""
+
+    with _cli_error_boundary("Local Web campaign observation failed", exit_code=2):
+        from pajin.web_assessment import (
+            issue_local_web_assessment_authorization,
+            juice_shop_plan,
+        )
+        from pajin.web_assessment.campaign_observation import (
+            run_local_web_campaign_observation,
+        )
+
+        plan = juice_shop_plan(origin)
+        authorization = issue_local_web_assessment_authorization(
+            plan,
+            operator_confirmed_authorized_local_lab=authorized_local_lab,
+        )
+        artifacts = asyncio.run(
+            run_local_web_campaign_observation(
+                plan=plan,
+                authorization=authorization,
+                output_root=output,
+                headless=headless,
+            )
+        )
+
+    table = Table(title="PAJIN Local Web Campaign Observation")
+    table.add_column("Check")
+    table.add_column("Local status")
+    for claim in artifacts.result.source.semantic_claims.claims:
+        table.add_row(claim.check, claim.status)
+    for diagnostic in artifacts.result.extra_diagnostics:
+        table.add_row(diagnostic.check, diagnostic.status)
+    console.print(table)
+    console.print(
+        "Authenticated passive discovery: "
+        f"{len(artifacts.result.discovery.routes)} query-free routes, "
+        f"{len(artifacts.result.discovery.forms)} value-free forms"
+    )
+    console.print("Bounded attack paths: " + str(len(artifacts.result.source.result.attack_paths)))
+    console.print(
+        "Neutral sealed-source Graph proposals: "
+        f"1 observation + {len(artifacts.result.neutral_graph_projection.hypothesis_proposals)} "
+        "hypotheses (not admitted)"
+    )
+    _print_cli_field("Observation Run ID", artifacts.result.run_id, label_style="bold green")
+    _print_cli_field("Sealed observation", artifacts.run_path.resolve())
+    _print_cli_field("WEB-003 source Run", artifacts.source_artifacts.run_path.resolve())
+    _print_cli_field("Report", artifacts.report_path.resolve())
+    console.print(
+        "The disposable account remains in the approved local lab. Credentials were not persisted."
+    )
+    console.print(
+        "No core CampaignManifest, ActionPermit, or Gateway dispatch occurred; Graph admission, "
+        "Finding/SARIF authority, and external delivery remain disabled."
+    )
+
+
+@app.command("web-campaign-run-governed-local")
+def run_governed_local_web_campaign_command(
+    origin: Annotated[str, typer.Option("--origin")] = "http://127.0.0.1:3000",
+    adapter_ref: Annotated[str, typer.Option("--adapter-ref")] = "juice-shop-local/v1",
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(
+        ".pajin/web-governed-assessments"
+    ),
+    authorized_local_lab: Annotated[
+        bool,
+        typer.Option(
+            "--authorized-local-lab",
+            help=(
+                "Attest that the exact numeric loopback target is an authorized disposable lab."
+            ),
+        ),
+    ] = False,
+    headless: Annotated[
+        bool,
+        typer.Option("--headless/--headed"),
+    ] = True,
+) -> None:
+    """Run the signed, exact-origin governed browser campaign for the local lab."""
+
+    with _cli_error_boundary("Governed local Web campaign failed", exit_code=2):
+        from pajin.web_assessment.governed import run_governed_local_web_campaign
+
+        artifacts = asyncio.run(
+            run_governed_local_web_campaign(
+                origin=origin,
+                adapter_ref=adapter_ref,
+                output_root=output,
+                authorized_local_lab=authorized_local_lab,
+                headless=headless,
+            )
+        )
+        result = artifacts.result
+
+    table = Table(title="PAJIN Governed Local Web Campaign")
+    table.add_column("Outcome")
+    table.add_column("Count")
+    table.add_row(
+        "Gateway dispatches",
+        str(len({result.source_gateway_run_id, result.validation_gateway_run_id})),
+    )
+    table.add_row(
+        "Independent browser subprocesses",
+        str(
+            len(
+                {
+                    result.source_observer_process_id,
+                    result.source_executor_process_id,
+                    result.validation_observer_process_id,
+                    result.validation_executor_process_id,
+                }
+            )
+        ),
+    )
+    table.add_row("Graph admission events", str(result.graph_event_count))
+    table.add_row("Validated findings", str(result.finding_count))
+    table.add_row("Confirmed attack paths", str(result.attack_path_count))
+    console.print(table)
+    _print_cli_field("Campaign", result.campaign_id, label_style="bold green")
+    _print_cli_field("Source assessment Run", result.source_run_id)
+    _print_cli_field("Validation assessment Run", result.validation_run_id)
+    _print_cli_field("Validation projection Run", result.validation_projection_run_id)
+    _print_cli_field("Coordinator Run", artifacts.parent_run_path.resolve())
+    _print_cli_field("Graph store", artifacts.graph_path.resolve())
+    _print_cli_field("Validated report", artifacts.report_path.resolve())
+    _print_cli_field("SARIF", artifacts.sarif_path.resolve())
+    _print_cli_field(
+        "PoC bundle",
+        artifacts.poc_manifest_path.resolve(),
+    )
+    _print_cli_field("Delivery readiness", artifacts.delivery_readiness_path.resolve())
+    console.print(
+        "The preprovisioned local-lab account remains on the target; no credentials were "
+        "persisted."
+    )
+    console.print(
+        "External delivery was not authorized or performed; only a local readiness manifest "
+        "was written."
+    )
+
+
 @app.command("ctf-suite-run")
 def run_ctf_suite(
     suite_name: Annotated[str, typer.Argument()],
