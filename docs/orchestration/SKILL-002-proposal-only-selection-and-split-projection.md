@@ -6,6 +6,12 @@
   [ADR-0303](../adr/0303-qualify-and-split-proposal-only-skill-projection-before-model-dispatch.md)
 - Successor consumption decision:
   [ADR-0304](../adr/0304-pin-and-seal-one-shot-skill-bound-web-analysis-invocation.md)
+- Compact capacity decision:
+  [ADR-0317](../adr/0317-prove-compact-skill-bound-web-analysis-capacity-before-model-dispatch.md)
+- Attested live-preparation decision:
+  [ADR-0318](../adr/0318-attest-descriptor-bound-model-materialization-before-live-web-analysis.md)
+- Prepared admission and live-authority decision:
+  [ADR-0319](../adr/0319-separate-prepared-compact-admission-from-live-call-authority.md)
 - Provider dispatch: none
 - Target actions: none
 
@@ -121,9 +127,10 @@ flowchart LR
     T -. separately authorized fresh Run .-> M[One local model dispatch]
 ```
 
-The instruction projection is authorized only for the successor developer message. The unchanged
-WEB-007 evidence projection remains tainted and is authorized only for its user message. The bundle
-cannot be serialized as one authorized user message and cannot dispatch a Provider call by itself.
+The existing instruction projection is authorized only for the legacy successor `developer`
+message. The unchanged WEB-007 evidence projection remains tainted and is authorized only for its
+`user` message. The bundle cannot be serialized as one authorized user message and cannot dispatch
+a Provider call by itself.
 
 The implemented successor consumes those projections exactly as intended: instructions become one
 developer message and Evidence becomes one user message. That consumer has its own request, draft,
@@ -131,6 +138,33 @@ compiler, receipt, event, artifact, transport-Pin, and strict-loader grammar. It
 SKILL-002 preparation Run or grant that Run dispatch authority. One authorized operational attempt
 ended before `model.call.started` because the exact successor request exceeded the Campaign
 model-token budget; model dispatch and target dispatch both remained zero.
+
+Pinned-tokenizer and embedded-template measurement now proves the full legacy request is also too
+large for its RuntimePin: the 4,208-token prompt plus the fixed 1,024-token completion ceiling is
+5,232 tokens, above the 4,096-token context. The template does not natively render `developer`, so
+the legacy request is frozen as non-dispatchable rather than rewritten in place.
+
+The additive compact projection now places only bounded code-owned Skill guidance in one `system`
+message while retaining bounded tainted Evidence in one `user` message. Its separate versioned
+projection/request identity does not reinterpret this preparation Run or grant it dispatch
+authority. Its sealed offline proof used only `/props`, `/apply-template`, and `/tokenize`, verified
+that distinct sentinels from both messages occur in the rendered template, and performed no
+inference, completion, Provider dispatch, or target request. The earlier prototype
+`1,505 + 1,024 = 2,529` measurement remains historical and preliminary; the final strict-reloaded
+proof recomputed `1,460 + 1,024 = 2,484`, leaving 1,612 tokens in the 4,096-token context. Its
+conservative Campaign bound is `50,144 + 1,024 = 51,168 <= 65,536`.
+
+Capacity Run `run_20260921T021716Z_b3939e0c`, root
+`7991465747157b7ef4a75f79905955a4bc47bcb24915cf22438eab8150294383`, binds compact projection
+digest `8ba7a786ca994ee7792a2f858c39a35470b1aa65e2e085961c8d66adee070b8b`, exact chat-request
+digest `aae9d347ec353e911bf1d4ceb4535af485ae3e3556a13f414f75bb6665554244`, capacity Pin digest
+`998f7c8340d42715ddf462b0f7ce5e35c577cd5e2f12335c51e1c56641338677`, and proof digest
+`bf30a56e691a0ebd3e41a6a75570fc655aa4dc1d0d327c6160c161bae8b0e95f`. Its fifth evidence
+artifact digest is `1a2ecb50f3d0b69fafcbf6d61c4bddf27eb6685e27df0b411ef372b353803b18`; it seals the 5,593-byte
+formatted prompt, 2,630-byte chat template, and all 1,460 token IDs. Strict reload independently
+recomputed their byte counts, digests, token count, sentinel membership, and system-before-user
+order. It succeeded, the tokenizer container was removed, and all completion, Provider-dispatch,
+and target-request counts remained zero.
 
 Only the four selected Skill bodies appear in the instruction projection. Full registry contents,
 the Finding narrative body, target locator, routes, selectors, credentials, payloads, commands,
@@ -202,10 +236,27 @@ state rejection.
 
 Distinct immutable Worker and proxy images are now built and independently pinned. The operational
 entry point verifies them together with the sealed source, comparison plan, SKILL-002 Run, model
-file, fresh output roots, and now the exact successor accounting bound before model startup. It also
+file, fresh output roots, and the exact successor accounting bound before model startup. It also
 fails closed when the conservative prompt-plus-completion bound exceeds the frozen 4,096-token
-RuntimePin. The current request is rejected before runtime construction. Because this second guard
-is not an exact tokenizer measurement, another separately authorized Provider dispatch still
-requires pinned tokenizer/chat-template capacity proof, or an additive compact wire/new Web runtime
-Pin. No target request, Recipe binding, Capability, Permit, Finding, Graph, report, or external
+RuntimePin. The current request is rejected before runtime construction, and exact pinned-tokenizer
+measurement independently confirms that the full legacy wire cannot fit.
+
+Attested Capacity v2 Run `run_20260921T052042Z_0932a478`, root
+`d7864c15b7df572294fae99dfe65516543ac82672faab3ca84a53b1c47d8a574`, additionally binds the
+no-follow model descriptor to staged and read-only-mounted runtime UID/GID `10001:10001`, mode
+`0400`, size, SHA-256, and runtime-user read verification. Historical Capacity v1 remains readable
+but is not the live gate.
+
+The separate live-preparation Run `run_20260921T052213Z_801a9053`, root
+`c2b77fd6a1b70fcf60fb13d5b3c8a4d436cfc219f8868c6dedb572009dd010d5`, strict-reloads the exact
+source, SKILL-002, transport, Capacity v2 Run/root/Pin/Proof, and materialization attestation. It is
+sealed as `prepared-not-authorized-no-dispatch` with every runtime, invocation, Provider, target,
+Tool, Permit, Finding, Graph, report, and delivery count at zero and every authority false.
+
+The additive non-executing admission now strict-reloads this preparation and binds the exact compact
+request, Capacity proof, Skill lineage, message digests, and token counts while leaving authorization,
+claim, live materialization, and dispatch false. The next step is ADR-0319's external one-call
+authorization, durable single-use CAS, descriptor-bound live model attestation, and additive compact
+runtime/receipt. Only after all four gates and separate user approval may one fresh completion Run
+occur. No target request, Recipe binding, Capability, Permit, Finding, Graph, report, or external-
 delivery authority is added.

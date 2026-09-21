@@ -1,6 +1,6 @@
 # PAJIN 현재 인수인계
 
-체크포인트: 2026-09-20. 승인된 네 후속 항목과 별도로, 사용자가 승인한 local OWASP Juice Shop의
+체크포인트: 2026-09-21. 승인된 네 후속 항목과 별도로, 사용자가 승인한 local OWASP Juice Shop의
 WEB-003 고정 browser 평가, WEB-004 Campaign/Capability 준비·인증형 passive discovery, WEB-005의
 서명된 governed 실행·독립 검증·Graph admission·Finding·공격 경로·보고서·SARIF·redacted PoC까지
 구현하고 실제 실행했다. EFFECT-007·GRAPH-PERF-006·UX-014, WEB-003~007·SKILL-001~002,
@@ -17,8 +17,15 @@ successor도 구현·테스트했다. 새 immutable Worker/proxy image build, �
 진행한 뒤 승인된 첫 successor attempt를 실행했다. exact 요청의 보수적 회계 상한 `88,496`이 Campaign
 한도 `65,536`을 초과해 `model.call.started`와 Gateway 전에 차단됐고 실제 model dispatch는 0회였다.
 누락된 exact successor budget 검사와 4,096-token RuntimePin의 보수적 context admission은 model
-시작 전 preflight에 추가했다. 현재 요청은 두 gate 모두 통과할 수 없으며 target·Recipe·Capability·
-Permit에는 연결하지 않았다.
+시작 전 preflight에 추가했다. pinned tokenizer/template로 legacy full `[developer,user]` request를
+측정한 결과 `4,208 + 1,024 = 5,232 > 4,096`이므로 이 wire는 비실행 가능 상태로 동결한다. embedded
+Qwen template는 `developer` role을 native render하지 않는다. historical Capacity v1 뒤 output-root와
+model provenance를 보강한 Capacity v2 `run_20260921T052042Z_0932a478`이 exact model materialization과
+total 2,484/4,096, Campaign 51,168/65,536을 strict reload했다. proof-bound preparation
+`run_20260921T052213Z_801a9053`도 zero-dispatch로 strict reload됐다. completion·Provider·target 호출과
+owned container·volume 잔존은 0이다. 이어 exact compact request와 prerequisite anchors를 non-executing
+admission에 결박했다. 다음은 외부 one-call authorization·durable CAS·live model attestation·additive
+compact runtime/receipt이며 completion은 아직 승인·실행되지 않았다.
 
 ## 2026-09-20 AGENTIC-002·003A/B/C1/C2/C3A/C3B1/C3B2·C3C 기반·004 체크포인트
 
@@ -195,24 +202,13 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 
 ## Git과 원격 인수인계
 
-- 이번 작업 전 HEAD·upstream·실제 원격 기준은
-  `39c66a2109b084a685b3047bd81b1c900fafc7d4`였다. 새 구현은 `8b011b3`, `3768198`, `f6bfb97`,
-  `a489840`의 네 논리 커밋과 이 문서 체크포인트에 보존한다. 최종 authoritative SHA는 Git의
-  `main`·`origin/main`에서 확인한다.
-- tracked 소스·테스트·문서는 최종 문서 커밋 뒤 staged/unstaged/untracked 변경 없이 유지한다.
-  `output/`, `.playwright-cli/`, `.pajin/`의 private/raw 실행 근거는 로컬에 보존하되 Git에서
-  제외하므로 다른 환경에는 전달되지 않는다.
-- 기존 다섯 slice와 문서를 논리적 커밋으로 반영한 뒤 OPS 승인 재개 순서를 보완했고,
-  Replay executor 호출 직전 local lease를 재검사했다. 초기 실패 근거는 별도로 보존한다.
-- 같은 SHA의 CI 34697511883과 Web 34697548312·Network 34697549625·AI 34697550710·
-  OPS 34697551793·SYS 34697553124가 모두 첫 시도 성공했다. 일반 CI의 24개 artifact에서
-  clean source·exit 0·고유 8,751 ID와 실제 **8,675 passed·기존 76 skipped**를 확인했다.
-- OPS는 585.78초에 기존 11·추가 15·witness 21 검사와 32회 새 process 검증을 통과했다.
-  SYS는 OS-release/ASLR 각각 네 Worker 실행을 확인했다. 두 실증의 source digest는 Git archive의
-  `c7545b3b1542fc1d3a124efb4b1383ad5aa069e97d0126291bd29b14ff3ed14f`와 같다.
-  독립 container/network/volume 관찰도 통과했다. 이번 새 SHA의 원격 CI 결과가 아니다.
-- 근거: `.pajin/four-followups-20260912/remote-final/verified-summary.json`과 같은 디렉터리의
-  여섯 workflow artifact. 앞선 실패는 `remote/`, `remote-fixed/`에 구분한다.
+- 현재 branch는 `main`, HEAD와 `origin/main`은
+  `ba748239d7c78fc7928435325813ee37dc32fd38`로 같다.
+- 이 체크포인트는 **미커밋·미push**다. staged 변경은 없고, 현재 작업 범위의 tracked
+  문서 6개가 수정됐으며 새 ADR·source·script·test 16개가 untracked다. 정확한 목록은
+  `git status --short`를 권위로 삼는다.
+- `output/`·`.pajin/`의 private/raw 근거는 로컬에만 보존되며 Git으로 전달되지 않는다.
+  기존 `39c66a2` 원격 CI 결과는 이 새 변경의 검증 근거가 아니다.
 
 ## WEB-003 — 실제 browser 평가 완료, 일반 Web 권위는 없음
 
@@ -397,7 +393,7 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 - 계약은 `docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md`, 결정은
   ADR-0300이다.
 
-## WEB-007 — Skill-bound successor까지 구현, 실제 success는 아직 미확인
+## WEB-007 — Capacity v2·zero-dispatch preparation·non-executing admission 완료
 
 - 실제 pre-diagnostic source는 `run_20260915T142836Z_95615cb9`, root
   `7a9de15039883dc483caad6d9a3f84f5e1d76745bc10285986fbe741b939bb50`다. 4 artifact·2 event,
@@ -444,6 +440,28 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   `1,024` = `88,496`이 Campaign `65,536`을 초과한다는 사실이 확인됐다. 이제 code-owned Provider
   registration과 exact Skill-bound chat에 같은 shared budget 검사를 적용해 이 입력을 model 시작 전에
   거부한다.
+- pinned Qwen tokenizer와 embedded chat template의 exact 측정에서 legacy full `[developer,user]`
+  prompt는 4,208 token이고 fixed completion ceiling 1,024를 합친 5,232 token이 4,096 context를
+  초과했다. 이 wire는 현재 RuntimePin에서 비실행 가능하며 historical request/Run을 바꾸거나 재시도하지
+  않는다. template는 `developer` role을 native render하지 않으므로 후속은 additive compact
+  `system+user` wire다. compact prototype prompt 1,505와 total 2,529는 역사적 preliminary 값이다.
+- historical Capacity v1은 readable하지만 live gate가 아니다. attested Capacity v2 Run은
+  `run_20260921T052042Z_0932a478`, root
+  `d7864c15b7df572294fae99dfe65516543ac82672faab3ca84a53b1c47d8a574`, Pin
+  `f9d52ba8cdf9c84bf91319642d9b1f33eb486c546c749b0cde8b9cb4b789295a`, proof
+  `f7f5f2566c397b3c459fd0701b39f6d80e81a1a4e32a81219af7b2f52ececedb`, materialization attestation
+  `d6aec01b2c4e5bd1f30c97aa6cf7a572fbaae95f8ccb87931fcf6ef5168741da`다. no-follow descriptor의
+  4,280,403,520 bytes를 owned volume에 복사하고 staged/read-only-mounted UID/GID `10001:10001`, mode
+  `0400`, size·SHA-256과 runtime-user read를 결박했다. strict loader가 prompt 1,460·total 2,484·margin
+  1,612와 Campaign 51,168/65,536을 재확인했다.
+- first v2 partial Run `run_20260921T045515Z_314d9364`은 copied `0600` host UID metadata 때문에
+  seed runtime read가 실패했고, second `run_20260921T051853Z_485fc572`는 Docker inspect의
+  `CAP_CHOWN` 표기 차이로 실패했다. 둘 다 unsealed·zero-dispatch이며 cleanup을 완료했다.
+  수정한 v2와 exact source·SKILL-002를 결박한 preparation Run은
+  `run_20260921T052213Z_801a9053`, root
+  `c2b77fd6a1b70fcf60fb13d5b3c8a4d436cfc219f8868c6dedb572009dd010d5`, status
+  `prepared-not-authorized-no-dispatch`로 strict reload됐다. model runtime/invocation·Provider·target·Tool·
+  Permit·Finding·Graph·report·delivery count는 0이고 owned container·volume 잔존도 없다.
 - successor Gateway는 exact raw `DockerWorkerBackend`를 유지해 host network-log provenance를 보존한다.
   별도 attestor가 Worker identity·allowed image·proxy image·external network·action route를 Tool 준비 전,
   준비 후 Secret Lease 전, 실제 backend run 직전에 다시 검증한다. drift는 raw Worker 호출 없이
@@ -461,11 +479,13 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   `ca495ab4d3fdb1cff4ac165fe4592cf6951738a732b3554ebae670bca3709720`이다. 두 Run은
   `provider-invocation-failed-uncertain`, dispatch 0, execution ID 0으로 strict reload됐고 model/network
   cleanup이 확인됐다. target request와 외부 전달은 0이다. 이 Run은 재사용하지 않는다.
-- 다음 단계는 회계 예산을 단순 확대하는 것이 아니다. pinned Qwen tokenizer와 exact chat template로
-  `prompt + completion <= 4,096`을 model 시작 전에 증명하고, 초과하면 additive compact wire 또는
-  별도 Web runtime Pin을 설계한다. 그 검증과 별도 승인 전에는 `live2`를 호출하지 않는다.
-  실제 compiled advisory가 strict reload되기 전 WEB-008 실행 topology로 진행하지 않는다.
-- 계약은 `docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md`, 결정은 ADR-0301·0304다.
+- output-root identity·model-bind provenance Findings는 actual v2로 닫았다. 새 non-executing admission은
+  source·Skill·Capacity·preparation sealed Run을 디스크에서 strict reload하고 그 canonical 객체로만
+  exact compact request와 prerequisite digests를 결박한다. 네 Run의 unseal·extra artifact·delete·
+  rename·symlink·tamper와 always-equal duck 입력은 authority 호출 없이 fail closed된다.
+  authorization·claim·live materialization·dispatch는 모두 false다. 다음은 ADR-0319의 네 P0 gate이고,
+  compiled advisory strict reload 전 WEB-008로 진행하지 않는다.
+- 계약은 `docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md`, 결정은 ADR-0301·0304·0317·0318·0319다.
 
 ## SKILL-001 — 지식 전용 registry 구현
 
@@ -519,11 +539,14 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 - 별도 successor에서 versioned Web transport/runtime Pin과 split-message
   request/draft/compiler/receipt/Run grammar를 구현·검증했다. 새 immutable image build/pin과 구조·
   provisioning 검사는 통과했지만 exact 요청은 회계 예산을 초과했고 보수적 4,096-token context gate도
-  추가됐다. 다음 단계는 호출이 아니라 pinned tokenizer/chat-template의 오프라인 용량 증명과 필요 시
-  additive compact wire 또는 새 RuntimePin 설계다. 이 결과와 별도 승인 뒤에만 새 analysis invocation을
-  정확히 한 번 수행한다.
+  추가됐다. exact tokenizer/template 측정상 full legacy wire는 `5,232 > 4,096`으로 들어가지 않고
+  template도 `developer` role을 native render하지 않는다. compact 5-artifact proof는 raw prompt·template·
+  token IDs를 독립 재계산해 total 2,484/4,096, margin 1,612와 Campaign 51,168/65,536으로 strict
+  reload됐다. attested Capacity v2와 zero-dispatch preparation도 strict reload됐고 non-executing
+  admission이 exact request와 lineage를 결박했다. 외부 authorization·durable CAS·live model attestation·
+  additive compact runtime/receipt와 별도 승인 뒤에만 completion을 한 번 수행한다.
 - 계약은 `docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md`, 결정은
-  ADR-0303·0304다.
+  ADR-0303·0304·0317·0318·0319다.
 
 ## EFFECT-007 — 실제 평가 완료, 종합 개선 기준 미달
 
@@ -646,15 +669,10 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   일반 direct close/context-manager/finalizer는 zeroization 증거가 아니며, 실제 model·Juice Shop·
   browser/network/Target I/O는 수행하지 않았다. 전체 저장소 검증은 위 2026-09-20 최종 인수인계
   결과를 따른다.
-- 새 immutable Worker/proxy image build/pin과 model 시작 전 exact request budget/context fail-closed
-  admission을 완료했다. 다음 한 단계는 모델 호출이 아니라 pinned tokenizer와 exact chat template를
-  이용한 오프라인 4,096-token capacity proof다. 초과하면 additive compact wire 또는 새 Web RuntimePin을
-  먼저 설계한다. 증명과 별도 호출 승인이 모두 갖춰진 뒤에만 fresh successor analysis Run을 정확히 한
-  번 실행하며, 성공 proposal strict reload 후 WEB-006 full governed Run·redacted PoC replay·비밀정보
-  검사와 확장 Web 회귀를 완료한다. 이 체크포인트의 commit/push 승인은 사용자가 제공했으며,
-  이후 변경의 원격 반영은 별도 승인 경계로 유지한다.
-  기존 `39c66a2` 원격 결과는 새 변경을 검증하지 않는다. 모델 평가군은 이미 소비됐으므로
-  commit을 위해 다시 생성하거나 조정에 재사용하지 않는다.
+- 최신 Capacity v2·zero-dispatch preparation·non-executing admission은 위 WEB-007 체크포인트를
+  권위로 삼는다. admission/preparation 집중 검증은 **82 passed**, 전체 compact Capacity 경계 묶음은
+  **193 passed**다. 새 source/test Ruff·format과 Linux strict mypy가 통과했다. model·Provider·target·
+  Docker 호출은 0이며 평가군은 재사용하지 않는다.
 
 Private controller와 logs의 기준은 `.pajin/four-followups-20260912/`다. 실제 자격증명과
 private 모델 원문은 출력하거나 tracked 문서에 복사하지 않는다. 전 단계 근거는

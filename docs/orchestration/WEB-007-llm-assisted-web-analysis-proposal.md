@@ -8,6 +8,12 @@
   [ADR-0301](../adr/0301-bind-llm-web-analysis-to-inert-typed-proposals.md)
 - Skill-bound successor decision:
   [ADR-0304](../adr/0304-pin-and-seal-one-shot-skill-bound-web-analysis-invocation.md)
+- Compact capacity decision:
+  [ADR-0317](../adr/0317-prove-compact-skill-bound-web-analysis-capacity-before-model-dispatch.md)
+- Materialization and live-preparation decision:
+  [ADR-0318](../adr/0318-attest-descriptor-bound-model-materialization-before-live-web-analysis.md)
+- Prepared admission and live-authority decision:
+  [ADR-0319](../adr/0319-separate-prepared-compact-admission-from-live-call-authority.md)
 
 ## Objective
 
@@ -51,6 +57,20 @@ review:
   required immutable Worker/proxy images and independent Pin are verified. The first authorized
   successor attempt found that its conservative request bound exceeded the Campaign model-token
   budget before dispatch; the entry point now performs that exact check before model startup.
+- **Confirmed capacity boundary:** the pinned tokenizer and embedded template measure the legacy
+  full `[developer, user]` prompt at 4,208 tokens. Its 1,024-token completion ceiling produces a
+  5,232-token total, so it cannot fit the frozen 4,096-token runtime. The template does not natively
+  render `developer`. The additive compact `system` plus `user` projection and sealed offline
+  capacity proof are implemented and strict-reloaded. The final proof measures
+  `1,460 + 1,024 = 2,484`, leaves 1,612 context tokens, and also passes conservative Campaign
+  accounting at `51,168 / 65,536`. Additive Capacity v2 now binds the exact no-follow descriptor
+  bytes, staged and read-only-mounted runtime UID/GID/mode/size/SHA-256, and mandatory cleanup.
+  Actual Capacity v2 strict-reloaded those measurements, and the separate proof-bound
+  live-preparation Run bound that exact proof with zero model completion, Provider dispatch, target
+  request, or downstream authority. The additive non-executing admission now strict-reloads that
+  preparation and binds the exact compact request and prerequisite lineage. External one-call
+  authorization, durable single-use claiming, descriptor-bound live runtime materialization, and
+  an additive compact runtime/receipt remain P0 gates before dispatch.
 
 WEB-007 does not make an arbitrary Web site executable. It does not add a production adapter,
 broaden the exact loopback origin, accept caller credentials, or weaken any existing WEB-006
@@ -284,10 +304,22 @@ verified transport Pin and the proposal-only invocation contract. The registered
 is strict-reloaded and reconstructs the exact source, registry, qualification, selection policy,
 instruction projection, and Evidence projection before planning the request.
 
-Exactly two messages are sent: selected code-reviewed Skill instructions in a developer message and
-the unchanged tainted opaque Evidence projection in a user message. The call permits no tools,
-streaming, parallel tool calls, fallback, or automatic redispatch. It uses attempt 1, seed 0,
-temperature 0.0, top-p 1.0, and a 1,024-token completion ceiling.
+The implemented legacy successor constructs exactly two messages: selected code-reviewed Skill
+instructions in a `developer` message and the unchanged tainted opaque Evidence projection in a
+`user` message. The call permits no tools, streaming, parallel tool calls, fallback, or automatic
+redispatch. It uses attempt 1, seed 0, temperature 0.0, top-p 1.0, and a 1,024-token completion
+ceiling. Exact pinned-tokenizer measurement gives this full rendered prompt 4,208 tokens, for a
+5,232-token prompt-plus-completion total. It therefore cannot be dispatched under the frozen
+4,096-token RuntimePin. The historical wire and terminal Runs remain unchanged and are not retried.
+
+The embedded Qwen template does not natively render `developer`. The implemented compact successor
+projection is additive and uses one bounded code-owned instruction projection in a `system` message
+and one bounded tainted Evidence projection in a `user` message. It places a distinct code-owned
+sentinel in each message, and the sealed capacity proof confirms that both sentinels survive template
+rendering in system-before-user order. The prototype measurement of 1,505 prompt tokens and a
+preliminary 2,529-token total is retained only as historical design evidence. The final
+strict-reloaded proof independently recomputed a 1,460-token prompt and 2,484-token total with the
+same completion ceiling, leaving 1,612 tokens in the frozen context.
 
 A success Run has seven exact artifacts and two events; a failure Run has four mandatory artifacts,
 an optional Provider outcome, an optional bounded rejected draft, and two events. Both shapes seal
@@ -296,11 +328,82 @@ policy, transport, Provider Run, and context anchors. A rejected response larger
 copied into the analysis Run, while its Provider outcome digest and byte count remain verified.
 Cancellation also terminalizes before propagation. Each runtime object can make only one attempt.
 
-Every successor receipt fixes one model dispatch and zero target requests. Automatic redispatch,
+Every live successor receipt fixes one model dispatch and zero target requests. Automatic redispatch,
 Scope expansion, Tool/Capability/Permit issuance, execution, Finding promotion, Graph admission,
 report publication, SARIF/PoC generation, and external delivery remain literally unauthorized. No
-live successor dispatch has occurred yet; the built and pinned images may be used only by a
-separately authorized fresh Run.
+live compact-successor dispatch has occurred. Its future integration must consume the exact
+zero-dispatch preparation, which already binds the eligible Capacity v2 proof, before the built and
+pinned images may be used by a separately authorized fresh Run.
+
+### Offline compact-capacity checkpoint
+
+The additive compact successor now has a sealed capacity proof produced through only the pinned
+runtime's `/props`, `/apply-template`, and `/tokenize` endpoints. The proof path performed no
+inference or completion and invoked no Provider, browser, or target. It binds the compact wire,
+model/tokenizer/template/RuntimePin identities, completion ceiling, rendered-prompt digest, exact
+token IDs, both message sentinels, and the checked context and Campaign inequalities. All execution
+and downstream-authority markers remain false.
+
+Capacity Run `run_20260921T021716Z_b3939e0c` sealed at root
+`7991465747157b7ef4a75f79905955a4bc47bcb24915cf22438eab8150294383`. Its capacity Pin digest is
+`998f7c8340d42715ddf462b0f7ce5e35c577cd5e2f12335c51e1c56641338677`, evidence digest is
+`1a2ecb50f3d0b69fafcbf6d61c4bddf27eb6685e27df0b411ef372b353803b18`, proof digest is
+`bf30a56e691a0ebd3e41a6a75570fc655aa4dc1d0d327c6160c161bae8b0e95f`, and Index digest is
+`047c80c5fb56e0cf42c0b8bdec4259917cf4b715501effec7365c53cace66283`. The compact-projection
+digest is `8ba7a786ca994ee7792a2f858c39a35470b1aa65e2e085961c8d66adee070b8b`, the exact chat-request
+digest is `aae9d347ec353e911bf1d4ceb4535af485ae3e3556a13f414f75bb6665554244`, the template digest is
+`61be32c41fcad4c4ed2a4b656577feef0d09c4bf37142ead33246e218945c4a6`, and the tokenizer-runtime
+digest is `d32d223f88d4723b0a281df699f0c1df96e992d9c372c4664c893c33e6745326`.
+
+The fifth evidence artifact seals the 5,593-byte formatted prompt, 2,630-byte chat template, and
+all 1,460 token IDs. Strict reload independently recomputes their byte counts, digests, token count,
+sentinel membership, and system-before-user order. The exact proof is
+`1,460 + 1,024 = 2,484 <= 4,096`, with a 1,612-token margin. Conservative Campaign accounting is
+`50,144 + 1,024 = 51,168 <= 65,536`. Strict reload succeeded, the tokenizer container was removed,
+and completion, Provider-dispatch, and target-request counts were all zero. The earlier prototype
+`1,505 + 1,024 = 2,529` remains preliminary history rather than proof evidence.
+
+This historical v1 proof authorizes no model call and is not eligible as the live gate. ADR-0318
+implements its successor as an attested Capacity v2 plus a separate zero-dispatch preparation.
+Exactly one fresh completion may run only after that preparation is consumed by an additive
+one-shot integration and after separate user approval. No such approval or completion exists yet.
+
+### Attested Capacity v2 and zero-dispatch live preparation
+
+The historical v1 proof remains readable but is not eligible as the live gate. Capacity v2 holds a
+no-follow descriptor for the exact GGUF bytes across Docker copy into an owned volume. A pinned,
+network-none, read-only-root seed drops every capability except `CAP_CHOWN`, normalizes only the
+volume copy to UID/GID `10001:10001` and mode `0400`, and verifies size and SHA-256 as that runtime
+user. The tokenizer then mounts the same volume read-only and independently repeats the metadata and
+digest observations before its tokenizer endpoints are used. No host model path is bind-mounted and
+the host file is never chmodded or chowned.
+
+The first full attempt, partial Run `run_20260921T045515Z_314d9364`, copied the model and failed
+closed when Docker preserved host `0600`/UID metadata that the capability-dropped seed could not
+read. The next attempt, partial Run `run_20260921T051853Z_485fc572`, failed the topology check because
+Docker inspect reports `CAP_CHOWN`, not the CLI spelling `CHOWN`. Both partial Runs remained unsealed,
+performed no dispatch, and removed their owned container and volume. They were not retried in place.
+
+The successful Capacity v2 Run is `run_20260921T052042Z_0932a478`, root
+`d7864c15b7df572294fae99dfe65516543ac82672faab3ca84a53b1c47d8a574`. Its Pin is
+`f9d52ba8cdf9c84bf91319642d9b1f33eb486c546c749b0cde8b9cb4b789295a`, Proof is
+`f7f5f2566c397b3c459fd0701b39f6d80e81a1a4e32a81219af7b2f52ececedb`, and model-materialization
+attestation is `d6aec01b2c4e5bd1f30c97aa6cf7a572fbaae95f8ccb87931fcf6ef5168741da`.
+Strict reload reproduced the same 1,460 prompt tokens, 2,484 total, 1,612-token margin, and Campaign
+51,168/65,536. Cleanup and absence verification found no owned tokenizer container or model volume.
+
+The separate proof-bound preparation Run is `run_20260921T052213Z_801a9053`, root
+`c2b77fd6a1b70fcf60fb13d5b3c8a4d436cfc219f8868c6dedb572009dd010d5`, with status
+`prepared-not-authorized-no-dispatch`. It strict-reloads exact source, SKILL-002, transport, Capacity
+v2 Run/root/Pin/Proof, and materialization-attestation anchors. Its model-runtime, model-invocation,
+Provider, target, Tool, ActionPermit, Finding, Graph, report, and delivery counts are all zero; every
+corresponding authority and future-call authorization is false.
+
+The additive non-executing admission now consumes this preparation only as immutable evidence and
+re-derives the exact compact request. It does not claim the preparation or authorize a dispatch.
+The next step is the four-gate live boundary in ADR-0319; a fresh completion remains behind separate
+authorization, and no WEB-008 action may start before a successful advisory is sealed and
+strict-reloaded.
 
 ## v1alpha2 expansion
 
@@ -366,7 +469,7 @@ destination-bound action with explicit authorization and a delivery receipt.
 | Performance | Adds one local inference to the analysis path | The old actual call hit the 30-second upstream I/O cap; the successor now pins 180 seconds at each relevant layer, but successful completion latency remains unmeasured |
 | Memory | Adds a local model runtime and bounded prompt/response buffers | Qwen3 4B Q8 is selected and pinned; peak RSS remains unmeasured |
 | Reliability | Model failure is isolated from target execution and closes its Run | Actual timeout was sealed terminally with no in-Run retry or target request |
-| Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Frozen source/model/SKILL-002 inputs, the independent Pin, and new immutable images pass structural checks; the exact request is rejected before model startup by accounting-budget and conservative 4,096-token context admission, so offline tokenizer/template proof is next |
+| Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Frozen source/model/SKILL-002 inputs, the independent Pin, and new immutable images pass structural checks; Capacity v2 reproduces 2,484/4,096 and 51,168/65,536, the zero-dispatch preparation binds that proof, and the non-executing admission binds the exact request; ADR-0319's four P0 live gates remain next |
 | Migration | Additive sidecar Run; no existing artifact rewrite | Source and failure Runs strictly reload; legacy formats remain unchanged |
 
 What makes the v1alpha1 shape attractive is that we can validate the LLM boundary without giving it
@@ -465,8 +568,17 @@ preflight now reconstructs the same code-owned Provider registration and exact S
 rejects this request before model startup. It also applies the same conservative accounting bound to
 the frozen 4,096-token RuntimePin and rejects any request whose prompt-plus-completion upper bound
 does not fit. This second gate is deliberately fail-closed and is not reported as an exact tokenizer
-measurement. The failed Runs are never retried or reopened; the next step is offline pinned
-tokenizer/chat-template capacity proof, not another invocation.
+measurement. A separate exact pinned-tokenizer/template measurement now establishes that the legacy
+full prompt is 4,208 tokens and cannot fit with its 1,024-token completion ceiling. The failed Runs
+are never retried or reopened. The additive compact wire, attested Capacity v2, and exact
+zero-dispatch preparation are complete. Capacity v2 Run `run_20260921T052042Z_0932a478`
+strict-reloads the final `1,460 + 1,024 = 2,484 <= 4,096` result and conservative Campaign total
+`51,168 <= 65,536`; preparation Run `run_20260921T052213Z_801a9053` binds that eligible proof without
+reclassifying it as call authority. Both made zero completion, Provider-dispatch, and target requests
+and left no owned tokenizer container or model volume. The non-executing admission now binds the
+same preparation to the exact compact request while keeping authorization, durable claim, live
+materialization, and dispatch false. ADR-0319's four P0 gates and separate approval remain required
+before one fresh completion.
 
 ## Non-goals and open decisions
 
@@ -479,9 +591,12 @@ tokenizer/chat-template capacity proof, not another invocation.
   remediation, Finding, or report text becomes authoritative.
 - No subset selection or execution scheduling is supported by v1alpha1.
 - Qwen3 4B Instruct 2507 Q8_0 and its immutable revision are selected for this local v1alpha1 run.
-  The accounting bound is not a tokenizer result. The frozen context is 4,096 tokens and the
-  completion ceiling is 1,024, so pinned tokenizer and exact chat-template admission must prove the
-  request fits before another attempt. Context adequacy, hardware floor, successful latency, peak
-  memory, output stability, and an acceptance threshold remain to be measured.
+  The frozen context is 4,096 tokens and the completion ceiling is 1,024. Exact pinned-tokenizer and
+  embedded-template measurement proves the legacy full prompt does not fit: `4,208 + 1,024 = 5,232`.
+  The additive compact `system` plus `user` prototype historically measured
+  `1,505 + 1,024 = 2,529`; the final sealed proof independently recomputed
+  `1,460 + 1,024 = 2,484`, leaving 1,612 tokens, and passed conservative Campaign accounting at
+  `51,168 / 65,536`. The four-gate live integration in ADR-0319, hardware floor, successful latency,
+  peak memory, output stability, and an acceptance threshold remain to be verified.
 - The v1alpha2 action schemas, risk tiers, approval policy, maximum action graph, and replan cadence
   require a separate implementation contract before execution is enabled.

@@ -5,6 +5,33 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0319](docs/adr/0319-separate-prepared-compact-admission-from-live-call-authority.md):
+  sealed preparation·Capacity·Skill anchors와 exact compact `system+user` request를 비실행
+  admission으로 결박하되 preparation/admission을 실행 bearer로 취급하지 않는다. 실제 live call 전에는
+  외부 one-call authorization, preparation+authorization durable CAS, descriptor-bound live model
+  attestation, additive compact runtime·receipt·loader가 모두 필요하며 legacy runtime·host bind·
+  code-generated local Campaign approval은 이 권위를 대신할 수 없다.
+- [ADR-0318](docs/adr/0318-attest-descriptor-bound-model-materialization-before-live-web-analysis.md):
+  Capacity v2는 no-follow descriptor의 GGUF bytes를 owned Docker volume으로 복사하고 network-none
+  seed의 유일한 `CAP_CHOWN`으로 volume 내부 runtime UID/GID·mode를 정규화한다. 실제 runtime user의
+  staged/read-only-mounted size·SHA-256 읽기를 attestation으로 결박하며 historical v1 proof는 live
+  gate로 승격하지 않는다. exact source·SKILL-002·Capacity v2를 strict reload한 별도 preparation
+  Run은 모든 call·Tool·Permit·Finding·Graph·report·delivery count와 권위를 0/false로 봉인한다.
+  direct live successor는 ADR-0319의 별도 admission과 네 P0 gate로 대체됐다.
+- [ADR-0317](docs/adr/0317-prove-compact-skill-bound-web-analysis-capacity-before-model-dispatch.md):
+  WEB-007 legacy full `[developer,user]` 요청은 pinned tokenizer 기준
+  `4,208 + 1,024 = 5,232`로 4,096-token RuntimePin에 들어가지 않으므로 비실행 가능 상태로 동결한다.
+  `developer` role을 native render하지 않는 embedded Qwen template에는 additive compact
+  `system+user` wire만 허용하며, 두 message sentinel을 모두 보존하는 tokenizer-only offline sealed
+  proof를 별도 model 호출 승인보다 먼저 요구한다. 역사적 compact prototype
+  `1,505 + 1,024 = 2,529`는 예비 측정으로만 남긴다. 최종 5-artifact Capacity Run
+  `run_20260921T021716Z_b3939e0c`는 raw formatted prompt·chat template·1,460개 token ID를 봉인하고
+  strict loader가 bytes·digest·token count·sentinel·순서를 독립 재계산해
+  `1,460 + 1,024 = 2,484 <= 4,096`과 Campaign `51,168 <= 65,536`을 증명했다. 이 proof는
+  completion·Provider dispatch·target request를 수행하거나 live dispatch 권위를 만들지 않는다.
+  ADR-0317의 당시 다음 단계였던 direct proof-bound integration은 ADR-0318의 attested
+  Capacity v2·zero-dispatch preparation으로 대체됐다. 현재 gate와 다음 단계는 ADR-0318을 따르며,
+  한 번의 completion에는 여전히 별도 사용자 승인이 필요하다.
 - [ADR-0316](docs/adr/0316-persist-specialist-job-attempts-and-typed-verification-without-recovering-dispatch-authority.md): additive SQLi v2의 complete seven-role Capability bundle·signed Range activation·exact action registry·deterministic `PreparedCapabilityAction`, distinct v2 Plan/runtime generation·same-Task Grant/approval/Permit·private capsule transfer와 Store-owned one-shot runtime claim, schema v6 JobAttempt·terminal receipt, canonical typed claim/dispatch verification DAG, 명시적 offline v5→v6 migration과 audit-only recovery를 정의한다. predecessor claim이나 source-byte-addressed fake result만으로는 public bearer 권위가 생기지 않는다. 별도의 Store-owned same-Task Gateway/Worker 경계가 durable JobAttempt·dispatch marker·zero-Target-I/O terminal receipt를 만들지만 실제 target 실행·독립 검증·Finding·Graph·보고 승격 권위는 아니다. 권위 zeroization 증거는 trusted composition에서 보관한 exact unbound Store close 호출로 한정하며 일반 direct close/context-manager/finalizer는 그 증거가 아니다.
 - [ADR-0315](docs/adr/0315-separate-c3c-conformance-contracts-from-executable-specialist-dispatch.md): C3C의 직렬화 가능한 audit binding과 exact Store·DB·Task에 묶인 opaque live capsule을 분리하고, Target-I/O-zero Worker conformance를 실제 Gateway/backend 실행과 구분한다. v1 inert identity는 Permit 뒤 실행형으로 교체하지 않으며, live 경로는 처음부터 v2 Capability·Grant·approval·Permit과 current Graph/catalog/deployment/Worker 재검증·terminal receipt를 사용한다.
 - [ADR-0314](docs/adr/0314-pin-specialist-permit-dispatch-to-one-deployment-and-record-grant-consumption.md): specialist Permit 경계를 exact Graph/Permit Store·live Ledger·approval keyring·complete Capability registry·shared writer로 구성된 단일 deployment trust root에 결박하고, 성공 callback에서 Grant lineage의 one-call 감소를 확인한 뒤 child Grant receipt를 schema version 5의 plan·execution crash fence와 함께 기록한다. ADR-0313의 caller-supplied Graph/verifier·plan별 writer·schema-v4 receipt 부재 부분만 대체하며 restart는 audit-only로 유지한다.

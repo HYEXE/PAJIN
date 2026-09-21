@@ -43,7 +43,23 @@ message로 분리한다. 정확히 한 번의 no-tools dispatch, terminal succes
 시도에서 exact 요청의 보수적 회계 상한 `88,496`이 Campaign 한도 `65,536`을 초과해
 `model.call.started`와 Gateway 전에 차단됐고 model dispatch는 0회였다. 이 누락은 exact successor
 요청을 model 시작 전에 검사하도록 수정했다. frozen 4,096-token context에 대한 pinned tokenizer/
-chat-template 적합성 증명은 아직 없어 새 호출은 진행하지 않는다.
+chat-template 측정 결과 legacy full `[developer,user]` 요청은 `4,208 + 1,024 = 5,232`로 들어가지
+않는다. embedded Qwen template도 `developer` role을 native render하지 않으므로 legacy wire는
+비실행 가능 상태로 동결한다. additive compact `system+user` prototype의
+`1,505 + 1,024 = 2,529`는 역사적 예비값으로만 남긴다. 2026-09-21 최종 5-artifact Capacity Run
+`run_20260921T021716Z_b3939e0c`는 raw formatted prompt·chat template·1,460개 token ID를 봉인하고
+strict loader가 이를 독립 재계산해 `1,460 + 1,024 = 2,484 <= 4,096`, margin 1,612와 Campaign
+`50,144 + 1,024 = 51,168 <= 65,536`을 증명했다. completion·Provider dispatch·target request는 모두
+0회이고 tokenizer container도 남지 않았다. 후속 security review의 output-root identity와 Docker
+model-bind provenance Finding은 descriptor-pinned output root와 Capacity v2로 닫았다. v2 Run
+`run_20260921T052042Z_0932a478`은 exact model bytes와 staged/read-only-mounted UID/GID `10001:10001`,
+mode `0400`, size·SHA-256을 결박하고 strict reload됐다. 이를 exact source·SKILL-002에 결박한
+zero-dispatch preparation Run `run_20260921T052213Z_801a9053`도
+`prepared-not-authorized-no-dispatch`로 strict reload됐다. 두 Run의 model completion·Provider·target
+호출은 0회다. 이어 sealed preparation과 exact compact request를 묶는 non-executing admission을
+구현·검증했다. 다음은 외부 one-call authorization, durable single-use CAS, live descriptor-to-volume
+attestation, additive compact receipt/runtime이며, 네 gate와 별도 사용자 승인 전에는 completion을
+호출하지 않는다.
 
 2026-09-17 AGENTIC-001에서 Codex형 논리 agent lifecycle, Canonical Graph root에 결박된
 LLM 가설 확장, Hypothesis Frontier, 결정론적 Path Scorer, bounded Dynamic Supervisor와
@@ -150,9 +166,17 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
 3. [ ] **Recipe binding과 LLM 종단 loop** — WEB-specific transport/runtime pin과 proposal-only
    successor Run grammar, 새 immutable image build/pin을 완료했다. 첫 승인 시도는 request-capacity
    preflight 누락으로 dispatch 전에 종결됐고, 이제 Campaign budget과 보수적 4,096-token context
-   admission이 같은 초과 요청을 model 시작 전에 거부한다. pinned tokenizer/context 적합성 증명과
-   versioned compact projection 또는 새 runtime Pin을 먼저
-   확정한 뒤 별도 승인된 한 번의 실제 호출로 성공 WEB-007 proposal을 strict reload하고,
+   admission이 같은 초과 요청을 model 시작 전에 거부한다. exact tokenizer 측정으로 legacy full
+   request도 `5,232 > 4,096`임을 확인했다. embedded template가 지원하는 additive compact
+   `system+user` wire와 두 message sentinel의 5-artifact offline sealed capacity proof는 구현·strict
+   reload됐다. final `2,484 <= 4,096`, margin 1,612와 conservative Campaign
+   `51,168 <= 65,536`이 권위값이고 prototype `2,529`는 역사적 예비값이다. output-root inode pin과
+   descriptor-to-owned-volume model materialization을 attested Capacity v2로 보강했고, actual v2 Run과
+   exact proof-bound zero-dispatch preparation Run을 strict reload하고 exact compact request와 모든
+   prerequisite anchor를 non-executing admission에 결박했다. 다음은 외부 one-call authorization,
+   durable single-use CAS, live descriptor-to-volume attestation, additive compact receipt/runtime이며,
+   이 네 gate와 별도 사용자 승인 뒤 한 번의 fresh model
+   completion으로 성공 WEB-007 proposal을 strict reload하고,
    별도 code-owned Skill→Recipe binding과
    WEB-008~010의 승인·Permit·Worker·독립 replay·Finding·Graph·보고·재계획을 연결한다.
 4. [ ] **교차 target transfer 평가** — Juice Shop은 개발·결정론적 회귀 대상으로 유지하고, 별도
@@ -183,9 +207,17 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
    request/draft/compiler/receipt와 success/failure Run grammar는 구현·테스트됐다. 새 immutable
    Worker/proxy image build/pin은 통과했다. 첫 successor attempt는 model-token 회계 예산에서
    zero-dispatch terminal failure로 닫혔고 budget/context fail-closed preflight를 추가했다. 보수적
-   회계 guard는 tokenizer 측정이 아니므로 pinned tokenizer와 exact chat template로 4,096 context
-   적합성을 별도 증명한 뒤에만 별도 승인된 새 invocation Run에서 정확히 한 번 시도한다.
-   fallback 진단이나 Permit 발급은 없다.
+   회계 guard와 별개로 pinned tokenizer/template가 legacy full request를
+   `4,208 + 1,024 = 5,232 > 4,096`으로 측정했다. legacy wire는 비실행 가능 상태로 보존하고,
+   additive compact `system+user` wire를 tokenizer-only 경로로 검증해 두 message sentinel, raw formatted
+   prompt·chat template·token IDs, exact context/Campaign inequality를 5-artifact Run으로 봉인·strict
+   reload했다. final `2,484 <= 4,096`, margin 1,612와 `51,168 <= 65,536`이 권위값이며 prototype
+   compact total `2,529`는 역사적 예비값이다. descriptor-bound Capacity v2와 exact source·Skill·proof
+   anchors를 가진 zero-dispatch preparation까지 actual strict reload됐고 non-executing admission이
+   exact compact request와 prerequisite lineage를 다시 결박한다. 다음은 외부 one-call authorization,
+   durable single-use CAS, live descriptor-to-volume attestation, additive compact receipt/runtime이고,
+   이 네 gate와 별도 승인 뒤 새 invocation Run에서
+   정확히 한 번 시도한다. fallback 진단이나 Permit 발급은 없다.
 3. [ ] **WEB-008 governed Campaign topology 연결** — discovery Worker, model invocation Run,
    compiled proposal을 source/validation 전의 정식 stage로 추가한다. 두 fresh-login 실행은
    같은 compiled-plan digest를 독립적으로 재해석하고 각각 별도 승인·single-use Permit·
@@ -240,8 +272,13 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
     schema/parser/compiler와 terminal failure 증거는 구현·검증했지만 실제 호출은 30초 upstream
     timeout으로 draft 없이 끝났다. versioned transport pin과 새 image 검증 뒤 승인된 successor
     시도는 exact 요청 `88,496`이 Campaign `65,536` 한도를 초과해 dispatch 전에 종결됐다. 이 요청
-    예산은 이제 model 시작 전에 검사하지만, pinned tokenizer 기준 4,096 context 적합성과 그 아래
-    새 Run의 성공 proposal·strict reload·latency/memory 측정 전까지 완료로 표시하지 않는다.
+    예산은 이제 model 시작 전에 검사한다. pinned tokenizer/template 측정상 legacy full request는
+    `5,232 > 4,096`으로 비실행 가능하다. additive compact wire의 최종 5-artifact offline proof는
+    `2,484 <= 4,096`, margin 1,612와 Campaign `51,168 <= 65,536`을 독립 재계산·strict reload했다.
+    non-executing admission은 exact preparation과 compact request를 다시 결박한다. 외부 one-call
+    authorization·durable CAS·live model attestation·additive compact runtime/receipt와 별도 사용자
+    승인 아래 새 Run의 성공 proposal·strict
+    reload·latency/memory 측정 전까지 완료로 표시하지 않는다.
 
 ## 현재 순차 구현 목표
 
@@ -294,7 +331,7 @@ PAJIN은 9개 Security Domain을 하나의 Canonical Graph와 Capability authori
 | 공통 엔진·Capability·Graph | CAP-001~006, GRAPH-001~006, legacy Profile 호환과 명시적 실행 gate | 기본·분산 실행으로 자동 확대하지 않음. [Capability](docs/capability/), [Graph](docs/graph/) |
 | Hybrid·협업·Supervisor | 제한된 WALK/CHAIN, MEM/HANDOFF, 검증된 proposal·invocation·approval·Permit | model output·metadata 자체는 실행·Finding 권위가 아님. [오케스트레이션 계약](docs/orchestration/) |
 | Pentest·Red Team | 승인된 GET Recon/Replay/Controls, 기존 KISA LLM/RAG와 고정 Web/MCP lab | 임의 대상·일반 보안 진단 전체 지원 아님. [Pentest adapter](docs/orchestration/PENTEST-004C2B2-concrete-child-deployment-adapters.md) |
-| Web/API | typed discovery/admission, 고정 SQLi 측정·Replay·Controls·product read, [WEB-003](docs/orchestration/WEB-003-exact-loopback-browser-assessment.md)의 고정 browser 평가, [WEB-004](docs/orchestration/WEB-004-bounded-authenticated-browser-campaign.md)의 비실행 Campaign 준비·passive discovery, [WEB-005](docs/orchestration/WEB-005-governed-local-authenticated-browser-campaign.md)의 signed Campaign/activation/Grant·Permit·Gateway·독립 Worker·Graph admission·Finding 3건·attack path 2건·보고서·SARIF·local PoC, [WEB-006](docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md)의 closed profile·진단 catalog·동일 인증 context bodyless discovery 증거, [WEB-007](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md)의 봉인 discovery 기반 local LLM 비실행 proposal 경계, [SKILL-001](docs/orchestration/SKILL-001-versioned-analysis-skill-registry.md)의 catalogued-only 분석 Skill 5개, [SKILL-002](docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md)의 exact proposal-only selection·split projection·zero-dispatch 준비 Run | production 실행 inventory는 exact `127.0.0.1:3000`의 `juice-shop-local/v1` 하나다. Skill consumer는 준비 Run 하나뿐이며 Provider·Recipe·Capability·Worker에는 연결되지 않았다. WEB-006 전체 governed 재검증과 WEB-007 실제 성공 proposal은 진행 중이다. 임의 사이트·SSO/MFA/CAPTCHA·가변 진단 cardinality·generic payload·container/remote target Worker·trusted egress receipt·외부 전달은 아님 |
+| Web/API | typed discovery/admission, 고정 SQLi 측정·Replay·Controls·product read, [WEB-003](docs/orchestration/WEB-003-exact-loopback-browser-assessment.md)의 고정 browser 평가, [WEB-004](docs/orchestration/WEB-004-bounded-authenticated-browser-campaign.md)의 비실행 Campaign 준비·passive discovery, [WEB-005](docs/orchestration/WEB-005-governed-local-authenticated-browser-campaign.md)의 signed Campaign/activation/Grant·Permit·Gateway·독립 Worker·Graph admission·Finding 3건·attack path 2건·보고서·SARIF·local PoC, [WEB-006](docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md)의 closed profile·진단 catalog·동일 인증 context bodyless discovery 증거, [WEB-007](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md)의 봉인 discovery 기반 local LLM 비실행 proposal 경계·attested Capacity v2·zero-dispatch live preparation·non-executing compact admission, [SKILL-001](docs/orchestration/SKILL-001-versioned-analysis-skill-registry.md)의 catalogued-only 분석 Skill 5개, [SKILL-002](docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md)의 exact proposal-only selection·split projection·zero-dispatch 준비 Run | production 실행 inventory는 exact `127.0.0.1:3000`의 `juice-shop-local/v1` 하나다. Skill consumer는 compact admission까지 연결됐지만 live authorization·durable claim·live model attestation·Provider·Recipe·Capability·Worker에는 연결되지 않았다. WEB-006 전체 governed 재검증과 WEB-007 실제 성공 proposal은 진행 중이다. 임의 사이트·SSO/MFA/CAPTCHA·가변 진단 cardinality·generic payload·container/remote target Worker·trusted egress receipt·외부 전달은 아님 |
 | Network | 서비스 Surface·준비·증거 admission와 합성 6-case 측정 | raw socket·일반 스캔·서비스 취약점 확정 아님. [NET-002D](docs/orchestration/NET-002D-bounded-network-measurement-product-read-and-conformance.md) |
 | AI | 고정 M03 source·독립 Replay 2개·Controls 3개·product read, 별도 실제 모델 효과 평가 | 임의 모델·agent 안전성이나 일반 Finding으로 확장하지 않음. [AI-002D](docs/orchestration/AI-002D-bounded-ai-measurement-product-read-and-conformance.md) |
 | Cloud | CLOUD-001A~D의 준비·서명 증거 admission·정책 비교·fixture 요구 | 실제 provider·credential 사용 runtime, 정책 translator·live benchmark 필요. [CLOUD-001D](docs/benchmark/CLOUD-001D-fresh-credential-policy-replay-disposable-fixtures.md) |
@@ -381,7 +418,13 @@ positive/adversarial test, audit/evidence lineage와 benchmark 영향을 명시�
   `9a8121d756589d93e7b7bee9b201f55fffe95b6efa04bccc22f1bc29f442101e`는 terminal failure로
   strict reload됐다. draft/compiled proposal/target request/Permit/Finding/Graph/report/SARIF/PoC/
   외부 전달은 없고, 이 실패 Run의 redispatch는 금지된다. focused 214개, 확장 Web 1,003개와
-  문서 4개 검사는 통과했고 opt-in real-Docker WEB-002D 한 건만 skip됐다.
+  문서 4개 검사는 통과했고 opt-in real-Docker WEB-002D 한 건만 skip됐다. additive compact
+  `system+user` wire의 attested Capacity v2 Run `run_20260921T052042Z_0932a478`, root
+  `d7864c15b7df572294fae99dfe65516543ac82672faab3ca84a53b1c47d8a574`는 exact model
+  materialization과 prompt 1,460·total 2,484·context margin 1,612·Campaign 51,168/65,536을 봉인했다.
+  proof-bound preparation Run `run_20260921T052213Z_801a9053`, root
+  `c2b77fd6a1b70fcf60fb13d5b3c8a4d436cfc219f8868c6dedb572009dd010d5`도 strict reload됐다.
+  completion·Provider dispatch·target request는 0회다.
 - `39c66a2`의 일반 CI와 Web·Network·AI·OPS·SYS를 모두 확인했다. 당시 새 소스의 결과와 구분한다.
 - EFFECT-007 실제 모델 비교는 실패 없이 완료했다. 품질은 개선됐고 CPU는 증가했다. 소비한 평가군은
   다시 호출하지 않는다. 공개 결과는 EFFECT-007 계약, 봉인 원문은 private 근거에 보존한다.

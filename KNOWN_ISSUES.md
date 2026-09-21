@@ -101,14 +101,11 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   proposal-only successor·선택·split projection·zero-dispatch 준비 Run을 구현했다. SQLi·object
   access·XSS·attack path 네 Skill만 선택되며 Finding narrative는 catalogued다. 현재 passive
   discovery는 Skill이 요구하는 independent replay·negative control·semantic oracle를 충족하지
-  않으므로 requirement는 전부 unsatisfied다. successor Provider split-message
-  request/draft/compiler/receipt, versioned transport/runtime Pin, terminal success/failure Run grammar는
-  구현·합성 검증했고 새 immutable Worker/proxy image build와 독립 Pin을 완료했다. 첫 operational
-  preflight는 exact successor chat budget을 빠뜨렸고, 승인된 attempt가 model-token 회계 상한
-  `88,496 > 65,536`으로 dispatch 전에 종결된 뒤 model 시작 전 shared budget 검사와 보수적
-  `prompt + completion <= 4,096` context admission으로 보완했다. 이 guard는 exact tokenizer 측정이
-  아니므로 pinned tokenizer/chat-template 오프라인 증명 전에는 새 호출을 진행하지 않는다.
-  실제 성공 model proposal, Skill→Recipe/Capability binding, target 실행과 독립 성능 검증은 없다.
+  않으므로 requirement는 전부 unsatisfied다. legacy `[developer,user]` wire는 pinned
+  tokenizer context에 들어가지 않고 historical Capacity v1은 live gate에 사용할 수 없다.
+  attested Capacity v2·zero-dispatch preparation·non-executing admission은 검증됐지만 ADR-0319의 네
+  live gate, 성공 model proposal, Skill→Recipe/Capability binding, target 실행과 독립 성능 검증은
+  없다. 별도 사용자 승인 없이는 새 model completion을 진행하지 않는다.
   금지 field와 알려진 target
   canary 검사는 의미적으로 위장된 모든
   정답·비밀의 부재를 증명하지 않으므로 source review가 계속 필요하다.
@@ -167,24 +164,19 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   adapter와 가변 진단 cardinality는 별도 `v1alpha2` 계약·구현·실증 없이는 지원하지 않는다.
   SSO/MFA/CAPTCHA, user credential, anti-CSRF·multi-step form 제출, generic payload, 외부 target,
   container/remote Worker와 외부 보고 전달도 여전히 지원하지 않는다.
-- [WEB-007](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md)은 exact sealed
-  discovery를 private Snapshot과 target/source anchor 비노출 model projection으로 분리하고,
-  local Provider 단일 호출·strict parser·결정론적 inert compiler·success/failure Run strict loader를
-  구현했다. focused 214개, 확장 Web 1,003개와 실제 terminal failure evidence는 통과했지만, 첫
-  Qwen3 4B Q8 호출은
-  outer 180초 budget보다 짧은 Worker/egress proxy의 30초 upstream I/O ceiling에서 종료돼 raw draft와
-  compiled proposal을 만들지 못했다. 실패 Run은 `automaticRedispatchAuthorized=false`로 봉인했으므로
-  재시도할 수 없다. versioned WEB-specific transport/runtime Pin과 split-message one-shot successor,
-  서로 다른 새 Worker/proxy image와 독립 Pin은 검증됐다. 승인된 첫 successor attempt는
-  `model.call.started` 전 budget reservation에서 끝나 dispatch와 execution ID가 모두 0이었다. 두
-  terminal Run의 strict reload와 cleanup은 통과했고, 같은 초과 입력은 이제 model 시작 전에 거부된다.
-  frozen runtime의 context는 4,096이고 completion ceiling은 1,024이므로 prompt에는 chat-template
-  overhead 전 최대 3,072 token만 남는다. 현재 14,520-byte message와 5,759-byte schema가 실제 pinned
-  Qwen tokenizer/template에 들어가는지는 미검증이다. 회계 계수를 낮추거나 예산만 올려 이 공백을
-  숨기지 않으며, exact offline capacity proof 또는 additive compact wire/new Web runtime Pin이 필요하다.
-  성공 structured output, model-quality, completion latency, peak memory, output stability, full WEB-006
-  governed Run·PoC replay, WEB-008 source/validation action 연결은 모두 미검증이다. WEB-007은 target
-  request, fallback diagnostic, Permit, Finding, Graph, report, SARIF, PoC, 외부 전달 권위를 만들지 않는다.
+- [WEB-007](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md)의 historical v1 proof는
+  readable하지만 live gate로 쓸 수 없다. attested Capacity v2 Run
+  `run_20260921T052042Z_0932a478`과 zero-dispatch preparation Run
+  `run_20260921T052213Z_801a9053`은 strict reload·cleanup을 통과했지만 다음 제약은 남아 있다.
+  4.28 GB model을 volume으로 복사하고 두 번 hash하는 local 시간·저장 비용을 측정·최적화하지
+  않았고, process SIGKILL·host·Docker-daemon 중단 후 labelled container/volume을 시작 시 회수하는
+  sweeper는 없다. non-executing admission은 exact preparation·compact request를 결박하지만 권한
+  bearer가 아니다. live completion 전에는 외부 one-call authorization, preparation+authorization
+  durable single-use CAS, live descriptor-to-volume attestation, additive compact runtime/receipt가
+  모두 필요하다. 성공 structured output, model quality,
+  latency·peak memory·stability, full WEB-006 governed Run·PoC replay, WEB-008 action 연결은 미검증이다.
+  현재 artifact는 target request, Permit, Finding, Graph, report, SARIF, PoC, 외부 전달 권위를
+  만들지 않는다.
 - 역사적 WEB-007 legacy Worker metadata reader는 나머지 metadata를 code-owned request/runtime에서
   재구성하지만, 비정규화된 v1 stdin 호환을 위해 `stdinSha256`은 64자리 소문자 hex 형식만 확인하고
   현재 재구성값과 같다고 요구하지 않는다. Skill-bound successor는 전체 metadata를 exact canonical
