@@ -5,6 +5,11 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0320](docs/adr/0320-durably-claim-prepared-compact-web-analysis-and-recover-cleanup.md):
+  WEB-007 live call에 preparation·authorization identity 각각의 독립 UNIQUE를 갖는 전용 SQLite
+  journal을 추가하고 reservation→live-start→pending-cleanup→terminal 단방향 전이, 별도 1회 dispatch
+  marker, winner-only 비직렬화 handle, deterministic resource owner와 cleanup-only 재시작 복구를 결박한다.
+  Gate C용 authorization coordinate는 식별용 비권위 값이며 검증·dispatch·자동 재실행 권위를 만들지 않는다.
 - [ADR-0319](docs/adr/0319-separate-prepared-compact-admission-from-live-call-authority.md):
   sealed preparation·Capacity·Skill anchors와 exact compact `system+user` request를 비실행
   admission으로 결박하되 preparation/admission을 실행 bearer로 취급하지 않는다. 실제 live call 전에는

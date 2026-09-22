@@ -14,6 +14,8 @@
   [ADR-0318](../adr/0318-attest-descriptor-bound-model-materialization-before-live-web-analysis.md)
 - Prepared admission and live-authority decision:
   [ADR-0319](../adr/0319-separate-prepared-compact-admission-from-live-call-authority.md)
+- Durable dual-identity claim decision:
+  [ADR-0320](../adr/0320-durably-claim-prepared-compact-web-analysis-and-recover-cleanup.md)
 
 ## Objective
 
@@ -71,8 +73,10 @@ review:
   preparation and binds the exact compact request and prerequisite lineage. ADR-0319 Gate A now
   materializes the held descriptor into a fresh owned volume, attests the actual live server's final
   read-only `/models` view against Capacity v2, and proves owner-bound cleanup and absence without
-  exposing a model endpoint. External one-call authorization, durable double-identity claiming, and
-  an additive compact runtime/receipt remain P0 gates before dispatch.
+  exposing a model endpoint. Gate B now atomically consumes preparation and authorization identities
+  under separate unique constraints, fixes the exact cleanup locator before live start, records a
+  one-dispatch marker, and recovers crashes only toward pending cleanup. External one-call
+  authorization verification and an additive compact runtime/receipt remain P0 gates before dispatch.
 
 WEB-007 does not make an arbitrary Web site executable. It does not add a production adapter,
 broaden the exact loopback origin, accept caller credentials, or weaken any existing WEB-006
@@ -405,8 +409,10 @@ The additive non-executing admission now consumes this preparation only as immut
 re-derives the exact compact request. It does not claim the preparation or authorize a dispatch.
 Gate A of the ADR-0319 live boundary is implemented and verified through actual Docker
 materialization, final-view re-attestation, cleanup, and absence without a completion request. Gate B
-is next; a fresh completion remains behind Gates B through D and separate authorization, and no
-WEB-008 action may start before a successful advisory is sealed and strict-reloaded.
+is implemented and verified through a dedicated dual-identity durable journal, actual spawned-process
+races, uncertain-transaction fault injection, and SIGKILL cleanup-only recovery. A fresh completion
+remains behind Gates C and D plus separate authorization, and no WEB-008 action may start before a
+successful advisory is sealed and strict-reloaded.
 
 ## v1alpha2 expansion
 
@@ -472,7 +478,7 @@ destination-bound action with explicit authorization and a delivery receipt.
 | Performance | Adds one local inference to the analysis path | The old actual call hit the 30-second upstream I/O cap; the successor now pins 180 seconds at each relevant layer, but successful completion latency remains unmeasured |
 | Memory | Adds a local model runtime and bounded prompt/response buffers | Qwen3 4B Q8 is selected and pinned; peak RSS remains unmeasured |
 | Reliability | Model failure is isolated from target execution and closes its Run | Actual timeout was sealed terminally with no in-Run retry or target request |
-| Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Frozen source/model/SKILL-002 inputs, the independent Pin, and new immutable images pass structural checks; Capacity v2 reproduces 2,484/4,096 and 51,168/65,536, the zero-dispatch preparation binds that proof, the non-executing admission binds the exact request, and Gate A attests the actual descriptor-bound live view and cleanup; Gates B through D remain |
+| Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Frozen source/model/SKILL-002 inputs, the independent Pin, and new immutable images pass structural checks; Capacity v2 reproduces 2,484/4,096 and 51,168/65,536, preparation and admission bind the proof and request, Gate A attests the descriptor-bound live view and cleanup, and Gate B durably consumes both identities with cleanup-only recovery; Gates C and D remain |
 | Migration | Additive sidecar Run; no existing artifact rewrite | Source and failure Runs strictly reload; legacy formats remain unchanged |
 
 What makes the v1alpha1 shape attractive is that we can validate the LLM boundary without giving it
@@ -582,8 +588,10 @@ and left no owned tokenizer container or model volume. The non-executing admissi
 same preparation to the exact compact request while keeping authorization, durable claim, and
 dispatch false. Gate A adds a separate no-dispatch live materializer that binds descriptor identity,
 the Capacity v2 anchor, final read-only volume topology, and owner-bound cleanup. Its actual Docker
-conformance completed without a completion, Provider dispatch, or target request. ADR-0319 Gates B
-through D and separate approval remain required before one fresh completion.
+conformance completed without a completion, Provider dispatch, or target request. ADR-0320 Gate B
+is also complete: the preparation and authorization identities are independently single-use, and
+restart returns only audit/cleanup state. Gates C and D and separate approval remain required before
+one fresh completion.
 
 ## Non-goals and open decisions
 
@@ -601,7 +609,7 @@ through D and separate approval remain required before one fresh completion.
   The additive compact `system` plus `user` prototype historically measured
   `1,505 + 1,024 = 2,529`; the final sealed proof independently recomputed
   `1,460 + 1,024 = 2,484`, leaving 1,612 tokens, and passed conservative Campaign accounting at
-  `51,168 / 65,536`. Gate A of the four-gate live integration is verified; Gates B through D,
+  `51,168 / 65,536`. Gates A and B of the four-gate live integration are verified; Gates C and D,
   the hardware floor, successful latency,
   peak memory, output stability, and an acceptance threshold remain to be verified.
 - The v1alpha2 action schemas, risk tiers, approval policy, maximum action graph, and replan cadence

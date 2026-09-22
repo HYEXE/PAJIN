@@ -104,8 +104,9 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   않으므로 requirement는 전부 unsatisfied다. legacy `[developer,user]` wire는 pinned
   tokenizer context에 들어가지 않고 historical Capacity v1은 live gate에 사용할 수 없다.
   attested Capacity v2·zero-dispatch preparation·non-executing admission과 ADR-0319 Gate A의 actual
-  live final-view materialization/attestation/cleanup은 검증됐다. Gate B durable CAS, Gate C one-call
-  authorization, Gate D compact runtime/receipt, 성공 model proposal, Skill→Recipe/Capability binding,
+  live final-view materialization/attestation/cleanup, ADR-0320 Gate B dual-identity durable CAS와
+  cleanup-only crash recovery는 검증됐다. Gate C one-call authorization, Gate D compact runtime/receipt,
+  성공 model proposal, Skill→Recipe/Capability binding,
   target 실행과 독립 성능 검증은 없다. 별도 사용자 승인 없이는 새 model completion을 진행하지 않는다.
   금지 field와 알려진 target
   canary 검사는 의미적으로 위장된 모든
@@ -175,8 +176,11 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   labelled container/volume/network를 시작 시 회수하는 sweeper는 없다. 한 process 안에서 Docker
   create 성공 뒤 CLI 결과가 불확실한 경우는 exact owner 재검증과 cleanup으로 회수한다.
   non-executing admission은 exact preparation·compact request를 결박하지만 권한 bearer가 아니다.
-  live completion 전에는 preparation+authorization durable single-use CAS, 외부 one-call authorization,
-  additive compact runtime/receipt가 모두 필요하다. 성공 structured output, model quality,
+  Gate B journal은 한 pinned store 안의 독립 preparation/authorization UNIQUE와 single-use CAS,
+  deterministic cleanup locator를 제공하지만 분산 consensus가 아니며 동일 store 전체 rollback을
+  외부 retained head 없이 독립 감지하지 못한다. crash recovery는 quiescent 단일 coordinator가
+  명시적으로 실행해야 하고 Gate D가 실제 owner-bound cleanup을 수행해야 한다. live completion 전에는
+  외부 one-call authorization과 additive compact runtime/receipt가 모두 필요하다. 성공 structured output, model quality,
   latency·peak memory·stability, full WEB-006 governed Run·PoC replay, WEB-008 action 연결은 미검증이다.
   현재 artifact는 target request, Permit, Finding, Graph, report, SARIF, PoC, 외부 전달 권위를
   만들지 않는다.

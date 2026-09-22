@@ -668,7 +668,12 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
         cpus: int = 4,
         memory_mb: int = 6144,
         pids_limit: int = 128,
+        resource_owner: str | None = None,
     ) -> None:
+        if resource_owner is not None and (
+            type(resource_owner) is not str or re.fullmatch(r"[a-f0-9]{32}", resource_owner) is None
+        ):
+            raise WebAnalysisCapacityError("Live materialization resource owner is invalid")
         super().__init__(
             model_path=model_path,
             docker_binary=docker_binary,
@@ -677,6 +682,8 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
             memory_mb=memory_mb,
             pids_limit=pids_limit,
         )
+        if resource_owner is not None:
+            self._owner = resource_owner
         self._container_name = f"pajin-web-analysis-live-{self._owner}"
         self._seed_container_name = f"pajin-web-analysis-live-seed-{self._owner}"
         self._volume_name = f"pajin-web-analysis-live-model-{self._owner}"

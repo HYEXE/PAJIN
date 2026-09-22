@@ -8,8 +8,9 @@ Capacity v2 `run_20260921T052042Z_0932a478`, zero-dispatch preparation
 `run_20260921T052213Z_801a9053`, non-executing admission은 strict reload됐다. Gate A는 held descriptor를
 fresh owned volume에 복사해 actual live model server의 final read-only view, Capacity v2 exact equality,
 internal network와 owner-bound cleanup/absence를 attest하도록 구현·검증했다. 이 경로는 model endpoint를
-노출하지 않았고 completion·Provider·target 호출은 0이다. 다음은 Gate B durable CAS이며 Gate C·D와
-별도 승인 전 completion은 실행하지 않는다. 탐지기 CPU 기준 미달과 Graph 최초 조회 지연 증가는
+노출하지 않았고 completion·Provider·target 호출은 0이다. Gate B는 preparation·authorization의 독립
+UNIQUE, 4단계 CAS, dispatch 1회 marker, deterministic cleanup owner와 SIGKILL 뒤 cleanup-only 회수를
+구현·검증했다. 다음은 Gate C·D이며 별도 승인 전 completion은 실행하지 않는다. 탐지기 CPU 기준 미달과 Graph 최초 조회 지연 증가는
 아래의 기존 제한으로 유지한다.
 
 ## 2026-09-20 AGENTIC-002·003A/B/C1/C2/C3A/C3B1/C3B2·C3C 기반·004 체크포인트
@@ -187,11 +188,11 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 
 ## Git과 원격 인수인계
 
-- 현재 branch는 `main`, HEAD와 `origin/main`은
-  `175f60003be1bfa89ac5dfd4a0c53593927246b5`로 같다. `ba748239d7c78fc7928435325813ee37dc32fd38`은
-  이 HEAD의 세 커밋 전 조상이며 ADR-0317~0319 후속 체크포인트가 현재 기준이다.
-- Gate A 체크포인트는 **미커밋·미push**다. staged 변경은 없고, 현재 작업 범위의 tracked
-  source/test/문서와 새 live-materialization test가 작업 트리에 있다. 정확한 목록은
+- 현재 branch는 `main`, HEAD는 Gate A local commit
+  `c8e9ed7c0d0afee701f60ec2467c477cd84edcd9`, `origin/main`은
+  `175f60003be1bfa89ac5dfd4a0c53593927246b5`다. push하지 않았다.
+- Gate B 체크포인트는 **미커밋·미push**다. staged 변경은 없고, 현재 작업 범위의 tracked
+  source/test/문서와 새 durable-claim journal/test/ADR이 작업 트리에 있다. 정확한 목록은
   `git status --short`를 권위로 삼는다.
 - `output/`·`.pajin/`의 private/raw 근거는 로컬에만 보존되며 Git으로 전달되지 않는다.
   기존 `39c66a2` 원격 CI 결과는 이 새 변경의 검증 근거가 아니다.
@@ -379,7 +380,7 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 - 계약은 `docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md`, 결정은
   ADR-0300이다.
 
-## WEB-007 — Capacity v2·preparation·admission·Gate A live materialization 완료
+## WEB-007 — Capacity v2·preparation·admission·Gate A materialization·Gate B durable CAS 완료
 
 - 실제 pre-diagnostic source는 `run_20260915T142836Z_95615cb9`, root
   `7a9de15039883dc483caad6d9a3f84f5e1d76745bc10285986fbe741b939bb50`다. 4 artifact·2 event,
@@ -481,9 +482,16 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   fail closed된다. 모든 owned resource의 exact-name·owner-label absence 뒤에만 cleanup result가
   생성된다. 실제 pinned Qwen GGUF를 사용한 Docker conformance는 live final view 재검증과 cleanup을
   통과했고 model completion·Provider·target request는 0이다.
-- 다음 단계는 Gate B preparation·authorization 이중 durable CAS다. Gate B 통과·별도 커밋 승인 전
-  Gate C를 시작하지 않으며, compiled advisory strict reload 전 WEB-008로 진행하지 않는다.
-- 계약은 `docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md`, 결정은 ADR-0301·0304·0317·0318·0319다.
+- Gate B journal은 두 identity의 독립 UNIQUE, 4단계 CAS, dispatch 1회 marker, store ID pin과
+  deterministic Gate A cleanup owner를 결박한다. winner-only handle은 전이 시도 전에 소모되고
+  audit/restart에서 재발급되지 않는다. 비권위 authorization coordinate는 Gate C 검증을 대신하지 않는다.
+- 세 종류의 실제 spawn 경합은 모두 1승 1패였고, live-start 뒤 SIGKILL은
+  `pending-cleanup/outcome-unknown`으로 회수됐다. cleanup failure는 pending을 유지하며
+  schema/row/event/path-substitution tamper는 fail closed된다.
+- 다음 단계는 Gate C 외부 one-call authorization이다. Gate B 별도 커밋 승인 전 Gate C를 시작하지
+  않으며, Gate D와 별도 실제 호출 승인 전 completion 또는 WEB-008 action으로 진행하지 않는다.
+- 계약은 `docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md`, 결정은
+  ADR-0301·0304·0317·0318·0319·0320이다.
 
 ## SKILL-001 — 지식 전용 registry 구현
 
@@ -541,10 +549,10 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   template도 `developer` role을 native render하지 않는다. compact 5-artifact proof는 raw prompt·template·
   token IDs를 독립 재계산해 total 2,484/4,096, margin 1,612와 Campaign 51,168/65,536으로 strict
   reload됐다. attested Capacity v2와 zero-dispatch preparation도 strict reload됐고 non-executing
-  admission이 exact request와 lineage를 결박했다. 외부 authorization·durable CAS·live model attestation·
-  additive compact runtime/receipt와 별도 승인 뒤에만 completion을 한 번 수행한다.
+  admission이 exact request와 lineage를 결박했고 Gate A attestation과 Gate B durable CAS도 완료됐다.
+  외부 one-call authorization·compact runtime/receipt와 별도 승인 뒤에만 completion을 한 번 수행한다.
 - 계약은 `docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md`, 결정은
-  ADR-0303·0304·0317·0318·0319다.
+  ADR-0303·0304·0317·0318·0319·0320이다.
 
 ## EFFECT-007 — 실제 평가 완료, 종합 개선 기준 미달
 
@@ -667,13 +675,12 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   일반 direct close/context-manager/finalizer는 zeroization 증거가 아니며, 실제 model·Juice Shop·
   browser/network/Target I/O는 수행하지 않았다. 전체 저장소 검증은 위 2026-09-20 최종 인수인계
   결과를 따른다.
-- 이전 Capacity v2·zero-dispatch preparation·non-executing admission 검증은 위 WEB-007 체크포인트를
-  권위로 삼는다. 새 Gate A까지 포함한 최종 집중·문서 회귀는 **164 passed·1 skipped**다. skip은 같은
-  suite의 opt-in actual Docker case이며 이를 별도 활성화한 검증은 **1 passed·25 deselected**로 끝났다.
-  전체 `src tests containers scripts` Ruff, 변경 4개 Python 파일 format check, Linux strict mypy
-  **584 source**, `git diff --check`, 추가 line의 absolute local path와 high-confidence secret pattern
-  검사가 통과했다. actual Docker 검증은 live server의 materialization·re-attestation·cleanup만 수행했고
-  model completion·Provider·target request는 0이다.
+- 이전 Capacity v2·preparation·admission 검증은 위 WEB-007 체크포인트를 권위로 삼는다. Gate A 집중·문서
+  회귀는 **164 passed·1 skipped**, opt-in actual Docker 검증은 **1 passed·25 deselected**였다. Gate B
+  journal 최종 집중·인접 회귀는 **132 passed·1 skipped**, 전용 suite는 **24 passed**다. skip은 pinned
+  GGUF와 Docker가 필요한 Gate A 검사다. 전체 Ruff, 변경 Python format, Linux strict mypy **585 source**,
+  문서 정책 **4 passed**, `git diff --check`, local-path·secret 검사가 통과했다. Gate A Docker 검증은
+  materialization·re-attestation·cleanup만 수행했고 Gate B model·Provider·target 호출은 0이다.
 
 Private controller와 logs의 기준은 `.pajin/four-followups-20260912/`다. 실제 자격증명과
 private 모델 원문은 출력하거나 tracked 문서에 복사하지 않는다. 전 단계 근거는
