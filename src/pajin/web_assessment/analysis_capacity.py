@@ -666,6 +666,37 @@ class TokenizerModelMountObservation:
     cleanup_required: Literal[True]
 
 
+@dataclass(frozen=True, slots=True)
+class ModelDescriptorIdentity:
+    """One in-process identity observation for a held regular-file descriptor."""
+
+    device: int
+    inode: int
+    size_bytes: int
+    modified_time_ns: int
+    changed_time_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDescriptorCopyObservation:
+    """Descriptor identity immediately before and after one Docker volume copy."""
+
+    before: ModelDescriptorIdentity
+    after: ModelDescriptorIdentity
+
+
+@dataclass(frozen=True, slots=True)
+class StagedModelVolumeObservation:
+    """Runtime-user observation of one normalized owned-volume model copy."""
+
+    descriptor_copy: ModelDescriptorCopyObservation
+    model_sha256: str
+    model_size_bytes: int
+    model_uid: Literal[10001]
+    model_gid: Literal[10001]
+    model_mode: Literal["0400"]
+
+
 class SubprocessLlamaCppTokenizerBackend:
     """Start one pinned llama.cpp server with no network or published ports."""
 
@@ -709,6 +740,7 @@ class SubprocessLlamaCppTokenizerBackend:
         self._staged_model_sha256: str | None = None
         self._mounted_model_sha256: str | None = None
         self._model_mount_observation: TokenizerModelMountObservation | None = None
+        self._staged_model_volume_observation: StagedModelVolumeObservation | None = None
 
     def start(self, pin: WebAnalysisCapacityPin) -> None:
         if self._pin is not None:
@@ -716,159 +748,8 @@ class SubprocessLlamaCppTokenizerBackend:
         canonical = WebAnalysisCapacityPin.model_validate(
             pin.model_dump(mode="json", by_alias=True)
         )
-        inspected = self._run((self._docker, "image", "inspect", canonical.tokenizer_image))
-        image_records = parse_strict_json_bytes(
-            inspected.stdout,
-            label="tokenizer image inspection",
-            max_bytes=_MAX_TOKENIZER_RESPONSE_BYTES,
-            max_depth=32,
-            max_nodes=100_000,
-        )
-        if (
-            type(image_records) is not list
-            or len(image_records) != 1
-            or type(image_records[0]) is not dict
-        ):
-            raise WebAnalysisCapacityError("Tokenizer image inspection is invalid")
-        image_record = cast(dict[str, object], image_records[0])
-        repo_digests = image_record.get("RepoDigests")
-        image_config = image_record.get("Config")
-        if type(image_config) is not dict:
-            raise WebAnalysisCapacityError("Tokenizer image config is invalid")
-        entrypoint = cast(dict[str, object], image_config).get("Entrypoint")
-        repository_with_tag, image_digest = canonical.tokenizer_image.rsplit("@", 1)
-        expected_reference = repository_with_tag.rsplit(":", 1)[0] + "@" + image_digest
-        if (
-            image_record.get("Id") != canonical.tokenizer_image_id
-            or type(repo_digests) is not list
-            or expected_reference not in repo_digests
-            or f"{image_record.get('Os')}/{image_record.get('Architecture')}"
-            != canonical.model_platform
-            or type(entrypoint) is not list
-            or len(entrypoint) != 1
-            or type(entrypoint[0]) is not str
-            or not entrypoint[0].startswith("/")
-        ):
-            raise WebAnalysisCapacityError("Tokenizer image identity differs from the Pin")
-        self._image_entrypoint = entrypoint[0]
-
-        created_volume = self._run(
-            (
-                self._docker,
-                "volume",
-                "create",
-                "--label",
-                "pajin.capacity-purpose=offline-tokenizer-model",
-                "--label",
-                f"pajin.capacity-owner={self._owner}",
-                self._volume_name,
-            )
-        )
-        self._volume_created = True
-        if created_volume.stdout.decode("utf-8", errors="strict").strip() != self._volume_name:
-            raise WebAnalysisCapacityError("Offline tokenizer model volume identity is invalid")
-
-        seed_arguments = (
-            self._docker,
-            "create",
-            "--name",
-            self._seed_container_name,
-            "--pull",
-            "never",
-            "--platform",
-            canonical.model_platform,
-            "--network",
-            "none",
-            "--read-only",
-            "--cap-drop",
-            "ALL",
-            "--cap-add",
-            "CHOWN",
-            "--security-opt",
-            "no-new-privileges",
-            "--user",
-            "0:0",
-            "--label",
-            "pajin.capacity-purpose=offline-tokenizer-model-seed",
-            "--label",
-            f"pajin.capacity-owner={self._owner}",
-            "--cpus",
-            str(self._cpus),
-            "--memory",
-            f"{self._memory_mb}m",
-            "--pids-limit",
-            str(self._pids_limit),
-            "--mount",
-            f"type=volume,src={self._volume_name},dst=/models",
-            "--entrypoint",
-            "/usr/bin/sleep",
-            canonical.tokenizer_image,
-            str(self._seed_lifetime_seconds),
-        )
-        seed_created = self._run(seed_arguments)
-        self._seed_container_created = True
-        seed_id = seed_created.stdout.decode("ascii", errors="strict").strip()
-        if re.fullmatch(r"[a-f0-9]{64}", seed_id) is None:
-            raise WebAnalysisCapacityError("Offline tokenizer seed container ID is invalid")
-        self._seed_container_id = seed_id
-        self._run((self._docker, "start", seed_id))
-        self._verify_seed_topology(canonical)
-        self._copy_verified_model_descriptor(canonical)
-        self._run(
-            (
-                self._docker,
-                "exec",
-                "-i",
-                "--user",
-                "0:0",
-                seed_id,
-                "/usr/bin/chown",
-                _TOKENIZER_RUNTIME_USER,
-                "/models/model.gguf",
-            )
-        )
-        self._run(
-            (
-                self._docker,
-                "exec",
-                "-i",
-                "--user",
-                _TOKENIZER_RUNTIME_USER,
-                seed_id,
-                "/usr/bin/chmod",
-                _TOKENIZER_STAGED_MODE,
-                "/models/model.gguf",
-            )
-        )
-        staged_stat = self._run(self._model_stat_arguments(seed_id))
-        staged_uid, staged_gid, staged_mode, staged_size = self._parse_model_stat(
-            staged_stat.stdout,
-            label="staged tokenizer model",
-        )
-        if staged_size != canonical.model_size_bytes:
-            raise WebAnalysisCapacityError("Staged tokenizer model size differs from the Pin")
-        seeded = self._run(
-            (
-                self._docker,
-                "exec",
-                "-i",
-                "--user",
-                _TOKENIZER_RUNTIME_USER,
-                seed_id,
-                "/usr/bin/sha256sum",
-                "/models/model.gguf",
-            )
-        )
-        staged_digest = self._parse_model_digest(
-            seeded.stdout,
-            label="staged tokenizer model",
-        )
-        if not hmac.compare_digest(staged_digest, canonical.model_sha256):
-            raise WebAnalysisCapacityError("Staged tokenizer model SHA-256 differs from the Pin")
-        self._staged_model_sha256 = staged_digest
-        self._remove_container(seed_id, label="tokenizer model seed")
-        self._seed_container_created = False
-        self._seed_container_id = None
+        self._image_entrypoint = self._inspect_pinned_image(canonical)
+        self._stage_descriptor_bound_model_volume(canonical)
 
         arguments = (
             self._docker,
@@ -946,15 +827,18 @@ class SubprocessLlamaCppTokenizerBackend:
         )
         if mounted_size != canonical.model_size_bytes:
             raise WebAnalysisCapacityError("Mounted tokenizer model size differs from the Pin")
+        staged = self._staged_model_volume_observation
+        if staged is None:
+            raise WebAnalysisCapacityError("Staged tokenizer model attestation is absent")
         self._model_mount_observation = TokenizerModelMountObservation(
             model_pin_digest=canonical.model_pin_digest,
             expected_model_sha256=canonical.model_sha256,
             expected_model_size_bytes=canonical.model_size_bytes,
-            staged_model_sha256=staged_digest,
-            staged_model_size_bytes=staged_size,
-            staged_model_uid=staged_uid,
-            staged_model_gid=staged_gid,
-            staged_model_mode=staged_mode,
+            staged_model_sha256=staged.model_sha256,
+            staged_model_size_bytes=staged.model_size_bytes,
+            staged_model_uid=staged.model_uid,
+            staged_model_gid=staged.model_gid,
+            staged_model_mode=staged.model_mode,
             mounted_model_sha256=mounted_digest,
             mounted_model_size_bytes=mounted_size,
             mounted_model_uid=mounted_uid,
@@ -983,7 +867,193 @@ class SubprocessLlamaCppTokenizerBackend:
         if self._ready_props is None:
             raise WebAnalysisCapacityError("Offline tokenizer did not become ready") from last_error
 
-    def _copy_verified_model_descriptor(self, pin: WebAnalysisCapacityPin) -> None:
+    def _inspect_pinned_image(self, pin: WebAnalysisCapacityPin) -> str:
+        inspected = self._run((self._docker, "image", "inspect", pin.tokenizer_image))
+        image_records = parse_strict_json_bytes(
+            inspected.stdout,
+            label="tokenizer image inspection",
+            max_bytes=_MAX_TOKENIZER_RESPONSE_BYTES,
+            max_depth=32,
+            max_nodes=100_000,
+        )
+        if (
+            type(image_records) is not list
+            or len(image_records) != 1
+            or type(image_records[0]) is not dict
+        ):
+            raise WebAnalysisCapacityError("Tokenizer image inspection is invalid")
+        image_record = cast(dict[str, object], image_records[0])
+        repo_digests = image_record.get("RepoDigests")
+        image_config = image_record.get("Config")
+        if type(image_config) is not dict:
+            raise WebAnalysisCapacityError("Tokenizer image config is invalid")
+        entrypoint = cast(dict[str, object], image_config).get("Entrypoint")
+        repository_with_tag, image_digest = pin.tokenizer_image.rsplit("@", 1)
+        expected_reference = repository_with_tag.rsplit(":", 1)[0] + "@" + image_digest
+        if (
+            image_record.get("Id") != pin.tokenizer_image_id
+            or type(repo_digests) is not list
+            or expected_reference not in repo_digests
+            or f"{image_record.get('Os')}/{image_record.get('Architecture')}" != pin.model_platform
+            or type(entrypoint) is not list
+            or len(entrypoint) != 1
+            or type(entrypoint[0]) is not str
+            or not entrypoint[0].startswith("/")
+        ):
+            raise WebAnalysisCapacityError("Tokenizer image identity differs from the Pin")
+        return entrypoint[0]
+
+    def _stage_descriptor_bound_model_volume(self, pin: WebAnalysisCapacityPin) -> None:
+        self._before_model_volume_create()
+        created_volume = self._run(
+            (
+                self._docker,
+                "volume",
+                "create",
+                "--label",
+                f"pajin.capacity-purpose={self._model_volume_purpose()}",
+                "--label",
+                f"pajin.capacity-owner={self._owner}",
+                self._volume_name,
+            )
+        )
+        self._volume_created = True
+        if created_volume.stdout.decode("utf-8", errors="strict").strip() != self._volume_name:
+            raise WebAnalysisCapacityError("Offline tokenizer model volume identity is invalid")
+        self._after_model_volume_created(pin)
+
+        seed_arguments = (
+            self._docker,
+            "create",
+            "--name",
+            self._seed_container_name,
+            "--pull",
+            "never",
+            "--platform",
+            pin.model_platform,
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--cap-add",
+            "CHOWN",
+            "--security-opt",
+            "no-new-privileges",
+            "--user",
+            "0:0",
+            "--label",
+            f"pajin.capacity-purpose={self._seed_container_purpose()}",
+            "--label",
+            f"pajin.capacity-owner={self._owner}",
+            "--cpus",
+            str(self._cpus),
+            "--memory",
+            f"{self._memory_mb}m",
+            "--pids-limit",
+            str(self._pids_limit),
+            "--mount",
+            f"type=volume,src={self._volume_name},dst=/models",
+            "--entrypoint",
+            "/usr/bin/sleep",
+            pin.tokenizer_image,
+            str(self._seed_lifetime_seconds),
+        )
+        self._before_seed_container_create()
+        seed_created = self._run(seed_arguments)
+        self._seed_container_created = True
+        seed_id = seed_created.stdout.decode("ascii", errors="strict").strip()
+        if re.fullmatch(r"[a-f0-9]{64}", seed_id) is None:
+            raise WebAnalysisCapacityError("Offline tokenizer seed container ID is invalid")
+        self._seed_container_id = seed_id
+        self._run((self._docker, "start", seed_id))
+        self._verify_seed_topology(pin)
+        descriptor_copy = self._copy_verified_model_descriptor(pin)
+        self._run(
+            (
+                self._docker,
+                "exec",
+                "-i",
+                "--user",
+                "0:0",
+                seed_id,
+                "/usr/bin/chown",
+                _TOKENIZER_RUNTIME_USER,
+                "/models/model.gguf",
+            )
+        )
+        self._run(
+            (
+                self._docker,
+                "exec",
+                "-i",
+                "--user",
+                _TOKENIZER_RUNTIME_USER,
+                seed_id,
+                "/usr/bin/chmod",
+                _TOKENIZER_STAGED_MODE,
+                "/models/model.gguf",
+            )
+        )
+        staged_stat = self._run(self._model_stat_arguments(seed_id))
+        staged_uid, staged_gid, staged_mode, staged_size = self._parse_model_stat(
+            staged_stat.stdout,
+            label="staged tokenizer model",
+        )
+        if staged_size != pin.model_size_bytes:
+            raise WebAnalysisCapacityError("Staged tokenizer model size differs from the Pin")
+        seeded = self._run(
+            (
+                self._docker,
+                "exec",
+                "-i",
+                "--user",
+                _TOKENIZER_RUNTIME_USER,
+                seed_id,
+                "/usr/bin/sha256sum",
+                "/models/model.gguf",
+            )
+        )
+        staged_digest = self._parse_model_digest(
+            seeded.stdout,
+            label="staged tokenizer model",
+        )
+        if not hmac.compare_digest(staged_digest, pin.model_sha256):
+            raise WebAnalysisCapacityError("Staged tokenizer model SHA-256 differs from the Pin")
+        self._staged_model_sha256 = staged_digest
+        if type(descriptor_copy) is not ModelDescriptorCopyObservation:
+            raise WebAnalysisCapacityError("Model descriptor copy observation is absent")
+        self._staged_model_volume_observation = StagedModelVolumeObservation(
+            descriptor_copy=descriptor_copy,
+            model_sha256=staged_digest,
+            model_size_bytes=staged_size,
+            model_uid=staged_uid,
+            model_gid=staged_gid,
+            model_mode=staged_mode,
+        )
+        self._remove_container(seed_id, label="tokenizer model seed")
+        self._seed_container_created = False
+        self._seed_container_id = None
+
+    def _model_volume_purpose(self) -> str:
+        return "offline-tokenizer-model"
+
+    def _seed_container_purpose(self) -> str:
+        return "offline-tokenizer-model-seed"
+
+    def _before_model_volume_create(self) -> None:
+        pass
+
+    def _before_seed_container_create(self) -> None:
+        pass
+
+    def _after_model_volume_created(self, pin: WebAnalysisCapacityPin) -> None:
+        del pin
+
+    def _copy_verified_model_descriptor(
+        self,
+        pin: WebAnalysisCapacityPin,
+    ) -> ModelDescriptorCopyObservation:
         if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
             raise WebAnalysisCapacityError(
                 "Offline tokenizer model staging requires POSIX no-follow descriptors"
@@ -993,7 +1063,7 @@ class SubprocessLlamaCppTokenizerBackend:
         try:
             descriptor = os.open(self._model_path, flags)
             before = os.fstat(descriptor)
-            identity = self._model_descriptor_identity(before)
+            before_identity = self._model_descriptor_identity(before)
             if before.st_size != pin.model_size_bytes:
                 raise WebAnalysisCapacityError(
                     "Tokenizer model size differs before descriptor staging"
@@ -1005,10 +1075,15 @@ class SubprocessLlamaCppTokenizerBackend:
             if copied.returncode != 0:
                 raise WebAnalysisCapacityError("Offline tokenizer model staging failed closed")
             after = os.fstat(descriptor)
-            if self._model_descriptor_identity(after) != identity:
+            after_identity = self._model_descriptor_identity(after)
+            if after_identity != before_identity:
                 raise WebAnalysisCapacityError(
                     "Tokenizer model descriptor identity changed during staging"
                 )
+            return ModelDescriptorCopyObservation(
+                before=before_identity,
+                after=after_identity,
+            )
         except WebAnalysisCapacityError:
             raise
         except OSError as exc:
@@ -1020,15 +1095,15 @@ class SubprocessLlamaCppTokenizerBackend:
                 os.close(descriptor)
 
     @staticmethod
-    def _model_descriptor_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    def _model_descriptor_identity(value: os.stat_result) -> ModelDescriptorIdentity:
         if not stat.S_ISREG(value.st_mode) or value.st_ino <= 0:
             raise WebAnalysisCapacityError("Tokenizer model descriptor is not a regular file")
-        return (
-            value.st_dev,
-            value.st_ino,
-            value.st_size,
-            value.st_mtime_ns,
-            value.st_ctime_ns,
+        return ModelDescriptorIdentity(
+            device=value.st_dev,
+            inode=value.st_ino,
+            size_bytes=value.st_size,
+            modified_time_ns=value.st_mtime_ns,
+            changed_time_ns=value.st_ctime_ns,
         )
 
     def _run_descriptor_copy(
@@ -1128,27 +1203,30 @@ class SubprocessLlamaCppTokenizerBackend:
 
     def cleanup(self) -> None:
         failures: list[BaseException] = []
-        for created, identity, label in (
-            (
-                self._container_created,
-                self._container_id or self._container_name,
-                "tokenizer",
-            ),
-            (
-                self._seed_container_created,
-                self._seed_container_id or self._seed_container_name,
-                "tokenizer model seed",
-            ),
-        ):
-            if not created:
-                continue
+        if self._container_created:
             try:
-                self._remove_container(identity, label=label)
+                self._remove_container(
+                    self._container_id or self._container_name,
+                    label="tokenizer",
+                )
+                self._container_created = False
+                self._container_id = None
+            except BaseException as exc:
+                failures.append(exc)
+        if self._seed_container_created:
+            try:
+                self._remove_container(
+                    self._seed_container_id or self._seed_container_name,
+                    label="tokenizer model seed",
+                )
+                self._seed_container_created = False
+                self._seed_container_id = None
             except BaseException as exc:
                 failures.append(exc)
         if self._volume_created:
             try:
                 self._remove_volume()
+                self._volume_created = False
             except BaseException as exc:
                 failures.append(exc)
         self._pin = None
@@ -1300,7 +1378,7 @@ class SubprocessLlamaCppTokenizerBackend:
             or config_values.get("Cmd") != [str(self._seed_lifetime_seconds)]
             or type(labels) is not dict
             or cast(dict[str, object], labels).get("pajin.capacity-purpose")
-            != "offline-tokenizer-model-seed"
+            != self._seed_container_purpose()
             or cast(dict[str, object], labels).get("pajin.capacity-owner") != self._owner
             or host_values.get("NetworkMode") != "none"
             or host_values.get("ReadonlyRootfs") is not True
@@ -2096,7 +2174,10 @@ def load_verified_web_analysis_capacity_run(
 
 
 __all__ = [
+    "ModelDescriptorCopyObservation",
+    "ModelDescriptorIdentity",
     "OfflineTokenizerBackend",
+    "StagedModelVolumeObservation",
     "SubprocessLlamaCppTokenizerBackend",
     "TokenizerModelMountObservation",
     "VerifiedWebAnalysisCapacityRun",

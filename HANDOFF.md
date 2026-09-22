@@ -1,31 +1,16 @@
 # PAJIN 현재 인수인계
 
-체크포인트: 2026-09-21. 승인된 네 후속 항목과 별도로, 사용자가 승인한 local OWASP Juice Shop의
-WEB-003 고정 browser 평가, WEB-004 Campaign/Capability 준비·인증형 passive discovery, WEB-005의
-서명된 governed 실행·독립 검증·Graph admission·Finding·공격 경로·보고서·SARIF·redacted PoC까지
-구현하고 실제 실행했다. EFFECT-007·GRAPH-PERF-006·UX-014, WEB-003~007·SKILL-001~002,
-AGENTIC-001~004의 구현·테스트·계약은 main의 논리 커밋으로 보존했다. WEB-006 closed
-profile·진단 catalog·동일 인증 context passive discovery 증거와
-discovery-only 실제 Run은 구현·strict reload했고, full governed Run·PoC 재실행은 아직 완료하지
-않았다. WEB-007 LLM shadow analysis의 코드와 terminal failure 경로는 구현·실증했지만 actual model
-call이 transport timeout으로 draft 없이 끝나 성공 proposal은 미검증이다. 탐지기 CPU 기준 미달과
-Graph 최초 조회 지연 증가도 아래에 구분한다. SKILL-001은 exact-version 분석 Skill registry와
-target-neutral Web Skill 5개를 catalogued-only 상태로 추가했다. SKILL-002는 exact proposal-only
-successor 4개를 선택해 Skill 지침과 tainted Evidence를 분리한 zero-dispatch WEB-007 준비 Run까지
-연결했다. 그 준비 Run을 소비하는 독립 transport/runtime Pin과 split-message one-shot Provider
-successor도 구현·테스트했다. 새 immutable Worker/proxy image build, 독립 Pin 생성, 운영 preflight까지
-진행한 뒤 승인된 첫 successor attempt를 실행했다. exact 요청의 보수적 회계 상한 `88,496`이 Campaign
-한도 `65,536`을 초과해 `model.call.started`와 Gateway 전에 차단됐고 실제 model dispatch는 0회였다.
-누락된 exact successor budget 검사와 4,096-token RuntimePin의 보수적 context admission은 model
-시작 전 preflight에 추가했다. pinned tokenizer/template로 legacy full `[developer,user]` request를
-측정한 결과 `4,208 + 1,024 = 5,232 > 4,096`이므로 이 wire는 비실행 가능 상태로 동결한다. embedded
-Qwen template는 `developer` role을 native render하지 않는다. historical Capacity v1 뒤 output-root와
-model provenance를 보강한 Capacity v2 `run_20260921T052042Z_0932a478`이 exact model materialization과
-total 2,484/4,096, Campaign 51,168/65,536을 strict reload했다. proof-bound preparation
-`run_20260921T052213Z_801a9053`도 zero-dispatch로 strict reload됐다. completion·Provider·target 호출과
-owned container·volume 잔존은 0이다. 이어 exact compact request와 prerequisite anchors를 non-executing
-admission에 결박했다. 다음은 외부 one-call authorization·durable CAS·live model attestation·additive
-compact runtime/receipt이며 completion은 아직 승인·실행되지 않았다.
+체크포인트: 2026-09-22. EFFECT-007·GRAPH-PERF-006·UX-014, WEB-003~007·SKILL-001~002와
+AGENTIC-001~004의 이전 구현·계약은 main에 보존돼 있다. WEB-006 discovery-only actual Run은 strict
+reload됐지만 full governed Run·PoC 재실행은 남아 있다. WEB-007의 legacy 성공 proposal도 transport
+timeout으로 미검증이며 legacy `[developer,user]` wire는 `5,232 > 4,096`이라 비실행 상태로 동결한다.
+Capacity v2 `run_20260921T052042Z_0932a478`, zero-dispatch preparation
+`run_20260921T052213Z_801a9053`, non-executing admission은 strict reload됐다. Gate A는 held descriptor를
+fresh owned volume에 복사해 actual live model server의 final read-only view, Capacity v2 exact equality,
+internal network와 owner-bound cleanup/absence를 attest하도록 구현·검증했다. 이 경로는 model endpoint를
+노출하지 않았고 completion·Provider·target 호출은 0이다. 다음은 Gate B durable CAS이며 Gate C·D와
+별도 승인 전 completion은 실행하지 않는다. 탐지기 CPU 기준 미달과 Graph 최초 조회 지연 증가는
+아래의 기존 제한으로 유지한다.
 
 ## 2026-09-20 AGENTIC-002·003A/B/C1/C2/C3A/C3B1/C3B2·C3C 기반·004 체크포인트
 
@@ -203,9 +188,10 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 ## Git과 원격 인수인계
 
 - 현재 branch는 `main`, HEAD와 `origin/main`은
-  `ba748239d7c78fc7928435325813ee37dc32fd38`로 같다.
-- 이 체크포인트는 **미커밋·미push**다. staged 변경은 없고, 현재 작업 범위의 tracked
-  문서 6개가 수정됐으며 새 ADR·source·script·test 16개가 untracked다. 정확한 목록은
+  `175f60003be1bfa89ac5dfd4a0c53593927246b5`로 같다. `ba748239d7c78fc7928435325813ee37dc32fd38`은
+  이 HEAD의 세 커밋 전 조상이며 ADR-0317~0319 후속 체크포인트가 현재 기준이다.
+- Gate A 체크포인트는 **미커밋·미push**다. staged 변경은 없고, 현재 작업 범위의 tracked
+  source/test/문서와 새 live-materialization test가 작업 트리에 있다. 정확한 목록은
   `git status --short`를 권위로 삼는다.
 - `output/`·`.pajin/`의 private/raw 근거는 로컬에만 보존되며 Git으로 전달되지 않는다.
   기존 `39c66a2` 원격 CI 결과는 이 새 변경의 검증 근거가 아니다.
@@ -393,7 +379,7 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 - 계약은 `docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md`, 결정은
   ADR-0300이다.
 
-## WEB-007 — Capacity v2·zero-dispatch preparation·non-executing admission 완료
+## WEB-007 — Capacity v2·preparation·admission·Gate A live materialization 완료
 
 - 실제 pre-diagnostic source는 `run_20260915T142836Z_95615cb9`, root
   `7a9de15039883dc483caad6d9a3f84f5e1d76745bc10285986fbe741b939bb50`다. 4 artifact·2 event,
@@ -483,8 +469,20 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   source·Skill·Capacity·preparation sealed Run을 디스크에서 strict reload하고 그 canonical 객체로만
   exact compact request와 prerequisite digests를 결박한다. 네 Run의 unseal·extra artifact·delete·
   rename·symlink·tamper와 always-equal duck 입력은 authority 호출 없이 fail closed된다.
-  authorization·claim·live materialization·dispatch는 모두 false다. 다음은 ADR-0319의 네 P0 gate이고,
-  compiled advisory strict reload 전 WEB-008로 진행하지 않는다.
+  authorization·claim·dispatch는 모두 false다.
+- ADR-0319 Gate A의 additive runtime은 Capacity v2와 같은 held `O_NOFOLLOW` descriptor를 fresh
+  owner-labelled volume에 복사하고, fresh internal Docker network의 actual live model server에 그
+  volume 하나만 read-only `/models`로 mount한다. descriptor before/after, model digest/size,
+  `10001:10001`·`0400`, image identity, final topology, Capacity Run/root/Pin/Proof/materialization
+  attestation과 cleanup owner를 exact 결박한다. materialization 직후와 dispatch 전 용도의
+  re-attestation을 제공하지만 completion endpoint는 노출하지 않는다.
+- cleanup은 network·volume·seed·live container의 create가 daemon에서 성공하고 CLI가 불확실하게
+  실패한 경우까지 exact random name과 owner/purpose label로 회수하며, foreign owner는 삭제하지 않고
+  fail closed된다. 모든 owned resource의 exact-name·owner-label absence 뒤에만 cleanup result가
+  생성된다. 실제 pinned Qwen GGUF를 사용한 Docker conformance는 live final view 재검증과 cleanup을
+  통과했고 model completion·Provider·target request는 0이다.
+- 다음 단계는 Gate B preparation·authorization 이중 durable CAS다. Gate B 통과·별도 커밋 승인 전
+  Gate C를 시작하지 않으며, compiled advisory strict reload 전 WEB-008로 진행하지 않는다.
 - 계약은 `docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md`, 결정은 ADR-0301·0304·0317·0318·0319다.
 
 ## SKILL-001 — 지식 전용 registry 구현
@@ -669,10 +667,13 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   일반 direct close/context-manager/finalizer는 zeroization 증거가 아니며, 실제 model·Juice Shop·
   browser/network/Target I/O는 수행하지 않았다. 전체 저장소 검증은 위 2026-09-20 최종 인수인계
   결과를 따른다.
-- 최신 Capacity v2·zero-dispatch preparation·non-executing admission은 위 WEB-007 체크포인트를
-  권위로 삼는다. admission/preparation 집중 검증은 **82 passed**, 전체 compact Capacity 경계 묶음은
-  **193 passed**다. 새 source/test Ruff·format과 Linux strict mypy가 통과했다. model·Provider·target·
-  Docker 호출은 0이며 평가군은 재사용하지 않는다.
+- 이전 Capacity v2·zero-dispatch preparation·non-executing admission 검증은 위 WEB-007 체크포인트를
+  권위로 삼는다. 새 Gate A까지 포함한 최종 집중·문서 회귀는 **164 passed·1 skipped**다. skip은 같은
+  suite의 opt-in actual Docker case이며 이를 별도 활성화한 검증은 **1 passed·25 deselected**로 끝났다.
+  전체 `src tests containers scripts` Ruff, 변경 4개 Python 파일 format check, Linux strict mypy
+  **584 source**, `git diff --check`, 추가 line의 absolute local path와 high-confidence secret pattern
+  검사가 통과했다. actual Docker 검증은 live server의 materialization·re-attestation·cleanup만 수행했고
+  model completion·Provider·target request는 0이다.
 
 Private controller와 logs의 기준은 `.pajin/four-followups-20260912/`다. 실제 자격증명과
 private 모델 원문은 출력하거나 tracked 문서에 복사하지 않는다. 전 단계 근거는

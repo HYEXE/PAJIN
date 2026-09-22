@@ -103,9 +103,10 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   discovery는 Skill이 요구하는 independent replay·negative control·semantic oracle를 충족하지
   않으므로 requirement는 전부 unsatisfied다. legacy `[developer,user]` wire는 pinned
   tokenizer context에 들어가지 않고 historical Capacity v1은 live gate에 사용할 수 없다.
-  attested Capacity v2·zero-dispatch preparation·non-executing admission은 검증됐지만 ADR-0319의 네
-  live gate, 성공 model proposal, Skill→Recipe/Capability binding, target 실행과 독립 성능 검증은
-  없다. 별도 사용자 승인 없이는 새 model completion을 진행하지 않는다.
+  attested Capacity v2·zero-dispatch preparation·non-executing admission과 ADR-0319 Gate A의 actual
+  live final-view materialization/attestation/cleanup은 검증됐다. Gate B durable CAS, Gate C one-call
+  authorization, Gate D compact runtime/receipt, 성공 model proposal, Skill→Recipe/Capability binding,
+  target 실행과 독립 성능 검증은 없다. 별도 사용자 승인 없이는 새 model completion을 진행하지 않는다.
   금지 field와 알려진 target
   canary 검사는 의미적으로 위장된 모든
   정답·비밀의 부재를 증명하지 않으므로 source review가 계속 필요하다.
@@ -168,12 +169,14 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   readable하지만 live gate로 쓸 수 없다. attested Capacity v2 Run
   `run_20260921T052042Z_0932a478`과 zero-dispatch preparation Run
   `run_20260921T052213Z_801a9053`은 strict reload·cleanup을 통과했지만 다음 제약은 남아 있다.
-  4.28 GB model을 volume으로 복사하고 두 번 hash하는 local 시간·저장 비용을 측정·최적화하지
-  않았고, process SIGKILL·host·Docker-daemon 중단 후 labelled container/volume을 시작 시 회수하는
-  sweeper는 없다. non-executing admission은 exact preparation·compact request를 결박하지만 권한
-  bearer가 아니다. live completion 전에는 외부 one-call authorization, preparation+authorization
-  durable single-use CAS, live descriptor-to-volume attestation, additive compact runtime/receipt가
-  모두 필요하다. 성공 structured output, model quality,
+  Gate A는 held descriptor에서 fresh owned volume으로 복사한 4.28 GB model과 actual live server의
+  final read-only view를 Capacity v2에 exact 결박하고 cleanup/absence까지 검증한다. 다만 복사·반복
+  hash의 분리된 시간·저장 비용은 측정·최적화하지 않았고, process SIGKILL·host·Docker-daemon 중단 후
+  labelled container/volume/network를 시작 시 회수하는 sweeper는 없다. 한 process 안에서 Docker
+  create 성공 뒤 CLI 결과가 불확실한 경우는 exact owner 재검증과 cleanup으로 회수한다.
+  non-executing admission은 exact preparation·compact request를 결박하지만 권한 bearer가 아니다.
+  live completion 전에는 preparation+authorization durable single-use CAS, 외부 one-call authorization,
+  additive compact runtime/receipt가 모두 필요하다. 성공 structured output, model quality,
   latency·peak memory·stability, full WEB-006 governed Run·PoC replay, WEB-008 action 연결은 미검증이다.
   현재 artifact는 target request, Permit, Finding, Graph, report, SARIF, PoC, 외부 전달 권위를
   만들지 않는다.

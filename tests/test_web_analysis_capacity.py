@@ -15,6 +15,8 @@ from pajin.benchmark.effectiveness.suite import PLATFORM_MANIFESTS, RuntimePin, 
 from pajin.runtime.store import RunIntegrityError, RunStore
 from pajin.web_assessment.analysis_capacity import (
     WEB_ANALYSIS_COMPLETION_TOKENS,
+    ModelDescriptorCopyObservation,
+    ModelDescriptorIdentity,
     SubprocessLlamaCppTokenizerBackend,
     WebAnalysisCapacityError,
     WebAnalysisCapacityIndex,
@@ -547,11 +549,19 @@ def test_tokenizer_stages_and_attests_model_before_first_endpoint(
 
     monkeypatch.setattr(backend, "_run", fake_run)
     monkeypatch.setattr(backend, "_run_unchecked", fake_unchecked)
-    monkeypatch.setattr(
-        backend,
-        "_copy_verified_model_descriptor",
-        lambda _pin: events.append("descriptor-copy"),
-    )
+
+    def fake_descriptor_copy(_pin: WebAnalysisCapacityPin) -> ModelDescriptorCopyObservation:
+        events.append("descriptor-copy")
+        identity = ModelDescriptorIdentity(
+            device=1,
+            inode=2,
+            size_bytes=pin.model_size_bytes,
+            modified_time_ns=3,
+            changed_time_ns=4,
+        )
+        return ModelDescriptorCopyObservation(before=identity, after=identity)
+
+    monkeypatch.setattr(backend, "_copy_verified_model_descriptor", fake_descriptor_copy)
     monkeypatch.setattr(
         backend,
         "_verify_seed_topology",
@@ -645,10 +655,13 @@ def test_tokenizer_cleanup_attempts_all_owned_resources_after_failure(
     backend._seed_container_created = True
     backend._volume_created = True
     calls: list[tuple[str, ...]] = []
+    failed_once = False
 
     def fake_run(arguments: tuple[str, ...], **_kwargs: object):
+        nonlocal failed_once
         calls.append(arguments)
-        if arguments[-1] == "a" * 64:
+        if arguments[-1] == "a" * 64 and not failed_once:
+            failed_once = True
             return subprocess.CompletedProcess(arguments, 1, b"", b"daemon failure")
         return subprocess.CompletedProcess(arguments, 0, b"", b"")
 
@@ -662,6 +675,12 @@ def test_tokenizer_cleanup_attempts_all_owned_resources_after_failure(
         ("docker", "rm", "--force", "b" * 64),
         ("docker", "volume", "rm", backend._volume_name),
     ]
+    assert backend._container_created is True
+    assert backend._seed_container_created is False
+    assert backend._volume_created is False
+
+    backend.cleanup()
+    assert calls[-1] == ("docker", "rm", "--force", "a" * 64)
 
 
 def test_capacity_success_seals_five_artifacts_and_strictly_reloads(tmp_path: Path) -> None:
