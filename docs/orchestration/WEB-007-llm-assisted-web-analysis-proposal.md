@@ -18,6 +18,8 @@
   [ADR-0320](../adr/0320-durably-claim-prepared-compact-web-analysis-and-recover-cleanup.md)
 - External one-call authorization decision:
   [ADR-0321](../adr/0321-verify-external-one-call-web-analysis-authorization.md)
+- Cleanup-bound compact live-runtime decision:
+  [ADR-0322](../adr/0322-enforce-cleanup-bound-compact-web-analysis-live-runtime.md)
 
 ## Objective
 
@@ -80,8 +82,10 @@ review:
   one-dispatch marker, and recovers crashes only toward pending cleanup. Gate C now verifies an
   external Ed25519 one-call statement against the exact admission, preparation, request, selected
   model, Capacity v2 Pin, and transport under a 180-second maximum lifetime. Its verified result is
-  still unclaimed and non-dispatch-ready. An additive compact runtime/receipt remains the final P0
-  gate before dispatch.
+  still unclaimed and non-dispatch-ready. Gate D's additive compact runtime, receipt, strict loader,
+  Docker pre-cleanup durability barrier, and combined model/transport cleanup evidence are
+  implemented, acceptance-verified, and preserved in a local commit. A separate explicit call
+  approval remains a prerequisite for any fresh completion.
 
 WEB-007 does not make an arbitrary Web site executable. It does not add a production adapter,
 broaden the exact loopback origin, accept caller credentials, or weaken any existing WEB-006
@@ -422,6 +426,110 @@ authority widening, local Campaign approval reinterpretation, and same-nonce reu
 durable authorization identity. No WEB-008 action may start before a successful advisory is sealed
 and strict-reloaded.
 
+### Cleanup-bound compact live integration
+
+Gate D is a new compact-only path. It does not translate the admitted `system` plus `user` request
+to the legacy `developer` plus `user` wire, import the legacy receipt or loader, or use the
+host-path-binding `LocalModelRuntime`. It composes the four gates in this exact order:
+
+```text
+strict reload
+-> external authorization verification
+-> atomic preparation and authorization claim
+-> descriptor-to-volume materialization and final-view attestation
+-> admission, authorization, claim, model-view, exact Provider-route, Worker-context, and job revalidation
+-> durable dispatch marker and at most one Provider dispatch
+-> pending-cleanup durability barrier
+-> exact credential revocation and transport/model cleanup plus independent absence verification
+-> durable publication intent, terminal receipt seal, full strict unanchored-candidate reload
+-> one-use publication-root CAS
+-> journal terminal CAS
+-> strict receipt and journal cross-link reload
+```
+
+The Docker Worker barrier runs after an exact result is observed or the attempt becomes uncertain
+but before any Worker, proxy, or internal-network cleanup. For an observed result, the host runtime
+must receive enough exact result material to interpret the Provider response, strictly parse the
+draft, deterministically compile the advisory, and classify the pending outcome before cleanup.
+Timeout, a transport-reported cancellation, or a lost outcome becomes `outcome-unknown`; a raised
+`CancelledError` remains process control. A barrier failure does not skip resource cleanup and does
+not recreate dispatch authority. The barrier mapping itself contains only the claim digest,
+execution ID, and literal pending-cleanup requirement; the surrounding
+`pajin.docker-worker/v6` context and compact receipt supply the exact request and transport binding.
+Gate D's synchronous callback runs under a code-owned POSIX hard deadline and cannot yield.
+`DockerPreCleanupBarrierDeadlineExceeded`, `CancelledError`, `SystemExit`, and `KeyboardInterrupt`
+retain their identity across all nine runtime steps, including failure settlement and cleanup. If
+cleanup also fails, the barrier or process-control exception remains primary and carries only
+bounded cleanup diagnostics. After provable cleanup the runtime seals only abandoned recovery and
+re-raises the original interruption. If cleanup cannot be proven, the claim stays pending.
+
+The terminal receipt is built from the immutable `pending-cleanup` row after both Gate A resources
+and transport resources are removed and independently proven absent. It binds the admission,
+Capacity and Skill anchors, signed authorization and verification decisions, journal store and
+claim plus its immutable Gate D context digest, optional live attestation for stage-appropriate
+pre-dispatch failures, exact compact request, Provider registration and route attestation, transport
+Pin, Worker context, job metadata, execution identity, dispatch observation, cleanup result,
+terminal intent, and failure stage. Step 5 requires the claim-owned runtime to be the sole exact
+member exposing `http://host.docker.internal:8080/v1/chat/completions`; its alias, topology,
+registration, endpoint, and route-attestation digest are cross-bound by context, receipt, and
+cleanup.
+The Gate D context records initial authorization evidence with reservation and then,
+in one all-or-none pre-marker transition, records the second verification evidence,
+`preDispatchAuthorizationExpiresAt`, and transport digests. The reservation also binds the initial
+expiry; both expiry fields must match the same signed bound. The marker transaction's Python guard
+and SQLite transition trigger consume the slot only when
+`dispatchStartedAt < preDispatchAuthorizationExpiresAt`. At exact expiry, the durable event and
+count remain unchanged and the Provider is not called. A later receipt rejection cannot substitute
+for preventing an expired dispatch. A transient second verification appears in the receipt only if
+the matching all-or-none context CAS committed. The context is audit/recovery evidence with no
+execution authority. Success additionally requires the strict draft and compiled advisory. Every
+target, Tool, Capability, Permit, Finding, Graph, report, delivery, retry, and automatic-redispatch
+authority remains false.
+
+The context requires Web live-claim journal schema v2. A v1 store fails closed instead of being
+implicitly migrated or rewritten. Gate B v1 never carried an authorized live dispatch, so retained
+v1 stores stay separate audit/cleanup artifacts rather than production migration inputs. They cannot
+be opened as Gate D authority or converted to regain consumed identities; v2 version metadata and
+the complete schema fingerprint remain immutable.
+
+A quiescent restart may retain the durable dispatch marker after its in-memory pre-dispatch
+verification or live attestation object is lost. That shape can produce only an explicit abandoned
+`quiescent-recovery` or `post-observation-recovery` receipt with lost-evidence markers. It cannot
+produce terminal success or a proposal.
+
+Credential recovery is stricter than container absence. The existing OpenAI-compatible transport
+creates one `provider-api-key` Worker secret request even for the fixed loopback local Provider.
+Gate D preserves that meaning, permits at most one deterministic exact lease, and records only its
+secret-free identity. Terminal cleanup requires the same broker to positively inspect and revoke
+that lease. A crash after deterministic issuance but before the optional pre-dispatch context commit
+cannot be treated as a zero-lease call. The adapter retains the exact ID before `issue_exact`, so a
+store-then-interrupt outcome is also cleanup authority; recovery re-derives the one possible ID from
+the exact claim and fixed Worker request without issuing or materializing it. After process loss, a possible
+lease that the same broker cannot prove revoked keeps the claim in `pending-cleanup`; recovery cannot
+synthesize an absent-or-revoked result, reissue a lease, or seal a terminal receipt. Gate D does not
+add an unauthenticated or zero-lease local transport. The first real call therefore also requires an
+operational same-broker lifecycle through cleanup; any future zero-lease transport needs a separate
+contract.
+
+To avoid a digest cycle and both publication crash windows, the journal first records the sole
+immutable publication intent while the claim is pending and before a Run exists. It binds the
+trusted output root, full-claim-digest parent, deterministic Run ID/path, receipt, cleanup, absence,
+disposition, and optional live-attestation digests. After seal, the full strict candidate loader
+reads the unanchored publication row before and after artifact I/O, requires it unchanged, validates
+raw bytes and every lineage anchor, and mints the only store-local one-use proof accepted by the root
+CAS. Only the anchored publication may proceed to terminal CAS and terminal strict reload.
+
+A Run without prior intent, a self-consistent wrong seal, a caller-supplied bare root, or relocation
+through a symlinked ancestor, output root, campaign parent, or Run is rejected. Recovery follows the
+same durable intent through candidate reload/root CAS or resumes from its exact anchored row; it
+never creates a second receipt or Run, exposes a pending proposal, or redispatches. Cleanup or
+absence failure keeps the claim non-reusable and forbids a successful proposal.
+
+This integration is presently a working-tree implementation under focused and static validation.
+Its tests use injected transport seams: actual model completions, Provider dispatches, and target
+requests remain zero. A real externally signed artifact and a separate explicit approval are still
+required for the first Qwen3 4B Q8 completion.
+
 ## v1alpha2 expansion
 
 v1alpha2 is the first version intended to connect the central model loop to governed Web actions.
@@ -486,7 +594,7 @@ destination-bound action with explicit authorization and a delivery receipt.
 | Performance | Adds one local inference to the analysis path | The old actual call hit the 30-second upstream I/O cap; the successor now pins 180 seconds at each relevant layer, but successful completion latency remains unmeasured |
 | Memory | Adds a local model runtime and bounded prompt/response buffers | Qwen3 4B Q8 is selected and pinned; peak RSS remains unmeasured |
 | Reliability | Model failure is isolated from target execution and closes its Run | Actual timeout was sealed terminally with no in-Run retry or target request |
-| Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Frozen source/model/SKILL-002 inputs, the independent Pin, and new immutable images pass structural checks; Capacity v2 reproduces 2,484/4,096 and 51,168/65,536, preparation and admission bind the proof and request, Gate A attests the descriptor-bound live view and cleanup, Gate B durably consumes both identities with cleanup-only recovery, and Gate C verifies the external narrow grant; Gate D remains |
+| Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Frozen source/model/SKILL-002 inputs, the independent Pin, and new immutable images pass structural checks; Capacity v2 reproduces 2,484/4,096 and 51,168/65,536, preparation and admission bind the proof and request, Gate A attests the descriptor-bound live view and cleanup, Gate B durably consumes both identities with cleanup-only recovery, Gate C verifies the external narrow grant, and Gate D's cleanup-bound runtime/receipt integration passes local acceptance verification without a real dispatch |
 | Migration | Additive sidecar Run; no existing artifact rewrite | Source and failure Runs strictly reload; legacy formats remain unchanged |
 
 What makes the v1alpha1 shape attractive is that we can validate the LLM boundary without giving it
@@ -517,9 +625,14 @@ Implementation is not complete until focused tests demonstrate:
   closes before diagnostics or DOM probes, and stale-source rejection;
 - a byte-bounded Snapshot secret scan and rejection of every forbidden field class, including target
   locators, target-derived digests, and reversible low-entropy hashes;
-- exactly one dispatched local model call per analysis Run with no tools and no external network or
-  telemetry, plus proof that failure or uncertainty is terminal and any later attempt uses a fresh
-  source reload, Snapshot, budget, and Run;
+- a Gate D injected transport seam that proves the nine-step order, at most one dispatch, the
+  pre-cleanup durable transition, terminal cross-link, and no redispatch while making zero actual
+  model, Provider, or target calls;
+- rejection of pre-claim reload or authorization failure with no claim, and durable non-reuse after
+  post-claim materialization, revalidation, marker, dispatch, response, cleanup, publication, CAS,
+  timeout, or cancellation failure;
+- exact model and transport ownership, cleanup, independent absence, and aggregate absence binding,
+  including proof that cleanup failure cannot return a proposal;
 - exact provider, immutable model, prompt, schema, request, response, usage, and receipt lineage;
 - rejection of prompt-injected actions, extra fields, alternate aliases, missing or duplicate items,
   foreign IDs, invalid ranks, coercion, oversized text, and malformed JSON;
@@ -531,7 +644,9 @@ Implementation is not complete until focused tests demonstrate:
 - inability to pass the advisory into existing execution, promotion, Graph, SARIF, PoC, or delivery
   gates;
 - legacy WEB-006 strict reload and digest compatibility; and
-- latency, token use, peak memory, and output-stability measurements for the selected local model.
+- after separate explicit approval, exactly one fresh local completion with no tools, no target
+  request, and no external telemetry, followed by latency, token use, peak memory, and output-
+  stability measurements for the selected local model.
 
 A later v1alpha2 validation must additionally exercise discovery and diagnostic action separation;
 independent source and validation interpretations of one compiled-plan digest; distinct fresh policy
@@ -601,7 +716,13 @@ is also complete: the preparation and authorization identities are independently
 restart returns only audit/cleanup state. ADR-0321 Gate C is complete: the external signed grant is
 bound to the exact admission/request/model/transport, maximum 180-second validity, and the Gate B
 nonce identity without creating dispatch or downstream authority. Gate D, a real external
-authorization artifact, and separate approval remain required before one fresh completion.
+authorization artifact, and separate approval remain required before one fresh completion. The
+Gate D compact runtime, receipt, strict loader, pre-cleanup barrier, and combined cleanup evidence
+pass working-tree acceptance: the focused suite reports 456 passed and one live-Docker test
+deselected, the expanded Gate A through D suite reports 602 passed and one live-Docker test
+deselected, and strict typing, lint, formatting, documentation, diff, and secret/path checks pass.
+The change is preserved in a local commit without push and has not made a model completion,
+Provider dispatch, or target request.
 
 ## Non-goals and open decisions
 
@@ -619,8 +740,9 @@ authorization artifact, and separate approval remain required before one fresh c
   The additive compact `system` plus `user` prototype historically measured
   `1,505 + 1,024 = 2,529`; the final sealed proof independently recomputed
   `1,460 + 1,024 = 2,484`, leaving 1,612 tokens, and passed conservative Campaign accounting at
-  `51,168 / 65,536`. Gates A, B, and C of the four-gate live integration are verified; Gate D, the
-  hardware floor, successful latency,
+  `51,168 / 65,536`. All four live-integration gates pass local implementation verification and are
+  preserved as separate local commits; a fresh completion still requires separate explicit approval. The hardware
+  floor, successful latency,
   peak memory, output stability, and an acceptance threshold remain to be verified.
 - The v1alpha2 action schemas, risk tiers, approval policy, maximum action graph, and replan cadence
   require a separate implementation contract before execution is enabled.

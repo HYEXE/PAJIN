@@ -25,6 +25,7 @@ _MIN_TRANSFORMED_VARIANT_LENGTH = 8
 _REDACTION_MARKER = "<redacted-secret>"
 _MAX_SERIALIZATION_DECODE_PASSES = 3
 _LEASE_SCOPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}\Z")
+_EXACT_LEASE_ID = re.compile(r"lease_[a-f0-9]{32}\Z")
 
 
 def secret_broker_system_utc_now() -> datetime:
@@ -59,6 +60,13 @@ def _validate_lease_scope(value: str) -> None:
     if _LEASE_SCOPE.fullmatch(value) is None:
         raise ValueError("secret lease scope must be a safe identifier")
     _require_utf8(value, label="secret lease scope")
+
+
+def _validate_exact_lease_id(value: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError("secret lease identifier must be a string")
+    if _EXACT_LEASE_ID.fullmatch(value) is None:
+        raise ValueError("secret lease identifier must match lease_[a-f0-9]{32}")
 
 
 class SecretLeaseStatus(StrEnum):
@@ -141,6 +149,51 @@ class SecretBroker:
         ttl_seconds: int = 30,
         max_uses: int = 1,
     ) -> SecretLease:
+        return self._issue(
+            secret_ref,
+            lease_id=None,
+            audience=audience,
+            binding=binding,
+            scope=scope,
+            ttl_seconds=ttl_seconds,
+            max_uses=max_uses,
+        )
+
+    def issue_exact(
+        self,
+        secret_ref: str,
+        *,
+        lease_id: str,
+        audience: str,
+        binding: str,
+        scope: str | None = None,
+        ttl_seconds: int = 30,
+        max_uses: int = 1,
+    ) -> SecretLease:
+        """Issue one lease with a caller-derived, strictly bounded identifier."""
+
+        _validate_exact_lease_id(lease_id)
+        return self._issue(
+            secret_ref,
+            lease_id=lease_id,
+            audience=audience,
+            binding=binding,
+            scope=scope,
+            ttl_seconds=ttl_seconds,
+            max_uses=max_uses,
+        )
+
+    def _issue(
+        self,
+        secret_ref: str,
+        *,
+        lease_id: str | None,
+        audience: str,
+        binding: str,
+        scope: str | None,
+        ttl_seconds: int,
+        max_uses: int,
+    ) -> SecretLease:
         if not 1 <= ttl_seconds <= 300:
             raise ValueError("secret lease TTL must be between 1 and 300 seconds")
         if not 1 <= max_uses <= 10:
@@ -150,17 +203,22 @@ class SecretBroker:
         with self._lock:
             if secret_ref not in self._secrets:
                 raise KeyError("secret reference is not registered")
+            if lease_id is not None and lease_id in self._leases:
+                raise ValueError("secret lease identifier is already issued")
             now = self._now()
-            lease = SecretLease(
-                secret_ref_fingerprint=self.fingerprint(secret_ref),
-                audience=audience,
-                binding=binding,
-                scope=scope,
-                issued_at=now,
-                expires_at=now + timedelta(seconds=ttl_seconds),
-                max_uses=max_uses,
-                remaining_uses=max_uses,
-            )
+            lease_arguments: dict[str, object] = {
+                "secret_ref_fingerprint": self.fingerprint(secret_ref),
+                "audience": audience,
+                "binding": binding,
+                "scope": scope,
+                "issued_at": now,
+                "expires_at": now + timedelta(seconds=ttl_seconds),
+                "max_uses": max_uses,
+                "remaining_uses": max_uses,
+            }
+            if lease_id is not None:
+                lease_arguments["lease_id"] = lease_id
+            lease = SecretLease.model_validate(lease_arguments)
             self._leases[lease.lease_id] = lease
             self._lease_refs[lease.lease_id] = secret_ref
             return lease.model_copy(deep=True)
@@ -232,6 +290,7 @@ class SecretBroker:
             if lease.status is SecretLeaseStatus.ACTIVE:
                 lease.status = SecretLeaseStatus.REVOKED
                 lease.revoked_reason = reason
+                lease.remaining_uses = 0
             return lease.model_copy(deep=True)
 
     def revoke_all(self, reason: str) -> list[SecretLease]:
@@ -243,6 +302,7 @@ class SecretBroker:
                 if lease.status is SecretLeaseStatus.ACTIVE:
                     lease.status = SecretLeaseStatus.REVOKED
                     lease.revoked_reason = reason
+                    lease.remaining_uses = 0
                     revoked.append(lease.model_copy(deep=True))
             return revoked
 
@@ -256,6 +316,7 @@ class SecretBroker:
                 if lease.scope == scope and lease.status is SecretLeaseStatus.ACTIVE:
                     lease.status = SecretLeaseStatus.REVOKED
                     lease.revoked_reason = reason
+                    lease.remaining_uses = 0
                     revoked.append(lease.model_copy(deep=True))
             return revoked
 

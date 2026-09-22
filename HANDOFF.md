@@ -5,14 +5,14 @@ AGENTIC-001~004의 이전 구현·계약은 main에 보존돼 있다. WEB-006 di
 reload됐지만 full governed Run·PoC 재실행은 남아 있다. WEB-007의 legacy 성공 proposal도 transport
 timeout으로 미검증이며 legacy `[developer,user]` wire는 `5,232 > 4,096`이라 비실행 상태로 동결한다.
 Capacity v2 `run_20260921T052042Z_0932a478`, zero-dispatch preparation
-`run_20260921T052213Z_801a9053`, non-executing admission은 strict reload됐다. Gate A는 held descriptor를
-fresh owned volume에 복사해 actual live model server의 final read-only view, Capacity v2 exact equality,
-internal network와 owner-bound cleanup/absence를 attest하도록 구현·검증했다. 이 경로는 model endpoint를
-노출하지 않았고 completion·Provider·target 호출은 0이다. Gate B는 preparation·authorization의 독립
-UNIQUE, 4단계 CAS, dispatch 1회 marker, deterministic cleanup owner와 SIGKILL 뒤 cleanup-only 회수를
-구현·검증했다. Gate C는 외부 Ed25519 one-call authorization을 exact admission·preparation·request·
-model·transport와 최대 180초 validity에 결박하고 verified issuer·key ID·nonce로 Gate B의 durable
-identity를 파생하도록 구현·검증했다. 다음은 Gate D이며 별도 승인 전 completion은 실행하지 않는다. 탐지기 CPU 기준 미달과 Graph 최초 조회 지연 증가는
+`run_20260921T052213Z_801a9053`, non-executing admission은 strict reload됐다. Gate A의 descriptor-bound
+live view·cleanup/absence, Gate B의 dual-identity CAS·cleanup-only recovery, Gate C의 external Ed25519
+one-call verifier는 각각 구현·검증·별도 로컬 커밋됐다. Gate D의 additive compact runtime·receipt·
+strict loader, Worker pre-cleanup durability barrier, model·transport cleanup 결합도 구현·최종 검증해
+별도 로컬 커밋으로 보존했다. cleanup-bound publication intent→seal→strict candidate→root CAS→terminal
+CAS→strict reload 전에는 성공 proposal을 반환하지
+않으며 실제 completion·Provider·target 호출은 0이다. Gate D 전체 검증 뒤에도 별도 사용자 승인 없이는
+첫 Qwen3 4B Q8 completion을 실행하지 않는다. 탐지기 CPU 기준 미달과 Graph 최초 조회 지연 증가는
 아래의 기존 제한으로 유지한다.
 
 ## 2026-09-20 AGENTIC-002·003A/B/C1/C2/C3A/C3B1/C3B2·C3C 기반·004 체크포인트
@@ -146,29 +146,9 @@ identity를 파생하도록 구현·검증했다. 다음은 Gate D이며 별도 
   Evidence·Finding·Graph·보고·SARIF·PoC를 검증·승격한다. Graph admission 뒤 재계획에는 초기 pinned
   Graph head를 새 coordination epoch로 넘기는 rollover 계약도 필요하다.
 
-## 2026-09-17 AGENTIC-001 체크포인트
+## 이전 AGENTIC-001 상태
 
-- `src/pajin/agentic/`에 Codex형 논리 agent command/event 계약, Hypothesis Frontier,
-  결정론적 Path Scorer, bounded Dynamic Supervisor와 Skill-backed Web Pentest/Exploit Group을
-  추가했다. model이 제안한 점수·텍스트는 tainted advisory이고 code-derived feature만 scheduler
-  입력이 된다.
-- model projection은 폐쇄형 signal enum과 exact canonical Graph Snapshot의 한 Hypothesis root만
-  받는다. runtime은 no-tools 단일 Provider 호출의 request/result/receipt/draft를 정확히 결박하고
-  Scope·Capability·Permit·Tool·Gateway·Graph·Finding·보고 권위를 만들지 않는다.
-- supervisor는 현재 process 안에서만 새 checkpoint를 만들며 restart resume를 명시적으로
-  지원하지 않는다. command/event identity와 순서, terminal 단일 사용, 현재 assignment를 검증하고
-  capability/input 요구에서는 권한을 자동 부여하지 않고 중단한다.
-- agentic 생성·reload 경계는 중첩 Pydantic 객체를 alias wire로 재귀 재검증하고 비결정적·lazy
-  container를 거부한다. Provider port는 Gateway와 감사 저장소의 exact 동일 `RunStore` 결박을
-  생성 시 강제해 분리 저장소의 중복 request reservation을 차단한다.
-- focused 검증은 `tests/test_agentic_campaign.py` 31개와 `tests/test_provider_session.py` 42개,
-  Ruff, Linux 대상 mypy가 통과했다. Orchestration·Skill·Provider·Graph·WEB successor를 포함한
-  확장 회귀 283개도 통과했다.
-- 최종 read-only 적대 검토에서는 구현 범위 내 재현 가능한 P1/P2가 남지 않았다. 당시 남겨 둔
-  raw Graph Snapshot current-head·restart 경계는 위 2026-09-18 AGENTIC-002 체크포인트에서
-  Linux-only durable authority로 닫았다.
-  실제 model·Juice Shop 호출은 수행하지 않았고 commit/push도 하지 않았다.
-- 이 과거 체크포인트의 다음 단계였던 AGENTIC-003B는 위 2026-09-18 체크포인트에서 구현했다.
+- AGENTIC-001의 현재 의미와 남은 작업은 위 최신 AGENTIC 체크포인트와 `PLAN.md`가 권위다.
 
 ## 목표와 승인 범위
 
@@ -190,12 +170,11 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 
 ## Git과 원격 인수인계
 
-- 현재 branch는 `main`, HEAD는 Gate B local commit
-  `0fa9a4e90d3f90e068c0ee24ca1b6349a277f4ec`, `origin/main`은
-  `175f60003be1bfa89ac5dfd4a0c53593927246b5`다. push하지 않았다.
-- Gate C 체크포인트는 **미커밋·미push**다. staged 변경은 없고, 현재 작업 범위의 새
-  authorization source/test/ADR과 운영 상태 문서가 작업 트리에 있다. 정확한 목록은
-  `git status --short`를 권위로 삼는다.
+- 현재 branch는 `main`, HEAD는 이 문서를 포함한 Gate D local commit이고 `origin/main`은
+  `175f60003be1bfa89ac5dfd4a0c53593927246b5`다. local은 네 Gate commit만큼 앞서며 push하지 않았다.
+- Gate D의 additive runtime/receipt, Worker barrier, Gate A/B/transport extension, tests, ADR-0322와
+  운영 상태 문서는 하나의 로컬 커밋으로 보존한다. 실제 SHA와 clean 여부는 `git status --short`와
+  `git log -1`을 권위로 삼는다.
 - `output/`·`.pajin/`의 private/raw 근거는 로컬에만 보존되며 Git으로 전달되지 않는다.
   기존 `39c66a2` 원격 CI 결과는 이 새 변경의 검증 근거가 아니다.
 
@@ -382,53 +361,17 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 - 계약은 `docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md`, 결정은
   ADR-0300이다.
 
-## WEB-007 — Capacity v2·preparation·admission·Gate A materialization·Gate B durable CAS 완료
+## WEB-007 — four live gates locally committed, first fresh completion awaiting approval
 
-- 실제 pre-diagnostic source는 `run_20260915T142836Z_95615cb9`, root
-  `7a9de15039883dc483caad6d9a3f84f5e1d76745bc10285986fbe741b939bb50`다. 4 artifact·2 event,
-  route 4개·form 1개·bodyless passive request 6개를 봉인했고 별도 process strict loader가 같은
-  authority를 재구성했다. diagnostic/DOM-probe 결과와 새 target 요청은 이 analysis turn에 없다.
-- private Snapshot에서 Provider로 분리한 projection은
-  `web-analysis-projection:457f025e3dc64d1e996095f7bc4638b706c1ae87b80728931257f7caeb6449b0`,
-  2,935 bytes다. code-owned diagnostic 3개·path 2개와 bounded signal만 포함하며 source/target
-  locator·credential·raw body/DOM·secret material은 포함하지 않는다.
-- model/runtime provenance는 frozen comparison-plan Run `run_20260912T133511Z_79db48c7`, root
-  `b9c59c96d2c2796a7343040e36c28f3efb611826e6cbcea97c3d861220453619`, commitment
-  `340adfa28db30d788c5168fa5a97e7b13e85b9940af45c104c7c465c0ecbd9cb`에서 독립 검증했다.
-  loader는 frozen Run의 exact plan/public manifest/event/commitment를 검증하며, 이후 변경된 현재
-  evaluator source pin과 같아야 한다고 잘못 요구하지 않는다.
-- Qwen3 4B Instruct 2507 Q8_0 호출은 한 번만 dispatch됐다. Provider Run
-  `run_20260915T160850Z_ee8ac5d7`, root
-  `e8912d387f7e160cffd3b1ce9e4444850c9ce2cb2b7d3542348b1a2ac7f22b68`는 13 event·4 artifact·
-  seal 1개로 닫혔다. Worker는 exit 70과 `stage=provider-open`, `category=timeout`을 반환했다.
-  outer budget은 180초지만 현재 `worker_entry.py` HTTP open과 egress proxy upstream I/O ceiling이
-  각각 30초여서 CPU local completion을 기다리지 못했다.
-- analysis Run `run_20260915T160850Z_7ffb7521`, root
-  `9a8121d756589d93e7b7bee9b201f55fffe95b6efa04bccc22f1bc29f442101e`는 start/failure event와
-  Snapshot·Provider context·terminal failure receipt를 봉인했다. terminal state는
-  `provider-invocation-failed-uncertain`이고 `modelDispatchAttempted=true`, `proposalCompiled=false`,
-  `automaticRedispatchAuthorized=false`, `executionAuthorized=false`다. 실제 timeout 뒤 Provider
-  evidence verifier가 허용된 dispatch와 실패 Result를 잘못 동일시해 analysis Run 종결을 막던
-  결함도 수정하고 regression test를 추가했으며, 이미 발생한 Provider 실행을 다시 호출하지 않고
-  기존 증거로 analysis failure Run만 복구·strict reload했다.
-- Provider/analysis 두 Run은 별도 process에서 strict reload됐고 owned container/network가 남지
-  않았다. 결과 root의 credential/target/Bearer marker scan은 일치가 없었으며 외부 전달은 false다.
-  raw draft·compiled proposal·fallback diagnostic·Permit·Finding·Graph·report·SARIF·PoC는 생성되지
-  않았다. 이 실패 Run은 절대 redispatch하지 않는다.
-- 별도 successor wire는 verified base runtime digest와 서로 다른 새 Worker/proxy image, v3 Worker
-  action, Provider transport v2, 내부 open/proxy/job exact 180초를
-  `WebAnalysisTransportRuntimePin/v1alpha1`로 결박한다. 기존 v1/v2 action의 30초 동작은 바꾸지 않았다.
-  새 linux/arm64 Worker `sha256:e2cc36df...`와 proxy `sha256:5ad3cf61...`를 실제 build했고, Pin digest
-  `2892027a7992a36693917d7b08f2354120a9ab620c46013fc5e2b321cd2fbe8a`를 별도 anchor로 검증했다.
-  host-local untracked Pin artifact는
-  `output/web007-skill-bound-transport-20260916/transport-pin.json`에 보존했다.
-- strict Pin artifact loader는 bounded no-follow JSON, exact canonical wire, 별도 expected digest와 frozen
-  runtime을 요구한다. 새 운영 runner는 source·comparison plan·SKILL-002·registry/policy·Pin·image
-  ID/platform·Qwen 파일·fresh output root를 model 시작 전에 재검증한다. 최초 검증은 exact successor
-  chat의 model-token 회계 상한을 빠뜨렸고, 승인된 `live1` attempt에서 prompt `87,472` + completion
-  `1,024` = `88,496`이 Campaign `65,536`을 초과한다는 사실이 확인됐다. 이제 code-owned Provider
-  registration과 exact Skill-bound chat에 같은 shared budget 검사를 적용해 이 입력을 model 시작 전에
-  거부한다.
+- historical pre-diagnostic source, secret-free projection, frozen comparison plan과 legacy failure
+  Runs의 exact IDs·roots·digests는 WEB-007 계약 문서가 권위다. 이 checkpoint에서는 해당 Runs를
+  재사용·재시도하지 않고 현재 Gate D의 independently anchored inputs만 strict reload한다.
+- legacy 실제 호출은 30초 Provider-open timeout으로 끝나 terminal failure로 strict reload됐으며
+  draft·proposal은 없다. 뒤의 successor attempt도 capacity guard에서 dispatch 0으로 종결됐다. 두
+  historical attempt는 재사용·redispatch하지 않고 target·downstream authority·외부 전달은 0이다.
+- successor transport Pin은 distinct Worker/proxy images, exact action과 180초 bounds를 고정하고
+  strict loader가 independently retained digest와 runtime을 확인한다. legacy full request는 capacity
+  guard에서 거부되며 historical 30초 action과 legacy image behavior는 변경하지 않는다.
 - pinned Qwen tokenizer와 embedded chat template의 exact 측정에서 legacy full `[developer,user]`
   prompt는 4,208 token이고 fixed completion ceiling 1,024를 합친 5,232 token이 4,096 context를
   초과했다. 이 wire는 현재 RuntimePin에서 비실행 가능하며 historical request/Run을 바꾸거나 재시도하지
@@ -443,31 +386,15 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   4,280,403,520 bytes를 owned volume에 복사하고 staged/read-only-mounted UID/GID `10001:10001`, mode
   `0400`, size·SHA-256과 runtime-user read를 결박했다. strict loader가 prompt 1,460·total 2,484·margin
   1,612와 Campaign 51,168/65,536을 재확인했다.
-- first v2 partial Run `run_20260921T045515Z_314d9364`은 copied `0600` host UID metadata 때문에
-  seed runtime read가 실패했고, second `run_20260921T051853Z_485fc572`는 Docker inspect의
-  `CAP_CHOWN` 표기 차이로 실패했다. 둘 다 unsealed·zero-dispatch이며 cleanup을 완료했다.
-  수정한 v2와 exact source·SKILL-002를 결박한 preparation Run은
+- failed Capacity v2 partial Runs는 unsealed·zero-dispatch로 cleanup됐고 재사용하지 않는다. 수정한
+  v2와 exact source·SKILL-002를 결박한 preparation Run은
   `run_20260921T052213Z_801a9053`, root
   `c2b77fd6a1b70fcf60fb13d5b3c8a4d436cfc219f8868c6dedb572009dd010d5`, status
   `prepared-not-authorized-no-dispatch`로 strict reload됐다. model runtime/invocation·Provider·target·Tool·
   Permit·Finding·Graph·report·delivery count는 0이고 owned container·volume 잔존도 없다.
-- successor Gateway는 exact raw `DockerWorkerBackend`를 유지해 host network-log provenance를 보존한다.
-  별도 attestor가 Worker identity·allowed image·proxy image·external network·action route를 Tool 준비 전,
-  준비 후 Secret Lease 전, 실제 backend run 직전에 다시 검증한다. drift는 raw Worker 호출 없이
-  fail closed되고 lease가 이미 열린 race도 회수한다.
-- successor는 SKILL-002 preparation Run을 strict reload해 selected instruction을 developer message,
-  tainted opaque Evidence를 user message로 분리한다. tools/stream/parallel calls를 금지하고 runtime
-  object당 정확히 한 번만 dispatch할 수 있다. success 7-artifact·2-event, failure 4개 필수 artifact와
-  optional outcome/rejected draft·2-event grammar를 seal 뒤 즉시 strict reload한다. 256 KiB 초과 거부
-  응답은 원문을 복제하지 않고 Provider outcome digest/byte count로 결박한다.
-- 코드/합성 gateway 기준 success, response-rejected, invocation-uncertain, 재호출 거부, foreign Pin,
-  tamper, hidden state와 live Worker drift를 검증했다. 승인된 실제 successor attempt의 Provider Run은
-  `run_20260916T082918Z_f94bc2f7`/root
-  `acf308e7a23410f587a7458f8dc587b49ffa76e58e982190cfc25944bbf90f5e`, analysis Run은
-  `run_20260916T082919Z_da33d46f`/root
-  `ca495ab4d3fdb1cff4ac165fe4592cf6951738a732b3554ebae670bca3709720`이다. 두 Run은
-  `provider-invocation-failed-uncertain`, dispatch 0, execution ID 0으로 strict reload됐고 model/network
-  cleanup이 확인됐다. target request와 외부 전달은 0이다. 이 Run은 재사용하지 않는다.
+- historical successor Gateway/Run grammar and zero-dispatch capacity failure remain readable under
+  their original contract, but Gate D does not reuse their `[developer,user]` request, receipt,
+  loader, runtime, or dispatch authority.
 - output-root identity·model-bind provenance Findings는 actual v2로 닫았다. 새 non-executing admission은
   source·Skill·Capacity·preparation sealed Run을 디스크에서 strict reload하고 그 canonical 객체로만
   exact compact request와 prerequisite digests를 결박한다. 네 Run의 unseal·extra artifact·delete·
@@ -483,11 +410,65 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 - Gate C는 signer/private key 없는 external Ed25519 verifier, independent trust-anchor digest, exact
   admission/request/model/Capacity/transport와 180초 validity를 요구한다. verified result는 dispatch-ready가
   아니며 same issuer·key ID·nonce는 Gate B UNIQUE에서 거부된다. local approval/raw coordinate는 거부한다.
-- 다음 단계는 Gate D additive compact runtime·receipt·strict loader다. Gate C 별도 커밋 승인 전
-  Gate D를 시작하지 않으며, Gate D와 별도 실제 호출 승인 전 completion 또는 WEB-008 action으로
-  진행하지 않는다.
+- Gate D는 additive compact-only runtime·receipt·strict loader를 사용하며 legacy
+  `[developer,user]` wire/receipt/runtime과 host-bind `LocalModelRuntime`을 import·변환·fallback하지
+  않는다. 순서는 strict reload→Gate C verify→Gate B dual claim→Gate A materialize/attest→immediate
+  route/revalidation→dispatch marker/최대 1회 dispatch→pending-cleanup→transport/model cleanup+absence→
+  publication intent→seal→strict unanchored candidate→one-use root CAS→terminal CAS→strict reload다.
+- Gate B의 additive Gate D context는 initial authorization digest/time을 dual reservation과 함께 넣고,
+  pre-marker authorization digest/time/exact expiry bound·execution ID·secret-free lease IDs·Worker
+  Provider-route attestation/Worker context/job metadata/transport binding digest를 all-or-none으로
+  기록한다.
+  route-attestation digest는 claim-owned runtime이 sole member인 network의 exact
+  `host.docker.internal` alias, `http://host.docker.internal:8080/v1/chat/completions`, Provider
+  registration과 topology를 함께 결박한다.
+  dispatch marker transaction은
+  자체 `dispatchStartedAt < preDispatchAuthorizationExpiresAt`일 때만 slot을 소비한다. initial expiry도
+  reservation transaction에 기록되어 reservation time을 먼저 차단하고 두 expiry는 같은 signed bound여야
+  한다. Python transaction guard와 SQLite transition trigger가 독립적으로 exact-expiry marker를 거부해
+  durable event/count 0과 Provider call 0을 유지하고 cleanup-only abandoned recovery로 닫는다. 사후 receipt
+  검사는 이미 발생한 call을 막을 수 없으므로 runtime-only 또는 loader-only time check로 이 CAS guard를
+  대체하지 않는다. context와 receipt cross-link는 audit/recovery evidence일 뿐 invocation·dispatch·
+  target·redispatch 권위를 만들지 않는다.
+- context를 추가한 live-claim journal은 schema v2다. v1은 암묵 migration·in-place rewrite 없이 open에서
+  fail closed한다. Gate B v1은 authorized/live dispatch에 사용되지 않아 production migration 대상이
+  없으며, retained v1 store는 별도 cleanup/audit artifact로만 보존한다. version metadata와 exact schema
+  fingerprint는 immutable 검증 대상이다.
+- optional Docker pre-cleanup barrier는 historical caller의 context를 바꾸지 않는다. Gate D에서는
+  exact result 또는 uncertainty 뒤, Worker/proxy/internal-network cleanup 전에 한 번 호출된다. barrier
+  mapping은 claim digest·execution ID·`pendingCleanupRequired=true`만 가지며 surrounding synchronous
+  `pajin.docker-worker/v6` context와 receipt가 request/transport를 결박한다. callback은 code-owned POSIX
+  hard deadline 아래 yield하지 않는다. deadline/cancellation/process-control은 cleanup 뒤 identity를
+  유지해 재전파하고 cleanup 실패와 겹쳐도 원 예외가 우선한다. proven cleanup이면 ABANDONED
+  recovery만 봉인하고 아니면 pending에 남는다.
+- terminal receipt는 pending claim, authorization, Capacity/Skill, optional stage-appropriate live
+  attestation, exact request/transport/job metadata, dispatch observation과 Gate A+transport cleanup/absence를
+  결박한다. success는 proposal, one dispatch, both pre-dispatch evidence, cleanup, sealed receipt, terminal
+  cross-link와 strict reload를 모두 요구한다. quiescent recovery에서 in-memory evidence를 잃은 consumed
+  dispatch는 explicit abandoned recovery receipt만 가능하고 success가 될 수 없다.
+- Run 전에 pending claim·trusted root·full-claim parent·deterministic path·receipt/cleanup/absence를
+  immutable publication intent로 기록한다. seal 뒤 full strict loader가 unanchored row를 artifact I/O
+  전후 동일하게 확인해 store-local one-use candidate를 만들고 root CAS한 뒤 terminalize한다. recovery도
+  같은 intent/anchored row만 잇는다. bare root, intent 없는 Run, second publication, pending proposal,
+  redispatch, ancestor/output-root/campaign/Run symlink relocation은 거부한다.
+- existing OpenAI-compatible transport는 loopback local Provider에도 `provider-api-key` Worker secret
+  request 하나를 만든다. Gate D는 이를 바꾸지 않고 claim-bound deterministic exact lease를 최대 1개만
+  허용하며, 같은 broker가 secret-free lease identity의 revoke를 positive하게 증명해야 terminalize한다.
+  deterministic ID는 `issue_exact` 전에 보존하므로 store-then-interrupt나 context CAS 전 crash도
+  zero-lease 증거가 아니다. exact claim/fixed request에서 ID를 재파생하되 issue/materialize하지 않고
+  same-broker revoke를 증명한다. process loss로 broker state를 잃으면
+  absent/revoked 합성·재발급 없이 pending-cleanup에 남는다.
+  unauthenticated/zero-lease transport는 구현되지 않았으므로 첫 실제 호출은 cleanup까지 같은 broker
+  lifecycle을 유지해야 하고, zero-lease variant는 별도 계약이 필요하다.
+- Gate D focused 회귀는 **456 passed·1 deselected**, Gate A~D 확장 회귀는 **602 passed·1
+  deselected**, 문서 정책은 **4 passed**다. 전체 Ruff, 변경 Python format, Linux strict mypy
+  **588+15+2 source**, tracked/untracked diff와 로컬경로/비밀정보 검사가 통과했다. deselected 검사는
+  actual pinned-GGUF Docker materialization이고, 실행한 테스트는 fake transport seam만 사용해 actual
+  model completion·Provider dispatch·target request 0을 유지했다.
+  모든 검증 뒤에도 별도 사용자 승인 전에는 첫 Qwen3 4B Q8 completion이나 WEB-008 action을 실행하지
+  않는다.
 - 계약은 `docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md`, 결정은
-  ADR-0301·0304·0317·0318·0319·0320·0321이다.
+  ADR-0301·0304·0317·0318·0319·0320·0321·0322다.
 
 ## SKILL-001 — 지식 전용 registry 구현
 
@@ -678,6 +659,11 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   Gate A 검사다. 전체 Ruff, 변경 Python format, Linux strict mypy **586 source**, 문서 정책 **4 passed**,
   `git diff --check`, local-path·secret 검사가 통과했다. Gate A Docker 검증은 materialization·
   re-attestation·cleanup만 수행했고 Gate B·C model·Provider·target 호출은 0이다.
+- Gate D working-tree 변화는 focused **456 passed·1 deselected**, Gate A~D 확장 **602 passed·1
+  deselected**, transport+secrets **111 passed**, 문서 정책 **4 passed**로 최종 재검증됐다. 전체 Ruff,
+  변경 Python format, Linux strict mypy **588+15+2 source**, `git diff --check`와 untracked no-index check,
+  local-path·secret 검사도 통과했다. 실제 model·Provider·target 호출은 0이며 Gate D는 로컬
+  커밋으로만 보존하고 push하지 않았다.
 
 Private controller와 logs의 기준은 `.pajin/four-followups-20260912/`다. 실제 자격증명과
 private 모델 원문은 출력하거나 tracked 문서에 복사하지 않는다. 전 단계 근거는

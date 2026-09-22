@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -8,27 +10,42 @@ from typing import Any
 import pytest
 from pydantic import AnyHttpUrl, ValidationError
 
+import pajin.web_assessment.analysis_transport as transport_module
 from pajin.benchmark.effectiveness.suite import PLATFORM_MANIFESTS, RuntimePin
 from pajin.discovery.canonicalization import canonical_json_bytes
 from pajin.domain.models import ToolRequest
 from pajin.providers.models import ProviderChatRequest, ProviderMessage, ProviderRegistration
-from pajin.runtime.worker import WorkerJob, WorkerLimits, WorkerSecretRequest
+from pajin.runtime.worker import (
+    WorkerJob,
+    WorkerLimits,
+    WorkerResult,
+    WorkerSecretRequest,
+    WorkerStatus,
+)
 from pajin.tools.ai import ChatRole
 from pajin.web_assessment.analysis_transport import (
     WEB_ANALYSIS_PINNED_PROVIDER_ACTION,
+    WEB_ANALYSIS_PRE_CLEANUP_BARRIER_API_VERSION,
     WEB_ANALYSIS_PROVIDER_TIMEOUT_SECONDS,
     WEB_ANALYSIS_PROVIDER_TRANSPORT_VERSION,
+    WEB_ANALYSIS_TRANSPORT_CLEANUP_PROOF_API_VERSION,
     WEB_ANALYSIS_TRANSPORT_RUNTIME_PIN_API_VERSION,
+    WebAnalysisTransportCleanupProof,
     WebAnalysisTransportError,
     WebAnalysisTransportRuntimePin,
     bind_web_analysis_transport_job,
+    cleanup_web_analysis_transport_resources,
     expected_web_analysis_legacy_job_metadata,
     expected_web_analysis_provider_worker_context,
     expected_web_analysis_transport_job_metadata,
+    interpret_web_analysis_transport_result,
     load_verified_web_analysis_transport_runtime_pin,
+    prepare_web_analysis_transport_job,
     verify_web_analysis_legacy_job_metadata,
     verify_web_analysis_provider_worker_context,
+    verify_web_analysis_transport_cleanup_proof,
     verify_web_analysis_transport_job_metadata,
+    web_analysis_transport_pre_cleanup_barrier_context,
     web_analysis_transport_runtime_pin,
 )
 
@@ -123,6 +140,150 @@ def _successor_metadata_inputs(
     )
     assert runtime.request_timeout_seconds == 180
     return registration, request
+
+
+def _provider_worker_result(
+    *,
+    registration: ProviderRegistration,
+    execution_id: str,
+) -> WorkerResult:
+    now = datetime.now(UTC)
+    return WorkerResult(
+        execution_id=execution_id,
+        backend="docker",
+        status=WorkerStatus.SUCCEEDED,
+        exit_code=0,
+        stdout=json.dumps(
+            {
+                "provider_id": registration.provider_id,
+                "response_id": "response-1",
+                "model": registration.model,
+                "content": '{"proposal":"bounded"}',
+                "refusal": None,
+                "finish_reason": "stop",
+                "tool_calls": [],
+                "usage": None,
+                "streamed": False,
+                "chunks": 1,
+                "target": str(registration.endpoint),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        started_at=now,
+        finished_at=now,
+    )
+
+
+class _FakeTransportDocker:
+    docker_executable = "fake-docker"
+    execution_id = "exec_" + "b" * 32
+    external_network = "pajin-web-analysis-live-network-" + "b" * 32
+    worker_id = "1" * 64
+    proxy_id = "2" * 64
+    network_id = "3" * 64
+    worker_name = f"pajin-{execution_id}-" + "a" * 32
+    proxy_name = "pajin-proxy-" + "c" * 32
+    network_name = "pajin-egress-" + "c" * 32
+
+    def __init__(self, pin: WebAnalysisTransportRuntimePin) -> None:
+        label = {"pajin.execution-id": self.execution_id}
+        self.containers: dict[str, dict[str, Any]] = {
+            self.worker_id: {
+                "Id": self.worker_id,
+                "Name": f"/{self.worker_name}",
+                "Image": pin.worker_image,
+                "Config": {"Image": pin.worker_image, "Labels": dict(label)},
+                "NetworkSettings": {"Networks": {self.network_name: {}}},
+            },
+            self.proxy_id: {
+                "Id": self.proxy_id,
+                "Name": f"/{self.proxy_name}",
+                "Image": pin.proxy_image,
+                "Config": {"Image": pin.proxy_image, "Labels": dict(label)},
+                "NetworkSettings": {
+                    "Networks": {
+                        self.network_name: {},
+                        self.external_network: {},
+                    }
+                },
+            },
+        }
+        self.networks: dict[str, dict[str, Any]] = {
+            self.network_id: {
+                "Id": self.network_id,
+                "Name": self.network_name,
+                "Driver": "bridge",
+                "Internal": True,
+                "Labels": dict(label),
+                "Containers": {
+                    self.worker_id: {},
+                    self.proxy_id: {},
+                },
+            }
+        }
+        self.commands: list[tuple[str, ...]] = []
+
+    def run(self, arguments: tuple[str, ...]) -> subprocess.CompletedProcess[bytes]:
+        self.commands.append(arguments)
+        if arguments[0] != self.docker_executable:
+            return self._completed(arguments, 127, stderr=b"unknown executable")
+        noun = arguments[1]
+        operation = arguments[2]
+        if operation == "ls":
+            resources = self.containers if noun == "container" else self.networks
+            matching = [
+                resource_id
+                for resource_id, resource in resources.items()
+                if self._labels(resource).get("pajin.execution-id") == self.execution_id
+            ]
+            return self._completed(arguments, stdout=("\n".join(matching) + "\n").encode())
+        if operation == "inspect":
+            resource_id = arguments[3]
+            resources = self.containers if noun == "container" else self.networks
+            resource = resources.get(resource_id)
+            if resource is None:
+                return self._completed(
+                    arguments,
+                    1,
+                    stderr=f"Error: No such {noun}: {resource_id}".encode(),
+                )
+            return self._completed(arguments, stdout=json.dumps([resource]).encode())
+        if noun == "container" and operation == "rm":
+            resource_id = arguments[-1]
+            if resource_id not in self.containers:
+                return self._completed(arguments, 1, stderr=b"No such container")
+            self.containers.pop(resource_id)
+            for network in self.networks.values():
+                network["Containers"].pop(resource_id, None)
+            return self._completed(arguments, stdout=f"{resource_id}\n".encode())
+        if noun == "network" and operation == "rm":
+            resource_id = arguments[3]
+            network = self.networks.get(resource_id)
+            if network is None:
+                return self._completed(arguments, 1, stderr=b"No such network")
+            if network["Containers"]:
+                return self._completed(arguments, 1, stderr=b"network has active endpoints")
+            self.networks.pop(resource_id)
+            return self._completed(arguments, stdout=f"{resource_id}\n".encode())
+        return self._completed(arguments, 2, stderr=b"unsupported fake Docker command")
+
+    @staticmethod
+    def _labels(resource: dict[str, Any]) -> dict[str, object]:
+        config = resource.get("Config")
+        labels = resource.get("Labels") if config is None else config.get("Labels")
+        assert isinstance(labels, dict)
+        return labels
+
+    @staticmethod
+    def _completed(
+        arguments: tuple[str, ...],
+        returncode: int = 0,
+        *,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(arguments, returncode, stdout, stderr)
 
 
 def test_transport_pin_binds_exact_successor_contract_and_digest() -> None:
@@ -684,6 +845,17 @@ def test_successor_worker_context_rejects_proxy_and_route_drift() -> None:
         pin,
         external_network="pajin-effect-test",
     )
+    assert context == {
+        "type": "pajin.runtime.worker.DockerWorkerBackend",
+        "context": {
+            "implementationVersion": "pajin.docker-worker/v2",
+            "allowedImages": [pin.worker_image],
+            "dockerExecutable": "docker",
+            "egressProxyImage": pin.proxy_image,
+            "externalNetwork": "pajin-effect-test",
+            "externalNetworkRoutes": {WEB_ANALYSIS_PINNED_PROVIDER_ACTION: "pajin-effect-test"},
+        },
+    }
     assert (
         verify_web_analysis_provider_worker_context(
             context,
@@ -704,3 +876,483 @@ def test_successor_worker_context_rejects_proxy_and_route_drift() -> None:
                 drifted,
                 transport_pin=pin,
             )
+
+
+def test_successor_worker_context_exactly_binds_gate_d_cleanup_barrier() -> None:
+    pin = _transport_pin(_runtime_pin())
+    claim_digest = "a" * 64
+    execution_id = "exec_" + "b" * 32
+    external_network = "pajin-web-analysis-live-network-" + "b" * 32
+    barrier = web_analysis_transport_pre_cleanup_barrier_context(
+        claim_digest=claim_digest,
+        execution_id=execution_id,
+    )
+
+    assert barrier == {
+        "apiVersion": WEB_ANALYSIS_PRE_CLEANUP_BARRIER_API_VERSION,
+        "kind": "WebAnalysisLiveClaimPreCleanupBarrier",
+        "claimDigest": claim_digest,
+        "executionId": execution_id,
+        "pendingCleanupRequired": True,
+    }
+    context = expected_web_analysis_provider_worker_context(
+        pin,
+        external_network=external_network,
+        claim_digest=claim_digest,
+        execution_id=execution_id,
+    )
+    assert context["context"]["implementationVersion"] == "pajin.docker-worker/v6"
+    assert context["context"]["preCleanupBarrier"] == barrier
+    assert context["context"]["preCleanupBarrierExecution"] == {
+        "mode": "posix-main-thread-real-timer",
+        "timeoutSeconds": 30.0,
+    }
+    assert (
+        verify_web_analysis_provider_worker_context(
+            context,
+            transport_pin=pin,
+            expected_external_network=external_network,
+            expected_claim_digest=claim_digest,
+            expected_execution_id=execution_id,
+        )
+        == context
+    )
+
+    with pytest.raises(WebAnalysisTransportError, match="verification failed closed"):
+        verify_web_analysis_provider_worker_context(
+            context,
+            transport_pin=pin,
+            expected_external_network=external_network,
+        )
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "claim",
+        "execution",
+        "raw-result",
+        "barrier-mode",
+        "barrier-timeout",
+        "incomplete-anchor",
+        "cross-claim-network",
+    ],
+)
+def test_successor_worker_context_rejects_cleanup_barrier_drift(drift: str) -> None:
+    pin = _transport_pin(_runtime_pin())
+    claim_digest = "a" * 64
+    execution_id = "exec_" + "b" * 32
+    external_network = "pajin-web-analysis-live-network-" + "b" * 32
+    context = expected_web_analysis_provider_worker_context(
+        pin,
+        external_network=external_network,
+        claim_digest=claim_digest,
+        execution_id=execution_id,
+    )
+    drifted = json.loads(json.dumps(context))
+    expected_claim_digest: str | None = claim_digest
+    expected_execution_id: str | None = execution_id
+    if drift == "claim":
+        drifted["context"]["preCleanupBarrier"]["claimDigest"] = "c" * 64
+    elif drift == "execution":
+        drifted["context"]["preCleanupBarrier"]["executionId"] = "exec_" + "c" * 32
+    elif drift == "raw-result":
+        drifted["context"]["preCleanupBarrier"]["workerResult"] = {"content": "secret"}
+    elif drift == "barrier-mode":
+        drifted["context"]["preCleanupBarrierExecution"]["mode"] = "asyncio-task"
+    elif drift == "barrier-timeout":
+        drifted["context"]["preCleanupBarrierExecution"]["timeoutSeconds"] = 29.0
+    elif drift == "incomplete-anchor":
+        expected_execution_id = None
+    else:
+        external_network = "pajin-web-analysis-live-network-" + "c" * 32
+
+    with pytest.raises(WebAnalysisTransportError, match="failed closed"):
+        verify_web_analysis_provider_worker_context(
+            drifted,
+            transport_pin=pin,
+            expected_external_network=external_network,
+            expected_claim_digest=expected_claim_digest,
+            expected_execution_id=expected_execution_id,
+        )
+
+
+def test_prepare_successor_job_preserves_claim_execution_identity() -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    registration, request = _successor_metadata_inputs(runtime)
+    execution_id = "exec_" + "b" * 32
+
+    job = prepare_web_analysis_transport_job(
+        request,
+        registration=registration,
+        runtime=runtime,
+        transport_pin=pin,
+        expected_transport_pin_digest=pin.pin_digest,
+        execution_id=execution_id,
+    )
+    payload = json.loads(job.stdin)
+
+    assert job.execution_id == execution_id
+    assert job.command == [WEB_ANALYSIS_PINNED_PROVIDER_ACTION]
+    assert job.image == pin.worker_image
+    assert job.network.value == "egress-proxy"
+    assert job.egress_policy is not None
+    assert job.egress_policy.allow == [str(registration.endpoint)]
+    assert job.egress_policy.allowed_methods == {"POST"}
+    assert job.egress_policy.max_requests == 1
+    assert payload["providerId"] == registration.provider_id
+    assert payload["target"] == str(registration.endpoint)
+    assert payload["transportVersion"] == WEB_ANALYSIS_PROVIDER_TRANSPORT_VERSION
+    assert payload["requestTimeoutSeconds"] == WEB_ANALYSIS_PROVIDER_TIMEOUT_SECONDS
+
+
+def test_prepare_successor_job_preserves_capacity_network_alias_endpoint() -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    registration, request = _successor_metadata_inputs(runtime)
+    endpoint = AnyHttpUrl("http://host.docker.internal:11434/v1/chat/completions")
+    aliased_registration = ProviderRegistration.model_validate(
+        {**registration.model_dump(mode="python"), "endpoint": endpoint}
+    )
+    aliased_request = ToolRequest.model_validate(
+        {**request.model_dump(mode="python"), "target": str(endpoint)}
+    )
+
+    job = prepare_web_analysis_transport_job(
+        aliased_request,
+        registration=aliased_registration,
+        runtime=runtime,
+        transport_pin=pin,
+        expected_transport_pin_digest=pin.pin_digest,
+        execution_id="exec_" + "b" * 32,
+    )
+
+    assert json.loads(job.stdin)["target"] == str(endpoint)
+    assert job.egress_policy is not None
+    assert job.egress_policy.allow == [str(endpoint)]
+
+
+@pytest.mark.parametrize(
+    "execution_id",
+    [
+        "exec_web_analysis_transport_test",
+        "exec_" + "B" * 32,
+        "exec_" + "b" * 31,
+    ],
+)
+def test_prepare_successor_job_rejects_nonclaim_execution_identity(
+    execution_id: str,
+) -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    registration, request = _successor_metadata_inputs(runtime)
+
+    with pytest.raises(WebAnalysisTransportError, match="preparation failed closed"):
+        prepare_web_analysis_transport_job(
+            request,
+            registration=registration,
+            runtime=runtime,
+            transport_pin=pin,
+            expected_transport_pin_digest=pin.pin_digest,
+            execution_id=execution_id,
+        )
+
+
+def test_interpret_successor_result_returns_exact_provider_result() -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    registration, request = _successor_metadata_inputs(runtime)
+    execution_id = "exec_" + "b" * 32
+    worker_result = _provider_worker_result(
+        registration=registration,
+        execution_id=execution_id,
+    )
+
+    result = interpret_web_analysis_transport_result(
+        request,
+        worker_result,
+        registration=registration,
+        runtime=runtime,
+        transport_pin=pin,
+        expected_transport_pin_digest=pin.pin_digest,
+        expected_execution_id=execution_id,
+    )
+
+    assert result.provider_id == registration.provider_id
+    assert result.model == registration.model
+    assert result.target == str(registration.endpoint)
+    assert result.content == '{"proposal":"bounded"}'
+    assert result.streamed is False
+    assert result.chunks == 1
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"execution_id": "exec_" + "c" * 32},
+        {"backend": "process"},
+        {"status": WorkerStatus.FAILED, "exit_code": 1},
+        {"stdout_truncated": True},
+        {"stderr_truncated": True},
+    ],
+)
+def test_interpret_successor_result_rejects_nonexact_worker_result(
+    changes: dict[str, object],
+) -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    registration, request = _successor_metadata_inputs(runtime)
+    execution_id = "exec_" + "b" * 32
+    worker_result = WorkerResult.model_validate(
+        {
+            **_provider_worker_result(
+                registration=registration,
+                execution_id=execution_id,
+            ).model_dump(mode="python"),
+            **changes,
+        }
+    )
+
+    with pytest.raises(WebAnalysisTransportError, match="interpretation failed closed"):
+        interpret_web_analysis_transport_result(
+            request,
+            worker_result,
+            registration=registration,
+            runtime=runtime,
+            transport_pin=pin,
+            expected_transport_pin_digest=pin.pin_digest,
+            expected_execution_id=execution_id,
+        )
+
+
+def test_transport_cleanup_removes_only_owned_resources_and_proves_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    fake = _FakeTransportDocker(pin)
+    monkeypatch.setattr(transport_module, "_run_transport_cleanup_command", fake.run)
+
+    proof = cleanup_web_analysis_transport_resources(
+        execution_id=fake.execution_id,
+        external_network=fake.external_network,
+        runtime=runtime,
+        transport_pin=pin,
+        expected_transport_pin_digest=pin.pin_digest,
+        docker_executable=fake.docker_executable,
+    )
+
+    assert proof.api_version == WEB_ANALYSIS_TRANSPORT_CLEANUP_PROOF_API_VERSION
+    assert proof.execution_id == fake.execution_id
+    assert proof.external_network == fake.external_network
+    assert proof.transport_pin_digest == pin.pin_digest
+    assert proof.cleanup_attempted
+    assert proof.owned_resources_removed
+    assert proof.absence_verified
+    assert not proof.provider_dispatch_authority
+    assert not proof.target_request_authority
+    assert not proof.automatic_redispatch_authority
+    assert [resource.resource_kind for resource in proof.observed_resources] == [
+        "egress-network",
+        "proxy-container",
+        "worker-container",
+    ]
+    assert fake.containers == {}
+    assert fake.networks == {}
+    removal_commands = [command for command in fake.commands if command[2] == "rm"]
+    assert [(command[1], command[-1]) for command in removal_commands] == [
+        ("container", fake.worker_id),
+        ("container", fake.proxy_id),
+        ("network", fake.network_id),
+    ]
+    assert not any(
+        command[:3] == (fake.docker_executable, "network", "rm")
+        and command[3] == fake.external_network
+        for command in fake.commands
+    )
+    assert (
+        verify_web_analysis_transport_cleanup_proof(
+            proof,
+            execution_id=fake.execution_id,
+            external_network=fake.external_network,
+            runtime=runtime,
+            transport_pin=pin,
+            expected_transport_pin_digest=pin.pin_digest,
+        )
+        == proof
+    )
+
+
+def test_transport_cleanup_is_idempotent_after_resources_are_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    fake = _FakeTransportDocker(pin)
+    monkeypatch.setattr(transport_module, "_run_transport_cleanup_command", fake.run)
+    first = cleanup_web_analysis_transport_resources(
+        execution_id=fake.execution_id,
+        external_network=fake.external_network,
+        runtime=runtime,
+        transport_pin=pin,
+        expected_transport_pin_digest=pin.pin_digest,
+        docker_executable=fake.docker_executable,
+    )
+
+    second = cleanup_web_analysis_transport_resources(
+        execution_id=fake.execution_id,
+        external_network=fake.external_network,
+        runtime=runtime,
+        transport_pin=pin,
+        expected_transport_pin_digest=pin.pin_digest,
+        docker_executable=fake.docker_executable,
+    )
+
+    assert second.observed_resources == ()
+    assert second.resource_absence_digest == first.resource_absence_digest
+    assert second.cleanup_digest != first.cleanup_digest
+
+
+def test_transport_cleanup_rejects_cross_claim_external_network_before_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    fake = _FakeTransportDocker(pin)
+    monkeypatch.setattr(transport_module, "_run_transport_cleanup_command", fake.run)
+
+    with pytest.raises(WebAnalysisTransportError, match="cleanup failed closed"):
+        cleanup_web_analysis_transport_resources(
+            execution_id=fake.execution_id,
+            external_network="pajin-web-analysis-live-network-" + "e" * 32,
+            runtime=runtime,
+            transport_pin=pin,
+            expected_transport_pin_digest=pin.pin_digest,
+            docker_executable=fake.docker_executable,
+        )
+
+    assert fake.commands == []
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "foreign-label",
+        "worker-name",
+        "worker-image",
+        "foreign-network-member",
+        "proxy-network-pair",
+    ],
+)
+def test_transport_cleanup_rejects_foreign_or_tampered_ownership_before_removal(
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    fake = _FakeTransportDocker(pin)
+    if tamper == "foreign-label":
+        fake.containers[fake.worker_id]["Config"]["Labels"]["foreign.owner"] = "true"
+    elif tamper == "worker-name":
+        fake.containers[fake.worker_id]["Name"] = "/foreign-worker"
+    elif tamper == "worker-image":
+        fake.containers[fake.worker_id]["Image"] = "sha256:" + "9" * 64
+    elif tamper == "foreign-network-member":
+        fake.networks[fake.network_id]["Containers"]["4" * 64] = {}
+    else:
+        fake.containers[fake.proxy_id]["Name"] = "/pajin-proxy-" + "d" * 32
+    monkeypatch.setattr(transport_module, "_run_transport_cleanup_command", fake.run)
+
+    with pytest.raises(WebAnalysisTransportError, match="cleanup failed closed"):
+        cleanup_web_analysis_transport_resources(
+            execution_id=fake.execution_id,
+            external_network=fake.external_network,
+            runtime=runtime,
+            transport_pin=pin,
+            expected_transport_pin_digest=pin.pin_digest,
+            docker_executable=fake.docker_executable,
+        )
+
+    assert fake.worker_id in fake.containers
+    assert fake.proxy_id in fake.containers
+    assert fake.network_id in fake.networks
+    assert not any(command[2] == "rm" for command in fake.commands)
+
+
+def test_transport_cleanup_rejects_identity_change_before_removal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    fake = _FakeTransportDocker(pin)
+    worker_inspections = 0
+
+    def run_with_race(arguments: tuple[str, ...]) -> subprocess.CompletedProcess[bytes]:
+        nonlocal worker_inspections
+        result = fake.run(arguments)
+        if arguments == (
+            fake.docker_executable,
+            "container",
+            "inspect",
+            fake.worker_id,
+        ):
+            worker_inspections += 1
+            if worker_inspections == 1:
+                fake.containers[fake.worker_id]["Name"] = "/foreign-worker"
+        return result
+
+    monkeypatch.setattr(
+        transport_module,
+        "_run_transport_cleanup_command",
+        run_with_race,
+    )
+
+    with pytest.raises(WebAnalysisTransportError, match="cleanup failed closed"):
+        cleanup_web_analysis_transport_resources(
+            execution_id=fake.execution_id,
+            external_network=fake.external_network,
+            runtime=runtime,
+            transport_pin=pin,
+            expected_transport_pin_digest=pin.pin_digest,
+            docker_executable=fake.docker_executable,
+        )
+
+    assert worker_inspections == 2
+    assert not any(command[2] == "rm" for command in fake.commands)
+
+
+def test_cleanup_proof_strict_reload_rejects_anchor_or_digest_drift() -> None:
+    runtime = _runtime_pin()
+    pin = _transport_pin(runtime)
+    proof = WebAnalysisTransportCleanupProof(
+        executionId="exec_" + "b" * 32,
+        transportPinDigest=pin.pin_digest,
+        externalNetwork="pajin-web-analysis-live-network-" + "b" * 32,
+    )
+
+    with pytest.raises(WebAnalysisTransportError, match="verification failed closed"):
+        verify_web_analysis_transport_cleanup_proof(
+            proof,
+            execution_id="exec_" + "c" * 32,
+            external_network=proof.external_network,
+            runtime=runtime,
+            transport_pin=pin,
+            expected_transport_pin_digest=pin.pin_digest,
+        )
+
+    payload = proof.model_dump(mode="python", by_alias=True)
+    payload["resourceAbsenceDigest"] = "0" * 64
+    with pytest.raises(ValidationError, match="resource absence digest differs"):
+        WebAnalysisTransportCleanupProof.model_validate(payload)
+
+
+def test_transport_module_does_not_import_forbidden_legacy_runtime() -> None:
+    source = Path(transport_module.__file__).read_text(encoding="utf-8")
+
+    assert "LocalModelRuntime" not in source
+    assert "analysis_runtime" not in source
+    assert "analysis_skill_runtime" not in source
+    assert "analysis_skill_receipts" not in source
+    assert "analysis_local" not in source
+    assert "benchmark.effectiveness.docker" not in source

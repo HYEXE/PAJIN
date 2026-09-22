@@ -12,6 +12,7 @@ import hmac
 import re
 import subprocess
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Annotated, Final, Literal, Protocol, Self, cast
 
@@ -20,6 +21,7 @@ from pydantic import ConfigDict, Field, JsonValue, field_validator, model_valida
 from pajin.benchmark.effectiveness.suite import ModelPin, RuntimePin
 from pajin.domain.models import StrictModel
 from pajin.providers.models import ProviderChatRequest
+from pajin.runtime.error_safety import audit_safe_exception_diagnostic
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.store import (
     RunStore,
@@ -78,8 +80,17 @@ MODEL_MATERIALIZATION_ATTESTATION_API_VERSION: Final = (
 LIVE_MODEL_MATERIALIZATION_ATTESTATION_API_VERSION: Final = (
     "pajin.dev/web-analysis-live-model-materialization-attestation/v1alpha1"
 )
+LIVE_MODEL_PROVIDER_ROUTE_ATTESTATION_API_VERSION: Final = (
+    "pajin.dev/web-analysis-live-model-provider-route-attestation/v1alpha1"
+)
 LIVE_MODEL_MATERIALIZATION_CLEANUP_API_VERSION: Final = (
     "pajin.dev/web-analysis-live-model-materialization-cleanup/v1alpha1"
+)
+LIVE_MODEL_CLEANUP_ONLY_RESULT_API_VERSION: Final = (
+    "pajin.dev/web-analysis-live-model-cleanup-only-result/v1alpha1"
+)
+LIVE_MODEL_RESOURCE_ABSENCE_PROOF_API_VERSION: Final = (
+    "pajin.dev/web-analysis-live-model-resource-absence-proof/v1alpha1"
 )
 
 _PROJECTION_PATH = "compact-projection.json"
@@ -107,6 +118,22 @@ _DockerID = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 _OwnerID = Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
 _RUN_ID_PATTERN = r"^run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}$"
 _LIVE_MODEL_PORT: Literal[8080] = 8080
+_PROVIDER_NETWORK_ALIAS: Literal["host.docker.internal"] = "host.docker.internal"
+_PROVIDER_ENDPOINT: Literal["http://host.docker.internal:8080/v1/chat/completions"] = (
+    "http://host.docker.internal:8080/v1/chat/completions"
+)
+_LIVE_RESOURCE_KINDS: Final = (
+    "runtime-container",
+    "seed-container",
+    "model-volume",
+    "network",
+)
+_LiveResourceKind = Literal[
+    "runtime-container",
+    "seed-container",
+    "model-volume",
+    "network",
+]
 _LIVE_LLAMA_CPP_ARGV_PREFIX: Final = (
     "--model",
     "/models/model.gguf",
@@ -134,6 +161,15 @@ def _literal_true(value: object) -> Literal[True]:
     if type(value) is not bool or value is not True:
         raise ValueError("Web analysis capacity attestation markers must be literal true")
     return True
+
+
+def _expected_live_resource_names(owner: str) -> tuple[str, str, str, str]:
+    return (
+        f"pajin-web-analysis-live-{owner}",
+        f"pajin-web-analysis-live-seed-{owner}",
+        f"pajin-web-analysis-live-model-{owner}",
+        f"pajin-web-analysis-live-network-{owner}",
+    )
 
 
 class _FrozenCapacityV2Model(StrictModel):
@@ -459,6 +495,83 @@ class WebAnalysisLiveModelMaterializationAttestation(_NoAuthorityV2Model):
         return self
 
 
+class WebAnalysisLiveModelProviderRouteAttestation(_NoAuthorityV2Model):
+    """Claim-bound proof of the one exact internal live-model Provider route."""
+
+    api_version: Literal[
+        "pajin.dev/web-analysis-live-model-provider-route-attestation/v1alpha1"
+    ] = Field(default=LIVE_MODEL_PROVIDER_ROUTE_ATTESTATION_API_VERSION, alias="apiVersion")
+    kind: Literal["WebAnalysisLiveModelProviderRouteAttestation"] = (
+        "WebAnalysisLiveModelProviderRouteAttestation"
+    )
+    attestation_digest: str = Field(default="", alias="attestationDigest", max_length=64)
+    claim_digest: _Sha256 = Field(alias="claimDigest")
+    resource_owner: _OwnerID = Field(alias="resourceOwner")
+    live_materialization_attestation_digest: _Sha256 = Field(
+        alias="liveMaterializationAttestationDigest"
+    )
+    runtime_container_name: str = Field(alias="runtimeContainerName", min_length=1, max_length=100)
+    runtime_container_id: _DockerID = Field(alias="runtimeContainerId")
+    network_name: str = Field(alias="networkName", min_length=1, max_length=100)
+    network_id: _DockerID = Field(alias="networkId")
+    provider_registration_digest: _Sha256 = Field(alias="providerRegistrationDigest")
+    provider_endpoint: Literal["http://host.docker.internal:8080/v1/chat/completions"] = Field(
+        alias="providerEndpoint"
+    )
+    provider_endpoint_scheme: Literal["http"] = Field(alias="providerEndpointScheme")
+    provider_endpoint_host: Literal["host.docker.internal"] = Field(alias="providerEndpointHost")
+    provider_endpoint_port: Literal[8080] = Field(alias="providerEndpointPort")
+    provider_endpoint_path: Literal["/v1/chat/completions"] = Field(alias="providerEndpointPath")
+    provider_network_alias: Literal["host.docker.internal"] = Field(alias="providerNetworkAlias")
+    live_port: Literal[8080] = Field(alias="livePort")
+    provider_alias_exact: Literal[True] = Field(alias="providerAliasExact")
+    network_members_exact: Literal[True] = Field(alias="networkMembersExact")
+    attested_before_provider_dispatch: Literal[True] = Field(alias="attestedBeforeProviderDispatch")
+    model_dispatch_performed: Literal[False] = Field(default=False, alias="modelDispatchPerformed")
+    provider_dispatch_count: Literal[0] = Field(default=0, alias="providerDispatchCount")
+    target_request_count: Literal[0] = Field(default=0, alias="targetRequestCount")
+
+    @field_validator(
+        "provider_alias_exact",
+        "network_members_exact",
+        "attested_before_provider_dispatch",
+        mode="before",
+    )
+    @classmethod
+    def require_route_attestation_true(cls, value: object) -> Literal[True]:
+        return _literal_true(value)
+
+    @field_validator("model_dispatch_performed", mode="before")
+    @classmethod
+    def require_no_route_dispatch(cls, value: object) -> Literal[False]:
+        return _literal_false(value)
+
+    @model_validator(mode="after")
+    def bind_provider_route(self) -> Self:
+        expected_names = _expected_live_resource_names(self.resource_owner)
+        if (
+            self.runtime_container_name != expected_names[0]
+            or self.network_name != expected_names[3]
+            or self.provider_endpoint != _PROVIDER_ENDPOINT
+            or self.provider_endpoint_host != self.provider_network_alias
+            or self.provider_endpoint_port != self.live_port
+        ):
+            raise ValueError("Live model Provider route anchors differ")
+        material = self.model_dump(mode="json", by_alias=True, exclude={"attestation_digest"})
+        digest = _digest(
+            "live-model-provider-route-attestation/v1",
+            _json_wire(
+                material,
+                label="live model Provider route attestation",
+                max_bytes=128 * 1024,
+            ),
+        )
+        if self.attestation_digest and self.attestation_digest != digest:
+            raise ValueError("Live model Provider route attestation digest differs")
+        object.__setattr__(self, "attestation_digest", digest)
+        return self
+
+
 class WebAnalysisLiveModelMaterializationCleanup(_NoAuthorityV2Model):
     """Verified absence of every resource owned by one live materialization."""
 
@@ -516,6 +629,118 @@ class WebAnalysisLiveModelMaterializationCleanup(_NoAuthorityV2Model):
         )
         if self.cleanup_digest and self.cleanup_digest != digest:
             raise ValueError("Live model materialization cleanup digest differs")
+        object.__setattr__(self, "cleanup_digest", digest)
+        return self
+
+
+class WebAnalysisLiveModelResourceAbsenceProof(_NoAuthorityV2Model):
+    """Content-addressed proof that one claim owner's exact resources are absent."""
+
+    api_version: Literal["pajin.dev/web-analysis-live-model-resource-absence-proof/v1alpha1"] = (
+        Field(default=LIVE_MODEL_RESOURCE_ABSENCE_PROOF_API_VERSION, alias="apiVersion")
+    )
+    kind: Literal["WebAnalysisLiveModelResourceAbsenceProof"] = (
+        "WebAnalysisLiveModelResourceAbsenceProof"
+    )
+    proof_digest: str = Field(default="", alias="proofDigest", max_length=64)
+    resource_owner: _OwnerID = Field(alias="resourceOwner")
+    runtime_container_name: str = Field(alias="runtimeContainerName", min_length=1, max_length=100)
+    seed_container_name: str = Field(alias="seedContainerName", min_length=1, max_length=100)
+    volume_name: str = Field(alias="volumeName", min_length=1, max_length=100)
+    network_name: str = Field(alias="networkName", min_length=1, max_length=100)
+    exact_name_absence_verified: Literal[True] = Field(alias="exactNameAbsenceVerified")
+    owner_label_absence_verified: Literal[True] = Field(alias="ownerLabelAbsenceVerified")
+    matching_container_count: Literal[0] = Field(alias="matchingContainerCount")
+    matching_volume_count: Literal[0] = Field(alias="matchingVolumeCount")
+    matching_network_count: Literal[0] = Field(alias="matchingNetworkCount")
+
+    @field_validator(
+        "exact_name_absence_verified",
+        "owner_label_absence_verified",
+        mode="before",
+    )
+    @classmethod
+    def require_absence_true(cls, value: object) -> Literal[True]:
+        return _literal_true(value)
+
+    @model_validator(mode="after")
+    def bind_absence(self) -> Self:
+        if (
+            self.runtime_container_name,
+            self.seed_container_name,
+            self.volume_name,
+            self.network_name,
+        ) != _expected_live_resource_names(self.resource_owner):
+            raise ValueError("Live resource absence names differ from their claim owner")
+        material = self.model_dump(mode="json", by_alias=True, exclude={"proof_digest"})
+        digest = _digest(
+            "live-model-resource-absence-proof/v1",
+            _json_wire(material, label="live model resource absence proof", max_bytes=128 * 1024),
+        )
+        if self.proof_digest and self.proof_digest != digest:
+            raise ValueError("Live model resource absence proof digest differs")
+        object.__setattr__(self, "proof_digest", digest)
+        return self
+
+
+class WebAnalysisLiveModelCleanupOnlyResult(_NoAuthorityV2Model):
+    """Cleanup-only result independent of materialization success or process lifetime."""
+
+    api_version: Literal["pajin.dev/web-analysis-live-model-cleanup-only-result/v1alpha1"] = Field(
+        default=LIVE_MODEL_CLEANUP_ONLY_RESULT_API_VERSION, alias="apiVersion"
+    )
+    kind: Literal["WebAnalysisLiveModelCleanupOnlyResult"] = "WebAnalysisLiveModelCleanupOnlyResult"
+    cleanup_digest: str = Field(default="", alias="cleanupDigest", max_length=64)
+    resource_owner: _OwnerID = Field(alias="resourceOwner")
+    runtime_container_name: str = Field(alias="runtimeContainerName", min_length=1, max_length=100)
+    seed_container_name: str = Field(alias="seedContainerName", min_length=1, max_length=100)
+    volume_name: str = Field(alias="volumeName", min_length=1, max_length=100)
+    network_name: str = Field(alias="networkName", min_length=1, max_length=100)
+    removed_resources: tuple[_LiveResourceKind, ...] = Field(alias="removedResources")
+    already_absent_resources: tuple[_LiveResourceKind, ...] = Field(alias="alreadyAbsentResources")
+    present_resource_ownership_verified: Literal[True] = Field(
+        alias="presentResourceOwnershipVerified"
+    )
+    cleanup_only: Literal[True] = Field(alias="cleanupOnly")
+    absence_proof_digest: _Sha256 = Field(alias="absenceProofDigest")
+    docker_create_count: Literal[0] = Field(default=0, alias="dockerCreateCount")
+    docker_start_count: Literal[0] = Field(default=0, alias="dockerStartCount")
+    model_dispatch_count: Literal[0] = Field(default=0, alias="modelDispatchCount")
+
+    @field_validator(
+        "present_resource_ownership_verified",
+        "cleanup_only",
+        mode="before",
+    )
+    @classmethod
+    def require_cleanup_only_true(cls, value: object) -> Literal[True]:
+        return _literal_true(value)
+
+    @model_validator(mode="after")
+    def bind_cleanup_only(self) -> Self:
+        if (
+            self.runtime_container_name,
+            self.seed_container_name,
+            self.volume_name,
+            self.network_name,
+        ) != _expected_live_resource_names(self.resource_owner):
+            raise ValueError("Live cleanup-only names differ from their claim owner")
+        removed = self.removed_resources
+        absent = self.already_absent_resources
+        if (
+            removed != tuple(kind for kind in _LIVE_RESOURCE_KINDS if kind in removed)
+            or absent != tuple(kind for kind in _LIVE_RESOURCE_KINDS if kind in absent)
+            or set(removed).intersection(absent)
+            or set(removed).union(absent) != set(_LIVE_RESOURCE_KINDS)
+        ):
+            raise ValueError("Live cleanup-only resource partition differs")
+        material = self.model_dump(mode="json", by_alias=True, exclude={"cleanup_digest"})
+        digest = _digest(
+            "live-model-cleanup-only-result/v1",
+            _json_wire(material, label="live model cleanup-only result", max_bytes=128 * 1024),
+        )
+        if self.cleanup_digest and self.cleanup_digest != digest:
+            raise ValueError("Live model cleanup-only result digest differs")
         object.__setattr__(self, "cleanup_digest", digest)
         return self
 
@@ -669,6 +894,7 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
         memory_mb: int = 6144,
         pids_limit: int = 128,
         resource_owner: str | None = None,
+        provider_network_alias: Literal["host.docker.internal"] | None = None,
     ) -> None:
         if resource_owner is not None and (
             type(resource_owner) is not str or re.fullmatch(r"[a-f0-9]{32}", resource_owner) is None
@@ -684,6 +910,9 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
         )
         if resource_owner is not None:
             self._owner = resource_owner
+        if provider_network_alias not in (None, _PROVIDER_NETWORK_ALIAS):
+            raise WebAnalysisCapacityError("Live materialization Provider network alias is invalid")
+        self._provider_network_alias = provider_network_alias
         self._container_name = f"pajin-web-analysis-live-{self._owner}"
         self._seed_container_name = f"pajin-web-analysis-live-seed-{self._owner}"
         self._volume_name = f"pajin-web-analysis-live-model-{self._owner}"
@@ -853,6 +1082,241 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
             raise WebAnalysisCapacityError("Live model final view changed after attestation")
         return attestation
 
+    def reattest_provider_route(
+        self,
+        *,
+        claim_digest: str,
+        resource_owner: str,
+        provider_registration_digest: str,
+        provider_endpoint: str,
+    ) -> WebAnalysisLiveModelProviderRouteAttestation:
+        """Reattest and bind the exact claim-owned internal Provider route."""
+
+        if type(claim_digest) is not str or re.fullmatch(r"[a-f0-9]{64}", claim_digest) is None:
+            raise WebAnalysisCapacityError("Live model Provider route claim digest is invalid")
+        if (
+            type(provider_registration_digest) is not str
+            or re.fullmatch(r"[a-f0-9]{64}", provider_registration_digest) is None
+        ):
+            raise WebAnalysisCapacityError(
+                "Live model Provider route registration digest is invalid"
+            )
+        if type(resource_owner) is not str or resource_owner != self._owner:
+            raise WebAnalysisCapacityError("Live model Provider route claim owner differs")
+        if self._provider_network_alias != _PROVIDER_NETWORK_ALIAS:
+            raise WebAnalysisCapacityError(
+                "Live model Provider route requires the exact Provider network alias"
+            )
+        if type(provider_endpoint) is not str or provider_endpoint != _PROVIDER_ENDPOINT:
+            raise WebAnalysisCapacityError("Live model Provider route endpoint differs")
+
+        live_attestation = self.reattest_final_view()
+        return WebAnalysisLiveModelProviderRouteAttestation(
+            claimDigest=claim_digest,
+            resourceOwner=resource_owner,
+            liveMaterializationAttestationDigest=live_attestation.attestation_digest,
+            runtimeContainerName=live_attestation.runtime_container_name,
+            runtimeContainerId=live_attestation.runtime_container_id,
+            networkName=live_attestation.network_name,
+            networkId=live_attestation.network_id,
+            providerRegistrationDigest=provider_registration_digest,
+            providerEndpoint=provider_endpoint,
+            providerEndpointScheme="http",
+            providerEndpointHost=_PROVIDER_NETWORK_ALIAS,
+            providerEndpointPort=_LIVE_MODEL_PORT,
+            providerEndpointPath="/v1/chat/completions",
+            providerNetworkAlias=_PROVIDER_NETWORK_ALIAS,
+            livePort=_LIVE_MODEL_PORT,
+            providerAliasExact=True,
+            networkMembersExact=True,
+            attestedBeforeProviderDispatch=True,
+        )
+
+    def cleanup_owned_resources_and_verify_absent(
+        self,
+    ) -> tuple[
+        WebAnalysisLiveModelCleanupOnlyResult,
+        WebAnalysisLiveModelResourceAbsenceProof,
+    ]:
+        """Recover only exact claim-owned resources, then independently prove absence."""
+
+        self._cleanup_attempted = True
+        removed: list[_LiveResourceKind] = []
+        already_absent: list[_LiveResourceKind] = []
+        failures: list[BaseException] = []
+
+        container_resources: tuple[tuple[_LiveResourceKind, str, str, str], ...] = (
+            (
+                "runtime-container",
+                self._container_name,
+                "web-analysis-live-runtime",
+                "live model",
+            ),
+            (
+                "seed-container",
+                self._seed_container_name,
+                self._seed_container_purpose(),
+                "live model seed",
+            ),
+        )
+        for kind, name, purpose, label in container_resources:
+            try:
+                if self._verify_container_cleanup_owner(
+                    name,
+                    expected_name=name,
+                    expected_purpose=purpose,
+                    allow_absent=True,
+                ):
+                    self._remove_container(name, label=label)
+                    removed.append(kind)
+                else:
+                    already_absent.append(kind)
+            except BaseException as exc:
+                failures.append(exc)
+
+        try:
+            if self._verify_model_volume_ownership(allow_absent=True):
+                self._remove_volume()
+                removed.append("model-volume")
+            else:
+                already_absent.append("model-volume")
+        except BaseException as exc:
+            failures.append(exc)
+
+        try:
+            if self._verify_network_ownership(allow_absent=True, expected_live_member=False):
+                self._remove_network()
+                removed.append("network")
+            else:
+                already_absent.append("network")
+        except BaseException as exc:
+            failures.append(exc)
+
+        self._pin = None
+        first_process_control = next(
+            (failure for failure in failures if not isinstance(failure, Exception)),
+            None,
+        )
+        if first_process_control is not None:
+            for additional_failure in failures:
+                if additional_failure is first_process_control:
+                    continue
+                # Exception annotation is best-effort and must never replace the
+                # first process-control signal selected after all cleanup attempts.
+                with suppress(BaseException):
+                    first_process_control.add_note(
+                        "Live model cleanup-only recovery also failed while preserving "
+                        "process control: "
+                        + audit_safe_exception_diagnostic(
+                            additional_failure,
+                            stage="docker-cleanup",
+                        )
+                    )
+            raise first_process_control
+        if failures:
+            raise WebAnalysisCapacityError("Live model cleanup-only recovery failed") from failures[
+                0
+            ]
+
+        proof = self.verify_owned_resources_absent()
+        self._clear_cleanup_tracking()
+        self._set_legacy_cleanup_result()
+        cleanup = WebAnalysisLiveModelCleanupOnlyResult(
+            resourceOwner=self._owner,
+            runtimeContainerName=self._container_name,
+            seedContainerName=self._seed_container_name,
+            volumeName=self._volume_name,
+            networkName=self._network_name,
+            removedResources=tuple(removed),
+            alreadyAbsentResources=tuple(already_absent),
+            presentResourceOwnershipVerified=True,
+            cleanupOnly=True,
+            absenceProofDigest=proof.proof_digest,
+        )
+        return cleanup, proof
+
+    def verify_owned_resources_absent(self) -> WebAnalysisLiveModelResourceAbsenceProof:
+        """Prove exact-name and owner-label absence without trusting process-local state."""
+
+        for identity in (self._container_name, self._seed_container_name):
+            result = self._run_unchecked((self._docker, "container", "inspect", identity))
+            if result.returncode == 0:
+                raise WebAnalysisCapacityError("Offline tokenizer container remains after cleanup")
+            if not self._resource_is_absent(
+                result,
+                markers=(b"No such object", b"No such container"),
+            ):
+                raise WebAnalysisCapacityError("Offline tokenizer absence could not be verified")
+        self._require_no_owner_label_matches(
+            resource="container",
+            arguments=(
+                self._docker,
+                "container",
+                "ls",
+                "--all",
+                "--quiet",
+                "--no-trunc",
+                "--filter",
+                f"label=pajin.capacity-owner={self._owner}",
+            ),
+            message="Owned offline tokenizer resources remain",
+        )
+
+        volume = self._run_unchecked((self._docker, "volume", "inspect", self._volume_name))
+        if volume.returncode == 0:
+            raise WebAnalysisCapacityError("Offline tokenizer model volume remains after cleanup")
+        if not self._resource_is_absent(
+            volume,
+            markers=(b"No such volume", b"no such volume", b"No such object"),
+        ):
+            raise WebAnalysisCapacityError("Offline tokenizer volume absence could not be verified")
+        self._require_no_owner_label_matches(
+            resource="volume",
+            arguments=(
+                self._docker,
+                "volume",
+                "ls",
+                "--quiet",
+                "--filter",
+                f"label=pajin.capacity-owner={self._owner}",
+            ),
+            message="Owned offline tokenizer model volumes remain",
+        )
+
+        network = self._run_unchecked((self._docker, "network", "inspect", self._network_name))
+        if network.returncode == 0:
+            raise WebAnalysisCapacityError("Live model network remains after cleanup")
+        if not self._resource_is_absent(
+            network,
+            markers=(b"No such network", b"not found", b"No such object"),
+        ):
+            raise WebAnalysisCapacityError("Live model network absence could not be verified")
+        self._require_no_owner_label_matches(
+            resource="network",
+            arguments=(
+                self._docker,
+                "network",
+                "ls",
+                "--quiet",
+                "--no-trunc",
+                "--filter",
+                f"label=pajin.capacity-owner={self._owner}",
+            ),
+            message="Owned live model networks remain",
+        )
+        return WebAnalysisLiveModelResourceAbsenceProof(
+            resourceOwner=self._owner,
+            runtimeContainerName=self._container_name,
+            seedContainerName=self._seed_container_name,
+            volumeName=self._volume_name,
+            networkName=self._network_name,
+            exactNameAbsenceVerified=True,
+            ownerLabelAbsenceVerified=True,
+            matchingContainerCount=0,
+            matchingVolumeCount=0,
+            matchingNetworkCount=0,
+        )
+
     def get_props(self) -> object:
         raise WebAnalysisCapacityError("Live materializer exposes no model endpoints")
 
@@ -880,6 +1344,7 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
             try:
                 if self._verify_container_cleanup_owner(
                     self._container_id or self._container_name,
+                    expected_name=self._container_name,
                     expected_purpose="web-analysis-live-runtime",
                     allow_absent=True,
                 ):
@@ -896,6 +1361,7 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
             try:
                 if self._verify_container_cleanup_owner(
                     self._seed_container_id or self._seed_container_name,
+                    expected_name=self._seed_container_name,
                     expected_purpose=self._seed_container_purpose(),
                     allow_absent=True,
                 ):
@@ -932,34 +1398,35 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
     def verify_absent(self) -> None:
         if not self._cleanup_attempted:
             raise WebAnalysisCapacityError("Live model cleanup was not attempted")
-        super().verify_absent()
-        network = self._run_unchecked((self._docker, "network", "inspect", self._network_name))
-        if network.returncode == 0:
-            raise WebAnalysisCapacityError("Live model network remains after cleanup")
-        if not any(
-            marker in network.stderr
-            for marker in (b"No such network", b"not found", b"No such object")
-        ):
-            raise WebAnalysisCapacityError("Live model network absence could not be verified")
-        owned_networks = self._run_unchecked(
-            (
-                self._docker,
-                "network",
-                "ls",
-                "--quiet",
-                "--no-trunc",
-                "--filter",
-                f"label=pajin.capacity-owner={self._owner}",
-            )
-        )
-        if owned_networks.returncode != 0 or owned_networks.stdout.strip():
-            raise WebAnalysisCapacityError("Owned live model networks remain")
+        self.verify_owned_resources_absent()
+        self._clear_cleanup_tracking()
+        self._set_legacy_cleanup_result()
+
+    def cleanup_and_verify_absent(self) -> WebAnalysisLiveModelMaterializationCleanup:
+        self.cleanup()
+        self.verify_absent()
+        return self.cleanup_result()
+
+    def cleanup_result(self) -> WebAnalysisLiveModelMaterializationCleanup:
+        result = self._cleanup_result
+        if result is None:
+            raise WebAnalysisCapacityError("Live model cleanup result is absent")
+        return result
+
+    def _clear_cleanup_tracking(self) -> None:
+        self._container_id = None
+        self._seed_container_id = None
         self._network_id = None
+        self._container_created = False
+        self._seed_container_created = False
+        self._volume_created = False
         self._network_created = False
         self._network_create_attempted = False
         self._volume_create_attempted = False
         self._seed_container_create_attempted = False
         self._live_container_create_attempted = False
+
+    def _set_legacy_cleanup_result(self) -> None:
         attestation = self._live_attestation
         if attestation is not None:
             self._cleanup_result = WebAnalysisLiveModelMaterializationCleanup(
@@ -974,16 +1441,17 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
                 absenceVerified=True,
             )
 
-    def cleanup_and_verify_absent(self) -> WebAnalysisLiveModelMaterializationCleanup:
-        self.cleanup()
-        self.verify_absent()
-        return self.cleanup_result()
-
-    def cleanup_result(self) -> WebAnalysisLiveModelMaterializationCleanup:
-        result = self._cleanup_result
-        if result is None:
-            raise WebAnalysisCapacityError("Live model cleanup result is absent")
-        return result
+    def _require_no_owner_label_matches(
+        self,
+        *,
+        resource: Literal["container", "volume", "network"],
+        arguments: tuple[str, ...],
+        message: str,
+    ) -> None:
+        del resource
+        result = self._run_unchecked(arguments)
+        if result.returncode != 0 or result.stdout.strip():
+            raise WebAnalysisCapacityError(message)
 
     def _model_volume_purpose(self) -> str:
         return "web-analysis-live-model"
@@ -1026,6 +1494,9 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
         self._verify_network_ownership()
 
     def _live_container_create_arguments(self, pin: WebAnalysisCapacityV2Pin) -> tuple[str, ...]:
+        network_alias_arguments: tuple[str, ...] = ()
+        if self._provider_network_alias is not None:
+            network_alias_arguments = ("--network-alias", self._provider_network_alias)
         return (
             self._docker,
             "create",
@@ -1037,6 +1508,7 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
             pin.model_platform,
             "--network",
             self._network_name,
+            *network_alias_arguments,
             "--read-only",
             "--cap-drop",
             "ALL",
@@ -1103,7 +1575,12 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
             raise WebAnalysisCapacityError("Live model volume ownership differs")
         return True
 
-    def _verify_network_ownership(self, *, allow_absent: bool = False) -> bool:
+    def _verify_network_ownership(
+        self,
+        *,
+        allow_absent: bool = False,
+        expected_live_member: bool | None = None,
+    ) -> bool:
         network_identity = self._network_id or self._network_name
         result = self._run_unchecked((self._docker, "network", "inspect", network_identity))
         if result.returncode != 0:
@@ -1125,8 +1602,10 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
             "pajin.capacity-owner": self._owner,
         }
         observed_id: object = None
+        members: object = None
         if type(decoded) is list and len(decoded) == 1 and type(decoded[0]) is dict:
             observed_id = decoded[0].get("Id")
+            members = decoded[0].get("Containers")
         if (
             type(decoded) is not list
             or len(decoded) != 1
@@ -1142,6 +1621,23 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
             or decoded[0].get("Labels") != labels
         ):
             raise WebAnalysisCapacityError("Live model network ownership differs")
+        if expected_live_member is not None:
+            container_id = self._container_id
+            if expected_live_member:
+                if (
+                    container_id is None
+                    or type(members) is not dict
+                    or set(members) != {container_id}
+                    or type(cast(dict[str, object], members).get(container_id)) is not dict
+                    or cast(
+                        dict[str, object],
+                        cast(dict[str, object], members)[container_id],
+                    ).get("Name")
+                    != self._container_name
+                ):
+                    raise WebAnalysisCapacityError("Live model network member set differs")
+            elif members not in (None, {}):
+                raise WebAnalysisCapacityError("Live model network has unexpected members")
         self._network_id = observed_id
         return True
 
@@ -1178,6 +1674,9 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
         endpoint = None
         if type(networks) is dict:
             endpoint = cast(dict[str, object], networks).get(self._network_name)
+        endpoint_aliases: object = None
+        if type(endpoint) is dict:
+            endpoint_aliases = cast(dict[str, object], endpoint).get("Aliases")
         if (
             inspection.get("Id") != container_id
             or inspection.get("Image") != pin.tokenizer_image_id
@@ -1220,6 +1719,7 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
             or type(endpoint) is not dict
             or cast(dict[str, object], endpoint).get("NetworkID") != network_id
             or not cast(dict[str, object], endpoint).get("IPAddress")
+            or not self._network_aliases_match(endpoint_aliases, container_id=container_id)
             or state_values.get("Running") is not True
             or type(mounts) is not list
             or len(mounts) != 1
@@ -1230,6 +1730,24 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
             or cast(dict[str, object], mounts[0]).get("RW") is not False
         ):
             raise WebAnalysisCapacityError("Live model topology differs from the Capacity Pin")
+        self._verify_network_ownership(expected_live_member=True)
+
+    def _network_aliases_match(self, aliases: object, *, container_id: str) -> bool:
+        expected = self._provider_network_alias
+        if aliases is None:
+            return expected is None
+        if type(aliases) is not list or any(type(alias) is not str for alias in aliases):
+            return False
+        observed = cast(list[str], aliases)
+        allowed = {
+            self._container_name,
+            container_id,
+            container_id[:12],
+        }
+        if expected is None:
+            return set(observed).issubset(allowed)
+        allowed.add(expected)
+        return expected in observed and set(observed).issubset(allowed)
 
     def _observe_live_model(
         self,
@@ -1266,6 +1784,7 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
         self,
         identity: str,
         *,
+        expected_name: str,
         expected_purpose: str,
         allow_absent: bool,
     ) -> bool:
@@ -1292,8 +1811,10 @@ class SubprocessLlamaCppLiveMaterialization(SubprocessLlamaCppTokenizerBackend):
         ):
             raise WebAnalysisCapacityError("Live cleanup container ownership is invalid")
         labels = cast(dict[str, object], decoded[0]["Config"]).get("Labels")
+        observed_name = decoded[0].get("Name")
         if (
-            type(labels) is not dict
+            observed_name not in (expected_name, f"/{expected_name}")
+            or type(labels) is not dict
             or cast(dict[str, object], labels).get("pajin.capacity-owner") != self._owner
             or cast(dict[str, object], labels).get("pajin.capacity-purpose") != expected_purpose
         ):
@@ -1896,8 +2417,11 @@ __all__ = [
     "WebAnalysisCapacityV2Index",
     "WebAnalysisCapacityV2Pin",
     "WebAnalysisCapacityV2Proof",
+    "WebAnalysisLiveModelCleanupOnlyResult",
     "WebAnalysisLiveModelMaterializationAttestation",
     "WebAnalysisLiveModelMaterializationCleanup",
+    "WebAnalysisLiveModelProviderRouteAttestation",
+    "WebAnalysisLiveModelResourceAbsenceProof",
     "WebAnalysisModelMaterializationAttestation",
     "build_web_analysis_capacity_v2_pin",
     "create_web_analysis_capacity_v2_run",

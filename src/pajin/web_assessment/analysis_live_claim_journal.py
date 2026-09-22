@@ -50,17 +50,31 @@ WEB_ANALYSIS_LIVE_CLAIM_BINDING_API_VERSION: Final = (
 WEB_ANALYSIS_LIVE_CLAIM_ENTRY_API_VERSION: Final = (
     "pajin.dev/web-analysis-live-claim-journal-entry/v1alpha1"
 )
+WEB_ANALYSIS_LIVE_CLAIM_GATE_D_CONTEXT_API_VERSION: Final = (
+    "pajin.dev/web-analysis-live-claim-gate-d-context/v1alpha1"
+)
+WEB_ANALYSIS_LIVE_CLAIM_TERMINAL_PUBLICATION_API_VERSION: Final = (
+    "pajin.dev/web-analysis-live-claim-terminal-publication/v1alpha1"
+)
 
-_SCHEMA_VERSION = 1
+# Version 1 never backed a permitted live dispatch.  Refuse it instead of
+# mutating immutable audit state through an implicit in-place migration.
+_SCHEMA_VERSION = 2
 _APPLICATION_ID = 0x50415742  # ASCII "PAWB"
 _BUSY_TIMEOUT_MS = 30_000
 _MAX_BINDING_BYTES = 512 * 1024
 _SHA256_PATTERN = r"^[a-f0-9]{64}$"
 _OWNER_PATTERN = r"^[a-f0-9]{32}$"
 _TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$"
+_EXECUTION_ID_PATTERN = r"^exec_[a-f0-9]{32}$"
+_LEASE_ID_PATTERN = r"^lease_[a-f0-9]{32}$"
+_RUN_ID_PATTERN = r"^run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}$"
 _Sha256 = Annotated[str, Field(pattern=_SHA256_PATTERN)]
 _OwnerID = Annotated[str, Field(pattern=_OWNER_PATTERN)]
 _Timestamp = Annotated[str, Field(pattern=_TIMESTAMP_PATTERN)]
+_ExecutionID = Annotated[str, Field(pattern=_EXECUTION_ID_PATTERN)]
+_LeaseID = Annotated[str, Field(pattern=_LEASE_ID_PATTERN)]
+_RunID = Annotated[str, Field(pattern=_RUN_ID_PATTERN)]
 
 
 class WebAnalysisLiveClaimJournalError(RuntimeError):
@@ -454,6 +468,265 @@ class WebAnalysisLiveClaimJournalEntry(_FrozenClaimModel):
         return self
 
 
+class WebAnalysisLiveClaimGateDContext(_FrozenClaimModel):
+    """Durable Gate-D evidence recorded before the one dispatch marker.
+
+    The initial authorization evidence is written atomically with reservation.
+    The optional group is intentionally all-or-none: once present it proves the
+    exact re-verification and transport coordinates known before the durable
+    dispatch slot was consumed.  This projection is audit-only and conveys no
+    execution or redispatch authority.
+    """
+
+    api_version: Literal["pajin.dev/web-analysis-live-claim-gate-d-context/v1alpha1"] = Field(
+        default=WEB_ANALYSIS_LIVE_CLAIM_GATE_D_CONTEXT_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["WebAnalysisLiveClaimGateDContext"] = "WebAnalysisLiveClaimGateDContext"
+    claim_id: str = Field(alias="claimId", min_length=1, max_length=110)
+    claim_digest: _Sha256 = Field(alias="claimDigest")
+    initial_authorization_verification_digest: _Sha256 = Field(
+        alias="initialAuthorizationVerificationDigest"
+    )
+    initial_authorization_evaluated_at: _Timestamp = Field(alias="initialAuthorizationEvaluatedAt")
+    initial_authorization_expires_at: _Timestamp = Field(alias="initialAuthorizationExpiresAt")
+    pre_dispatch_authorization_verification_digest: _Sha256 | None = Field(
+        default=None,
+        alias="preDispatchAuthorizationVerificationDigest",
+    )
+    pre_dispatch_authorization_evaluated_at: _Timestamp | None = Field(
+        default=None,
+        alias="preDispatchAuthorizationEvaluatedAt",
+    )
+    pre_dispatch_authorization_expires_at: _Timestamp | None = Field(
+        default=None,
+        alias="preDispatchAuthorizationExpiresAt",
+    )
+    provider_route_attestation_digest: _Sha256 | None = Field(
+        default=None,
+        alias="providerRouteAttestationDigest",
+    )
+    transport_execution_id: _ExecutionID | None = Field(
+        default=None,
+        alias="transportExecutionId",
+    )
+    lease_ids: tuple[_LeaseID, ...] | None = Field(
+        default=None,
+        alias="leaseIds",
+        max_length=1,
+    )
+    worker_context_digest: _Sha256 | None = Field(
+        default=None,
+        alias="workerContextDigest",
+    )
+    job_metadata_digest: _Sha256 | None = Field(
+        default=None,
+        alias="jobMetadataDigest",
+    )
+    transport_binding_digest: _Sha256 | None = Field(
+        default=None,
+        alias="transportBindingDigest",
+    )
+    context_digest: str = Field(default="", alias="contextDigest", max_length=64)
+    model_invocation_authorized: Literal[False] = Field(
+        default=False,
+        alias="modelInvocationAuthorized",
+    )
+    provider_dispatch_authorized: Literal[False] = Field(
+        default=False,
+        alias="providerDispatchAuthorized",
+    )
+    target_request_authorized: Literal[False] = Field(
+        default=False,
+        alias="targetRequestAuthorized",
+    )
+    execution_authorized: Literal[False] = Field(
+        default=False,
+        alias="executionAuthorized",
+    )
+    automatic_redispatch_authorized: Literal[False] = Field(
+        default=False,
+        alias="automaticRedispatchAuthorized",
+    )
+
+    @field_validator(
+        "model_invocation_authorized",
+        "provider_dispatch_authorized",
+        "target_request_authorized",
+        "execution_authorized",
+        "automatic_redispatch_authorized",
+        mode="before",
+    )
+    @classmethod
+    def require_false_markers(cls, value: object) -> Literal[False]:
+        return _literal_false(value)
+
+    @field_validator(
+        "initial_authorization_evaluated_at",
+        "initial_authorization_expires_at",
+        "pre_dispatch_authorization_evaluated_at",
+        "pre_dispatch_authorization_expires_at",
+    )
+    @classmethod
+    def require_canonical_timestamp(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            _validate_timestamp(value, field="Gate-D authorization evaluation timestamp")
+        except WebAnalysisLiveClaimJournalError as exc:
+            raise ValueError("Gate-D authorization evaluation timestamp is invalid") from exc
+        return value
+
+    @model_validator(mode="after")
+    def bind_context(self) -> Self:
+        if self.claim_id != f"web-analysis-live-claim:{self.claim_digest}":
+            raise ValueError("Gate-D context claim identity differs")
+        optional_values = (
+            self.pre_dispatch_authorization_verification_digest,
+            self.pre_dispatch_authorization_evaluated_at,
+            self.pre_dispatch_authorization_expires_at,
+            self.provider_route_attestation_digest,
+            self.transport_execution_id,
+            self.lease_ids,
+            self.worker_context_digest,
+            self.job_metadata_digest,
+            self.transport_binding_digest,
+        )
+        present = tuple(value is not None for value in optional_values)
+        if any(present) and not all(present):
+            raise ValueError("Gate-D pre-dispatch context must be all present or all absent")
+        initial = _parse_timestamp(self.initial_authorization_evaluated_at)
+        initial_expiry = _parse_timestamp(self.initial_authorization_expires_at)
+        if initial >= initial_expiry:
+            raise ValueError("Gate-D initial authorization is not active")
+        if self.pre_dispatch_authorization_evaluated_at is not None:
+            if self.lease_ids is None or len(self.lease_ids) != 1:
+                raise ValueError("Gate-D pre-dispatch context requires exactly one lease")
+            pre_dispatch = _parse_timestamp(self.pre_dispatch_authorization_evaluated_at)
+            pre_dispatch_expiry = _parse_timestamp(
+                cast(str, self.pre_dispatch_authorization_expires_at)
+            )
+            if pre_dispatch <= initial:
+                raise ValueError(
+                    "Gate-D pre-dispatch verification must follow initial verification"
+                )
+            if pre_dispatch >= pre_dispatch_expiry:
+                raise ValueError("Gate-D pre-dispatch authorization is not active")
+            if pre_dispatch_expiry != initial_expiry:
+                raise ValueError("Gate-D pre-dispatch expiry differs from initial authorization")
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"context_digest"},
+        )
+        digest = _digest("pajin.web-analysis.live-claim-gate-d-context/v1", material)
+        if self.context_digest and self.context_digest != digest:
+            raise ValueError("Gate-D context digest differs")
+        object.__setattr__(self, "context_digest", digest)
+        return self
+
+
+class WebAnalysisLiveClaimTerminalPublication(_FrozenClaimModel):
+    """Durable same-publication intent and optional sealed-root anchor.
+
+    The intent is committed before the deterministic Run may be created.  A
+    sealed root is attached by a one-way CAS only after the exact Run has been
+    strict-loaded.  This closes both crash windows without granting permission
+    to publish a second receipt or redispatch.
+    """
+
+    api_version: Literal["pajin.dev/web-analysis-live-claim-terminal-publication/v1alpha1"] = Field(
+        default=WEB_ANALYSIS_LIVE_CLAIM_TERMINAL_PUBLICATION_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["WebAnalysisLiveClaimTerminalPublication"] = (
+        "WebAnalysisLiveClaimTerminalPublication"
+    )
+    claim_id: str = Field(alias="claimId", min_length=1, max_length=110)
+    claim_digest: _Sha256 = Field(alias="claimDigest")
+    pending_claim_state_digest: _Sha256 = Field(alias="pendingClaimStateDigest")
+    output_root: str = Field(alias="outputRoot", min_length=1, max_length=4096)
+    run_path: str = Field(alias="runPath", min_length=1, max_length=4096)
+    run_id: _RunID = Field(alias="runId")
+    receipt_digest: _Sha256 = Field(alias="receiptDigest")
+    cleanup_result_digest: _Sha256 = Field(alias="cleanupResultDigest")
+    resource_absence_digest: _Sha256 = Field(alias="resourceAbsenceDigest")
+    intended_terminal_disposition: WebAnalysisLiveClaimTerminalDisposition = Field(
+        alias="intendedTerminalDisposition"
+    )
+    live_attestation_digest: _Sha256 | None = Field(
+        default=None,
+        alias="liveAttestationDigest",
+    )
+    intent_digest: str = Field(default="", alias="intentDigest", max_length=64)
+    root_digest: _Sha256 | None = Field(default=None, alias="rootDigest")
+    publication_digest: str | None = Field(
+        default=None,
+        alias="publicationDigest",
+        max_length=64,
+    )
+    reusable: Literal[False] = False
+    provider_dispatch_authorized: Literal[False] = Field(
+        default=False,
+        alias="providerDispatchAuthorized",
+    )
+    automatic_redispatch_authorized: Literal[False] = Field(
+        default=False,
+        alias="automaticRedispatchAuthorized",
+    )
+
+    @field_validator(
+        "reusable",
+        "provider_dispatch_authorized",
+        "automatic_redispatch_authorized",
+        mode="before",
+    )
+    @classmethod
+    def require_false_markers(cls, value: object) -> Literal[False]:
+        return _literal_false(value)
+
+    @field_validator("output_root", "run_path")
+    @classmethod
+    def require_canonical_absolute_path(cls, value: str) -> str:
+        if "\x00" in value or value != os.path.abspath(value):
+            raise ValueError("Terminal publication path must be canonical and absolute")
+        return value
+
+    @model_validator(mode="after")
+    def bind_publication(self) -> Self:
+        if self.claim_id != f"web-analysis-live-claim:{self.claim_digest}":
+            raise ValueError("Terminal publication claim identity differs")
+        output_root = Path(self.output_root)
+        run_path = Path(self.run_path)
+        if run_path == output_root or output_root not in run_path.parents:
+            raise ValueError("Terminal publication Run is outside its output root")
+        if run_path.name != self.run_id:
+            raise ValueError("Terminal publication Run path differs from its Run identity")
+        intent_material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"intent_digest", "root_digest", "publication_digest"},
+        )
+        intent_digest = _digest(
+            "pajin.web-analysis.live-claim-terminal-publication-intent/v1",
+            intent_material,
+        )
+        if self.intent_digest and self.intent_digest != intent_digest:
+            raise ValueError("Terminal publication intent digest differs")
+        object.__setattr__(self, "intent_digest", intent_digest)
+        if (self.root_digest is None) != (self.publication_digest is None):
+            raise ValueError("Terminal publication root anchor must be all present or absent")
+        if self.root_digest is not None:
+            publication_digest = _digest(
+                "pajin.web-analysis.live-claim-terminal-publication-anchor/v1",
+                {"intentDigest": intent_digest, "rootDigest": self.root_digest},
+            )
+            if self.publication_digest not in {"", publication_digest}:
+                raise ValueError("Terminal publication anchor digest differs")
+            object.__setattr__(self, "publication_digest", publication_digest)
+        return self
+
+
 @dataclass(slots=True)
 class _ClaimHandleState:
     entry: WebAnalysisLiveClaimJournalEntry
@@ -509,6 +782,40 @@ class DispatchStartedWebAnalysisLiveClaim(_ClaimHandle):
     """Store-local, one-use authority to record the observed dispatch outcome."""
 
 
+class VerifiedWebAnalysisLiveClaimTerminalPublicationCandidate:
+    """Non-serializable, store-local proof minted by the strict receipt loader."""
+
+    __slots__ = ("__weakref__",)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError(
+            "Verified terminal publication candidates can only be issued by the strict loader"
+        )
+
+    @property
+    def claim_id(self) -> str:
+        return _verified_terminal_publication_candidate_state(self)[0]
+
+    @property
+    def intent_digest(self) -> str:
+        return _verified_terminal_publication_candidate_state(self)[1]
+
+    @property
+    def root_digest(self) -> str:
+        return _verified_terminal_publication_candidate_state(self)[2]
+
+    def __copy__(self) -> Self:
+        raise TypeError("Verified terminal publication candidates cannot be copied")
+
+    def __deepcopy__(self, memo: object) -> Self:
+        del memo
+        raise TypeError("Verified terminal publication candidates cannot be copied")
+
+    def __reduce__(self) -> Never:
+        raise TypeError("Verified terminal publication candidates cannot be serialized")
+
+
 _CLAIM_HANDLE_STATES: WeakKeyDictionary[_ClaimHandle, _ClaimHandleState] = WeakKeyDictionary()
 
 
@@ -527,6 +834,16 @@ def _claim_handle_state(handle: _ClaimHandle) -> _ClaimHandleState:
     if state is None:
         raise WebAnalysisLiveClaimJournalError("Live claim handle was not journal-issued")
     return state
+
+
+def _verified_terminal_publication_candidate_state(
+    candidate: VerifiedWebAnalysisLiveClaimTerminalPublicationCandidate,
+) -> tuple[str, str, str]:
+    from pajin.web_assessment.analysis_skill_compact_live_receipts import (
+        _peek_verified_terminal_publication_candidate,
+    )
+
+    return _peek_verified_terminal_publication_candidate(candidate)
 
 
 _METADATA_TABLE_SQL = """
@@ -600,6 +917,73 @@ _CLAIMS_TABLE_SQL = """
                   OR (dispatch_count = 1 AND dispatch_started_at IS NOT NULL))
              AND (terminal_disposition != 'success'
                   OR (dispatch_count = 1 AND pending_outcome = 'success-observed')))
+        )
+    ) STRICT
+    """
+_GATE_D_CONTEXTS_TABLE_SQL = """
+    CREATE TABLE web_analysis_live_claim_gate_d_contexts (
+        claim_id TEXT PRIMARY KEY NOT NULL
+            REFERENCES web_analysis_live_claims(claim_id),
+        claim_digest TEXT NOT NULL UNIQUE,
+        initial_authorization_verification_digest TEXT NOT NULL,
+        initial_authorization_evaluated_at TEXT NOT NULL,
+        initial_authorization_expires_at TEXT NOT NULL,
+        pre_dispatch_authorization_verification_digest TEXT,
+        pre_dispatch_authorization_evaluated_at TEXT,
+        pre_dispatch_authorization_expires_at TEXT,
+        provider_route_attestation_digest TEXT,
+        transport_execution_id TEXT,
+        lease_ids_json BLOB,
+        worker_context_digest TEXT,
+        job_metadata_digest TEXT,
+        transport_binding_digest TEXT,
+        context_digest TEXT NOT NULL UNIQUE,
+        CHECK (
+            (pre_dispatch_authorization_verification_digest IS NULL
+             AND pre_dispatch_authorization_evaluated_at IS NULL
+             AND pre_dispatch_authorization_expires_at IS NULL
+             AND provider_route_attestation_digest IS NULL
+             AND transport_execution_id IS NULL
+             AND lease_ids_json IS NULL
+             AND worker_context_digest IS NULL
+             AND job_metadata_digest IS NULL
+             AND transport_binding_digest IS NULL)
+            OR
+            (pre_dispatch_authorization_verification_digest IS NOT NULL
+             AND pre_dispatch_authorization_evaluated_at IS NOT NULL
+             AND pre_dispatch_authorization_expires_at IS NOT NULL
+             AND provider_route_attestation_digest IS NOT NULL
+             AND transport_execution_id IS NOT NULL
+             AND lease_ids_json IS NOT NULL
+             AND json_array_length(CAST(lease_ids_json AS TEXT)) = 1
+             AND worker_context_digest IS NOT NULL
+             AND job_metadata_digest IS NOT NULL
+             AND transport_binding_digest IS NOT NULL)
+        )
+    ) STRICT
+    """
+_TERMINAL_PUBLICATIONS_TABLE_SQL = """
+    CREATE TABLE web_analysis_live_claim_terminal_publications (
+        claim_id TEXT PRIMARY KEY NOT NULL
+            REFERENCES web_analysis_live_claims(claim_id),
+        claim_digest TEXT NOT NULL UNIQUE,
+        pending_claim_state_digest TEXT NOT NULL UNIQUE,
+        output_root TEXT NOT NULL,
+        run_path TEXT NOT NULL UNIQUE,
+        run_id TEXT NOT NULL,
+        receipt_digest TEXT NOT NULL UNIQUE,
+        cleanup_result_digest TEXT NOT NULL,
+        resource_absence_digest TEXT NOT NULL,
+        intended_terminal_disposition TEXT NOT NULL CHECK (
+            intended_terminal_disposition IN ('success', 'failure', 'abandoned')
+        ),
+        live_attestation_digest TEXT,
+        intent_digest TEXT NOT NULL UNIQUE,
+        root_digest TEXT,
+        publication_digest TEXT UNIQUE,
+        CHECK (
+            (root_digest IS NULL AND publication_digest IS NULL)
+            OR (root_digest IS NOT NULL AND publication_digest IS NOT NULL)
         )
     ) STRICT
     """
@@ -695,14 +1079,162 @@ _CLAIMS_TRANSITION_SQL = """
         (OLD.phase = 'reservation' AND NEW.phase = 'live-start')
         OR (OLD.phase = 'reservation' AND NEW.phase = 'pending-cleanup')
         OR (OLD.phase = 'live-start' AND NEW.phase = 'pending-cleanup')
-        OR (OLD.phase = 'pending-cleanup' AND NEW.phase = 'terminal')
+        OR (OLD.phase = 'pending-cleanup' AND NEW.phase = 'terminal'
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM web_analysis_live_claim_gate_d_contexts AS context
+                    WHERE context.claim_id = OLD.claim_id
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM web_analysis_live_claim_terminal_publications AS publication
+                    WHERE publication.claim_id = OLD.claim_id
+                      AND publication.claim_digest = OLD.claim_digest
+                      AND publication.pending_claim_state_digest = OLD.state_digest
+                      AND publication.root_digest IS NOT NULL
+                      AND publication.publication_digest IS NOT NULL
+                      AND publication.receipt_digest = NEW.terminal_receipt_digest
+                      AND publication.cleanup_result_digest = NEW.cleanup_result_digest
+                      AND publication.resource_absence_digest = NEW.resource_absence_digest
+                      AND publication.intended_terminal_disposition
+                          = NEW.terminal_disposition
+                )
+            ))
         OR (OLD.phase = 'live-start' AND NEW.phase = 'live-start'
             AND OLD.dispatch_count = 0 AND NEW.dispatch_count = 1
             AND OLD.dispatch_started_at IS NULL
-            AND NEW.dispatch_started_at IS NOT NULL)
+            AND NEW.dispatch_started_at IS NOT NULL
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM web_analysis_live_claim_gate_d_contexts AS context
+                    WHERE context.claim_id = OLD.claim_id
+                )
+                OR EXISTS (
+                    SELECT 1 FROM web_analysis_live_claim_gate_d_contexts AS context
+                    WHERE context.claim_id = OLD.claim_id
+                      AND context.pre_dispatch_authorization_verification_digest
+                          IS NOT NULL
+                      AND context.pre_dispatch_authorization_evaluated_at IS NOT NULL
+                      AND context.pre_dispatch_authorization_expires_at IS NOT NULL
+                      AND context.provider_route_attestation_digest IS NOT NULL
+                      AND NEW.dispatch_started_at
+                          < context.pre_dispatch_authorization_expires_at
+                      AND context.transport_execution_id IS NOT NULL
+                      AND context.lease_ids_json IS NOT NULL
+                      AND json_array_length(CAST(context.lease_ids_json AS TEXT)) = 1
+                      AND context.worker_context_digest IS NOT NULL
+                      AND context.job_metadata_digest IS NOT NULL
+                      AND context.transport_binding_digest IS NOT NULL
+                )
+            ))
     )
     BEGIN
         SELECT RAISE(ABORT, 'invalid Web analysis live claim transition');
+    END
+    """
+_GATE_D_CONTEXTS_IMMUTABLE_SQL = """
+    CREATE TRIGGER web_analysis_live_claim_gate_d_contexts_immutable
+    BEFORE UPDATE OF
+        claim_id, claim_digest, initial_authorization_verification_digest,
+        initial_authorization_evaluated_at, initial_authorization_expires_at
+    ON web_analysis_live_claim_gate_d_contexts
+    BEGIN
+        SELECT RAISE(ABORT, 'Web analysis Gate-D initial context is immutable');
+    END
+    """
+_GATE_D_CONTEXTS_TRANSITION_SQL = """
+    CREATE TRIGGER web_analysis_live_claim_gate_d_contexts_transition
+    BEFORE UPDATE ON web_analysis_live_claim_gate_d_contexts
+    WHEN NOT (
+        OLD.pre_dispatch_authorization_verification_digest IS NULL
+        AND OLD.pre_dispatch_authorization_evaluated_at IS NULL
+        AND OLD.pre_dispatch_authorization_expires_at IS NULL
+        AND OLD.provider_route_attestation_digest IS NULL
+        AND OLD.transport_execution_id IS NULL
+        AND OLD.lease_ids_json IS NULL
+        AND OLD.worker_context_digest IS NULL
+        AND OLD.job_metadata_digest IS NULL
+        AND OLD.transport_binding_digest IS NULL
+        AND NEW.pre_dispatch_authorization_verification_digest IS NOT NULL
+        AND NEW.pre_dispatch_authorization_evaluated_at IS NOT NULL
+        AND NEW.pre_dispatch_authorization_expires_at IS NOT NULL
+        AND NEW.provider_route_attestation_digest IS NOT NULL
+        AND NEW.pre_dispatch_authorization_expires_at
+            = OLD.initial_authorization_expires_at
+        AND NEW.transport_execution_id IS NOT NULL
+        AND NEW.lease_ids_json IS NOT NULL
+        AND json_array_length(CAST(NEW.lease_ids_json AS TEXT)) = 1
+        AND NEW.worker_context_digest IS NOT NULL
+        AND NEW.job_metadata_digest IS NOT NULL
+        AND NEW.transport_binding_digest IS NOT NULL
+        AND NEW.context_digest != OLD.context_digest
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'invalid Web analysis Gate-D context transition');
+    END
+    """
+_GATE_D_CONTEXTS_NO_DELETE_SQL = """
+    CREATE TRIGGER web_analysis_live_claim_gate_d_contexts_no_delete
+    BEFORE DELETE ON web_analysis_live_claim_gate_d_contexts
+    BEGIN
+        SELECT RAISE(ABORT, 'Web analysis Gate-D contexts are append-only');
+    END
+    """
+_GATE_D_CONTEXTS_NO_REPLACE_SQL = """
+    CREATE TRIGGER web_analysis_live_claim_gate_d_contexts_no_replace
+    BEFORE INSERT ON web_analysis_live_claim_gate_d_contexts
+    WHEN EXISTS (
+        SELECT 1 FROM web_analysis_live_claim_gate_d_contexts
+        WHERE claim_id = NEW.claim_id OR claim_digest = NEW.claim_digest
+           OR context_digest = NEW.context_digest
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'Web analysis Gate-D contexts cannot be replaced');
+    END
+    """
+_TERMINAL_PUBLICATIONS_IMMUTABLE_SQL = """
+    CREATE TRIGGER web_analysis_live_claim_terminal_publications_immutable
+    BEFORE UPDATE OF
+        claim_id, claim_digest, pending_claim_state_digest, output_root,
+        run_path, run_id, receipt_digest, cleanup_result_digest,
+        resource_absence_digest, intended_terminal_disposition,
+        live_attestation_digest, intent_digest
+    ON web_analysis_live_claim_terminal_publications
+    BEGIN
+        SELECT RAISE(ABORT, 'Web analysis terminal publication intent is immutable');
+    END
+    """
+_TERMINAL_PUBLICATIONS_TRANSITION_SQL = """
+    CREATE TRIGGER web_analysis_live_claim_terminal_publications_transition
+    BEFORE UPDATE ON web_analysis_live_claim_terminal_publications
+    WHEN NOT (
+        OLD.root_digest IS NULL AND OLD.publication_digest IS NULL
+        AND NEW.root_digest IS NOT NULL AND NEW.publication_digest IS NOT NULL
+        AND NEW.publication_digest != OLD.intent_digest
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'invalid Web analysis terminal publication transition');
+    END
+    """
+_TERMINAL_PUBLICATIONS_NO_DELETE_SQL = """
+    CREATE TRIGGER web_analysis_live_claim_terminal_publications_no_delete
+    BEFORE DELETE ON web_analysis_live_claim_terminal_publications
+    BEGIN
+        SELECT RAISE(ABORT, 'Web analysis terminal publications are append-only');
+    END
+    """
+_TERMINAL_PUBLICATIONS_NO_REPLACE_SQL = """
+    CREATE TRIGGER web_analysis_live_claim_terminal_publications_no_replace
+    BEFORE INSERT ON web_analysis_live_claim_terminal_publications
+    WHEN EXISTS (
+        SELECT 1 FROM web_analysis_live_claim_terminal_publications
+        WHERE claim_id = NEW.claim_id OR claim_digest = NEW.claim_digest
+           OR pending_claim_state_digest = NEW.pending_claim_state_digest
+           OR run_path = NEW.run_path OR receipt_digest = NEW.receipt_digest
+           OR intent_digest = NEW.intent_digest
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'Web analysis terminal publications cannot be replaced');
     END
     """
 _EVENTS_NO_UPDATE_SQL = """
@@ -735,6 +1267,11 @@ _EVENTS_NO_REPLACE_SQL = """
 _SCHEMA_OBJECT_SQL = {
     ("table", "web_analysis_live_claim_metadata"): _METADATA_TABLE_SQL,
     ("table", "web_analysis_live_claims"): _CLAIMS_TABLE_SQL,
+    ("table", "web_analysis_live_claim_gate_d_contexts"): _GATE_D_CONTEXTS_TABLE_SQL,
+    (
+        "table",
+        "web_analysis_live_claim_terminal_publications",
+    ): _TERMINAL_PUBLICATIONS_TABLE_SQL,
     ("table", "web_analysis_live_claim_events"): _EVENTS_TABLE_SQL,
     ("index", "web_analysis_live_claim_events_claim_idx"): _EVENTS_INDEX_SQL,
     ("trigger", "web_analysis_live_claim_metadata_no_update"): _METADATA_NO_UPDATE_SQL,
@@ -744,6 +1281,38 @@ _SCHEMA_OBJECT_SQL = {
     ("trigger", "web_analysis_live_claims_no_delete"): _CLAIMS_NO_DELETE_SQL,
     ("trigger", "web_analysis_live_claims_no_replace"): _CLAIMS_NO_REPLACE_SQL,
     ("trigger", "web_analysis_live_claims_transition"): _CLAIMS_TRANSITION_SQL,
+    (
+        "trigger",
+        "web_analysis_live_claim_gate_d_contexts_immutable",
+    ): _GATE_D_CONTEXTS_IMMUTABLE_SQL,
+    (
+        "trigger",
+        "web_analysis_live_claim_gate_d_contexts_transition",
+    ): _GATE_D_CONTEXTS_TRANSITION_SQL,
+    (
+        "trigger",
+        "web_analysis_live_claim_gate_d_contexts_no_delete",
+    ): _GATE_D_CONTEXTS_NO_DELETE_SQL,
+    (
+        "trigger",
+        "web_analysis_live_claim_gate_d_contexts_no_replace",
+    ): _GATE_D_CONTEXTS_NO_REPLACE_SQL,
+    (
+        "trigger",
+        "web_analysis_live_claim_terminal_publications_immutable",
+    ): _TERMINAL_PUBLICATIONS_IMMUTABLE_SQL,
+    (
+        "trigger",
+        "web_analysis_live_claim_terminal_publications_transition",
+    ): _TERMINAL_PUBLICATIONS_TRANSITION_SQL,
+    (
+        "trigger",
+        "web_analysis_live_claim_terminal_publications_no_delete",
+    ): _TERMINAL_PUBLICATIONS_NO_DELETE_SQL,
+    (
+        "trigger",
+        "web_analysis_live_claim_terminal_publications_no_replace",
+    ): _TERMINAL_PUBLICATIONS_NO_REPLACE_SQL,
     ("trigger", "web_analysis_live_claim_events_no_update"): _EVENTS_NO_UPDATE_SQL,
     ("trigger", "web_analysis_live_claim_events_no_delete"): _EVENTS_NO_DELETE_SQL,
     ("trigger", "web_analysis_live_claim_events_no_replace"): _EVENTS_NO_REPLACE_SQL,
@@ -752,6 +1321,8 @@ _TABLES = frozenset(
     {
         "web_analysis_live_claim_metadata",
         "web_analysis_live_claims",
+        "web_analysis_live_claim_gate_d_contexts",
+        "web_analysis_live_claim_terminal_publications",
         "web_analysis_live_claim_events",
     }
 )
@@ -828,9 +1399,72 @@ class WebAnalysisLiveClaimJournal:
     def reserve(self, binding: WebAnalysisLiveClaimBinding) -> ReservedWebAnalysisLiveClaim:
         """Atomically consume both independent identities exactly once."""
 
+        return self._reserve(binding, gate_d_initial_authorization=None)
+
+    def reserve_with_gate_d_context(
+        self,
+        binding: WebAnalysisLiveClaimBinding,
+        *,
+        initial_authorization_verification_digest: str,
+        initial_authorization_evaluated_at: datetime,
+        initial_authorization_expires_at: datetime,
+    ) -> ReservedWebAnalysisLiveClaim:
+        """Reserve both identities and their initial Gate-D evidence atomically."""
+
+        _require_sha256(
+            initial_authorization_verification_digest,
+            label="initial authorization verification digest",
+        )
+        evaluated_at = _timestamp_from_datetime(
+            initial_authorization_evaluated_at,
+            label="initial authorization evaluation time",
+        )
+        expires_at = _timestamp_from_datetime(
+            initial_authorization_expires_at,
+            label="initial authorization expiry time",
+        )
+        if _parse_timestamp(evaluated_at) >= _parse_timestamp(expires_at):
+            raise WebAnalysisLiveClaimJournalError(
+                "Initial authorization verification is not active"
+            )
+        return self._reserve(
+            binding,
+            gate_d_initial_authorization=(
+                initial_authorization_verification_digest,
+                evaluated_at,
+                expires_at,
+            ),
+        )
+
+    def _reserve(
+        self,
+        binding: WebAnalysisLiveClaimBinding,
+        *,
+        gate_d_initial_authorization: tuple[str, str, str] | None,
+    ) -> ReservedWebAnalysisLiveClaim:
         try:
             exact = _canonical_binding(binding)
             reserved_at = self._now()
+            gate_d_context: WebAnalysisLiveClaimGateDContext | None = None
+            if gate_d_initial_authorization is not None:
+                initial_digest, initial_evaluated_at, initial_expires_at = (
+                    gate_d_initial_authorization
+                )
+                if _parse_timestamp(initial_evaluated_at) > _parse_timestamp(reserved_at):
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Initial authorization verification follows reservation"
+                    )
+                if _parse_timestamp(reserved_at) >= _parse_timestamp(initial_expires_at):
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Initial authorization expired before reservation"
+                    )
+                gate_d_context = WebAnalysisLiveClaimGateDContext(
+                    claimId=exact.claim_id,
+                    claimDigest=exact.claim_digest,
+                    initialAuthorizationVerificationDigest=initial_digest,
+                    initialAuthorizationEvaluatedAt=initial_evaluated_at,
+                    initialAuthorizationExpiresAt=initial_expires_at,
+                )
             state_digest = _state_digest(
                 binding_digest=exact.claim_digest,
                 phase=WebAnalysisLiveClaimPhase.RESERVATION,
@@ -888,6 +1522,8 @@ class WebAnalysisLiveClaimJournal:
                         state_digest,
                     ),
                 )
+                if gate_d_context is not None:
+                    _insert_gate_d_context(connection, gate_d_context)
                 _insert_event(
                     connection,
                     claim_id=exact.claim_id,
@@ -932,6 +1568,169 @@ class WebAnalysisLiveClaimJournal:
         handle._consume(self._authority)
         entry = self._transition_to_live(expected)
         return _issue_claim_handle(StartedWebAnalysisLiveClaim, entry, self._authority)
+
+    def record_gate_d_pre_dispatch_context(
+        self,
+        handle: StartedWebAnalysisLiveClaim,
+        *,
+        pre_dispatch_authorization_verification_digest: str,
+        pre_dispatch_authorization_evaluated_at: datetime,
+        pre_dispatch_authorization_expires_at: datetime,
+        provider_route_attestation_digest: str,
+        transport_execution_id: str,
+        lease_ids: tuple[str, ...],
+        worker_context_digest: str,
+        job_metadata_digest: str,
+        transport_binding_digest: str,
+    ) -> StartedWebAnalysisLiveClaim:
+        """Durably bind exact pre-marker evidence and reissue live authority."""
+
+        _require_sha256(
+            pre_dispatch_authorization_verification_digest,
+            label="pre-dispatch authorization verification digest",
+        )
+        _require_sha256(
+            provider_route_attestation_digest,
+            label="provider route attestation digest",
+        )
+        evaluated_at = _timestamp_from_datetime(
+            pre_dispatch_authorization_evaluated_at,
+            label="pre-dispatch authorization evaluation time",
+        )
+        expires_at = _timestamp_from_datetime(
+            pre_dispatch_authorization_expires_at,
+            label="pre-dispatch authorization expiry time",
+        )
+        if _parse_timestamp(evaluated_at) >= _parse_timestamp(expires_at):
+            raise WebAnalysisLiveClaimJournalError(
+                "Pre-dispatch authorization verification is not active"
+            )
+        if (
+            type(transport_execution_id) is not str
+            or len(transport_execution_id) != 37
+            or not transport_execution_id.startswith("exec_")
+        ):
+            raise WebAnalysisLiveClaimJournalError("Transport execution identity is invalid")
+        exact_lease_ids = _canonical_lease_ids(lease_ids)
+        for digest, label in (
+            (worker_context_digest, "worker context digest"),
+            (job_metadata_digest, "job metadata digest"),
+            (transport_binding_digest, "transport binding digest"),
+        ):
+            _require_sha256(digest, label=label)
+        expected = self._require_handle(
+            handle,
+            StartedWebAnalysisLiveClaim,
+            WebAnalysisLiveClaimPhase.LIVE_START,
+        )
+        if expected.dispatch_count != 0:
+            raise WebAnalysisLiveClaimJournalError(
+                "Gate-D context must precede dispatch-slot consumption"
+            )
+        if expected.live_started_at is None or _parse_timestamp(evaluated_at) < _parse_timestamp(
+            expected.live_started_at
+        ):
+            raise WebAnalysisLiveClaimJournalError(
+                "Pre-dispatch authorization verification predates live-start"
+            )
+        exact_execution_id = f"exec_{expected.binding.resources.resource_owner}"
+        if transport_execution_id != exact_execution_id:
+            raise WebAnalysisLiveClaimJournalError(
+                "Transport execution identity differs from the live claim"
+            )
+        handle._consume(self._authority)
+        try:
+            with self._write() as connection:
+                self._validate_connection(connection)
+                current = _entry_from_row(
+                    connection,
+                    _load_claim(connection, expected.binding.claim_id),
+                )
+                if current != expected or current.dispatch_count != 0:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Gate-D pre-dispatch claim differs from durable live state"
+                    )
+                initial = _gate_d_context_from_row(
+                    _load_gate_d_context(connection, current.binding.claim_id),
+                    binding=current.binding,
+                )
+                if initial.pre_dispatch_authorization_verification_digest is not None:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Gate-D pre-dispatch context was already recorded"
+                    )
+                updated = WebAnalysisLiveClaimGateDContext.model_validate(
+                    {
+                        **initial.model_dump(mode="python", by_alias=True),
+                        "preDispatchAuthorizationVerificationDigest": (
+                            pre_dispatch_authorization_verification_digest
+                        ),
+                        "preDispatchAuthorizationEvaluatedAt": evaluated_at,
+                        "preDispatchAuthorizationExpiresAt": expires_at,
+                        "providerRouteAttestationDigest": provider_route_attestation_digest,
+                        "transportExecutionId": transport_execution_id,
+                        "leaseIds": exact_lease_ids,
+                        "workerContextDigest": worker_context_digest,
+                        "jobMetadataDigest": job_metadata_digest,
+                        "transportBindingDigest": transport_binding_digest,
+                        "contextDigest": "",
+                    }
+                )
+                cursor = connection.execute(
+                    """
+                    UPDATE web_analysis_live_claim_gate_d_contexts
+                    SET pre_dispatch_authorization_verification_digest = ?,
+                        pre_dispatch_authorization_evaluated_at = ?,
+                        pre_dispatch_authorization_expires_at = ?,
+                        provider_route_attestation_digest = ?,
+                        transport_execution_id = ?, lease_ids_json = ?,
+                        worker_context_digest = ?, job_metadata_digest = ?,
+                        transport_binding_digest = ?, context_digest = ?
+                    WHERE claim_id = ? AND context_digest = ?
+                      AND pre_dispatch_authorization_verification_digest IS NULL
+                      AND provider_route_attestation_digest IS NULL
+                    """,
+                    (
+                        updated.pre_dispatch_authorization_verification_digest,
+                        updated.pre_dispatch_authorization_evaluated_at,
+                        updated.pre_dispatch_authorization_expires_at,
+                        updated.provider_route_attestation_digest,
+                        updated.transport_execution_id,
+                        sqlite3.Binary(_lease_ids_bytes(exact_lease_ids)),
+                        updated.worker_context_digest,
+                        updated.job_metadata_digest,
+                        updated.transport_binding_digest,
+                        updated.context_digest,
+                        current.binding.claim_id,
+                        initial.context_digest,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Gate-D pre-dispatch context lost its atomic race"
+                    )
+                observed = _gate_d_context_from_row(
+                    _load_gate_d_context(connection, current.binding.claim_id),
+                    binding=current.binding,
+                )
+                if observed != updated:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Gate-D pre-dispatch context differs after recording"
+                    )
+            return _issue_claim_handle(StartedWebAnalysisLiveClaim, current, self._authority)
+        except WebAnalysisLiveClaimJournalError:
+            raise
+        except (
+            OSError,
+            RuntimeError,
+            sqlite3.DatabaseError,
+            SupervisorInvocationJournalError,
+            TypeError,
+            ValidationError,
+            ValueError,
+        ) as exc:
+            raise WebAnalysisLiveClaimJournalError(
+                "Gate-D pre-dispatch context failed closed; durable state requires inspection"
+            ) from exc
 
     def mark_dispatch_started(
         self, handle: StartedWebAnalysisLiveClaim
@@ -998,6 +1797,53 @@ class WebAnalysisLiveClaimJournal:
         handle._consume(self._authority)
         entry = self._transition_to_pending(expected, outcome=outcome)
         return entry
+
+    def recover_binding_pending_cleanup(
+        self,
+        binding: WebAnalysisLiveClaimBinding,
+    ) -> WebAnalysisLiveClaimJournalEntry:
+        """Move only one exact unfinished binding to cleanup-only recovery.
+
+        This operation is for quiescent recovery after progression authority was
+        lost.  It never recreates a handle, and an already-pending claim is
+        returned without appending another event.
+        """
+
+        try:
+            exact = _canonical_binding(binding)
+            with self._write() as connection:
+                self._validate_connection(connection)
+                current = _entry_from_row(connection, _load_claim(connection, exact.claim_id))
+                if current.binding != exact:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Targeted recovery binding differs from durable state"
+                    )
+                if current.phase is WebAnalysisLiveClaimPhase.TERMINAL:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Terminal live claim cannot enter targeted recovery"
+                    )
+                if current.phase is WebAnalysisLiveClaimPhase.PENDING_CLEANUP:
+                    return current
+                return self._transition_to_pending_in_transaction(
+                    connection,
+                    current,
+                    outcome=WebAnalysisLiveClaimPendingOutcome.OUTCOME_UNKNOWN,
+                    occurred_at=self._now(),
+                )
+        except WebAnalysisLiveClaimJournalError:
+            raise
+        except (
+            OSError,
+            RuntimeError,
+            sqlite3.DatabaseError,
+            SupervisorInvocationJournalError,
+            TypeError,
+            ValidationError,
+            ValueError,
+        ) as exc:
+            raise WebAnalysisLiveClaimJournalError(
+                "Targeted live claim recovery failed closed"
+            ) from exc
 
     def recover_pending_cleanup(self) -> tuple[WebAnalysisLiveClaimJournalEntry, ...]:
         """Conservatively convert unfinished claims into cleanup-only records."""
@@ -1114,6 +1960,218 @@ class WebAnalysisLiveClaimJournal:
                 "Cleanup failure recording failed closed"
             ) from exc
 
+    def record_terminal_publication_intent(
+        self,
+        entry: WebAnalysisLiveClaimJournalEntry,
+        *,
+        output_root: Path,
+        run_path: Path,
+        run_id: str,
+        receipt_digest: str,
+        cleanup_result_digest: str,
+        resource_absence_digest: str,
+        disposition: WebAnalysisLiveClaimTerminalDisposition,
+        live_attestation_digest: str | None,
+    ) -> WebAnalysisLiveClaimTerminalPublication:
+        """Commit the sole legal receipt publication before any Run appears."""
+
+        if not isinstance(output_root, Path) or not isinstance(run_path, Path):
+            raise WebAnalysisLiveClaimJournalError(
+                "Terminal publication paths must be exact Path values"
+            )
+        if type(disposition) is not WebAnalysisLiveClaimTerminalDisposition:
+            raise WebAnalysisLiveClaimJournalError("Terminal publication disposition is invalid")
+        for digest, label in (
+            (receipt_digest, "terminal publication receipt digest"),
+            (cleanup_result_digest, "terminal publication cleanup digest"),
+            (resource_absence_digest, "terminal publication absence digest"),
+        ):
+            _require_sha256(digest, label=label)
+        if live_attestation_digest is not None:
+            _require_sha256(
+                live_attestation_digest,
+                label="terminal publication live attestation digest",
+            )
+        try:
+            expected = _canonical_entry(entry)
+            if expected.phase is not WebAnalysisLiveClaimPhase.PENDING_CLEANUP:
+                raise WebAnalysisLiveClaimJournalError(
+                    "Terminal publication requires pending cleanup"
+                )
+            publication = WebAnalysisLiveClaimTerminalPublication(
+                claimId=expected.binding.claim_id,
+                claimDigest=expected.binding.claim_digest,
+                pendingClaimStateDigest=expected.state_digest,
+                outputRoot=os.path.abspath(output_root),
+                runPath=os.path.abspath(run_path),
+                runId=run_id,
+                receiptDigest=receipt_digest,
+                cleanupResultDigest=cleanup_result_digest,
+                resourceAbsenceDigest=resource_absence_digest,
+                intendedTerminalDisposition=disposition,
+                liveAttestationDigest=live_attestation_digest,
+            )
+            with self._write() as connection:
+                self._validate_connection(connection)
+                current = _entry_from_row(
+                    connection,
+                    _load_claim(connection, expected.binding.claim_id),
+                )
+                if current != expected:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Terminal publication claim differs from durable pending state"
+                    )
+                _gate_d_context_from_row(
+                    _load_gate_d_context(connection, current.binding.claim_id),
+                    binding=current.binding,
+                )
+                existing = connection.execute(
+                    """
+                    SELECT * FROM web_analysis_live_claim_terminal_publications
+                    WHERE claim_id = ?
+                    """,
+                    (current.binding.claim_id,),
+                ).fetchone()
+                if existing is not None:
+                    observed = _terminal_publication_from_row(cast(sqlite3.Row, existing))
+                    if observed != publication:
+                        raise WebAnalysisLiveClaimJournalError(
+                            "Terminal publication intent was already equivocated"
+                        )
+                    return observed
+                _insert_terminal_publication(connection, publication)
+                observed = _terminal_publication_from_row(
+                    _load_terminal_publication(connection, current.binding.claim_id)
+                )
+                if observed != publication:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Terminal publication intent differs after recording"
+                    )
+                return observed
+        except WebAnalysisLiveClaimJournalError:
+            raise
+        except (
+            OSError,
+            RuntimeError,
+            sqlite3.DatabaseError,
+            SupervisorInvocationJournalError,
+            TypeError,
+            ValidationError,
+            ValueError,
+        ) as exc:
+            raise WebAnalysisLiveClaimJournalError(
+                "Terminal publication intent failed closed; durable state requires inspection"
+            ) from exc
+
+    def anchor_terminal_publication(
+        self,
+        entry: WebAnalysisLiveClaimJournalEntry,
+        publication: WebAnalysisLiveClaimTerminalPublication,
+        candidate: VerifiedWebAnalysisLiveClaimTerminalPublicationCandidate,
+    ) -> WebAnalysisLiveClaimTerminalPublication:
+        """CAS a root proven by the full unanchored-candidate receipt loader.
+
+        A caller cannot supply a bare seal digest here: the call boundary
+        requires the exact typed proof returned only after the candidate loader
+        has checked the complete sealed receipt and its durable intent twice.
+        """
+
+        try:
+            expected_entry = _canonical_entry(entry)
+            expected_publication = _canonical_terminal_publication(publication)
+            if type(candidate) is not VerifiedWebAnalysisLiveClaimTerminalPublicationCandidate:
+                raise WebAnalysisLiveClaimJournalError(
+                    "Terminal publication anchor requires a verified candidate"
+                )
+            from pajin.web_assessment.analysis_skill_compact_live_receipts import (
+                _take_verified_terminal_publication_candidate,
+            )
+
+            candidate_claim_id, candidate_intent_digest, candidate_root_digest = (
+                _take_verified_terminal_publication_candidate(candidate, journal=self)
+            )
+            if expected_entry.phase is not WebAnalysisLiveClaimPhase.PENDING_CLEANUP:
+                raise WebAnalysisLiveClaimJournalError(
+                    "Terminal publication anchor requires pending cleanup"
+                )
+            with self._write() as connection:
+                self._validate_connection(connection)
+                current = _entry_from_row(
+                    connection,
+                    _load_claim(connection, expected_entry.binding.claim_id),
+                )
+                if current != expected_entry:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Terminal publication anchor claim differs"
+                    )
+                stored = _terminal_publication_from_row(
+                    _load_terminal_publication(connection, current.binding.claim_id)
+                )
+                if stored != expected_publication:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Terminal publication anchor intent differs"
+                    )
+                if (
+                    candidate_claim_id != stored.claim_id
+                    or candidate_intent_digest != stored.intent_digest
+                ):
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Verified terminal publication candidate differs from intent"
+                    )
+                if stored.root_digest is not None:
+                    if stored.root_digest != candidate_root_digest:
+                        raise WebAnalysisLiveClaimJournalError(
+                            "Terminal publication root was already equivocated"
+                        )
+                    return stored
+                anchored = WebAnalysisLiveClaimTerminalPublication.model_validate(
+                    {
+                        **stored.model_dump(mode="python", by_alias=True),
+                        "rootDigest": candidate_root_digest,
+                        "publicationDigest": "",
+                    }
+                )
+                cursor = connection.execute(
+                    """
+                    UPDATE web_analysis_live_claim_terminal_publications
+                    SET root_digest = ?, publication_digest = ?
+                    WHERE claim_id = ? AND intent_digest = ?
+                      AND root_digest IS NULL AND publication_digest IS NULL
+                    """,
+                    (
+                        anchored.root_digest,
+                        anchored.publication_digest,
+                        anchored.claim_id,
+                        anchored.intent_digest,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Terminal publication root anchor lost its atomic race"
+                    )
+                observed = _terminal_publication_from_row(
+                    _load_terminal_publication(connection, current.binding.claim_id)
+                )
+                if observed != anchored:
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Terminal publication root differs after anchoring"
+                    )
+                return observed
+        except WebAnalysisLiveClaimJournalError:
+            raise
+        except (
+            OSError,
+            RuntimeError,
+            sqlite3.DatabaseError,
+            SupervisorInvocationJournalError,
+            TypeError,
+            ValidationError,
+            ValueError,
+        ) as exc:
+            raise WebAnalysisLiveClaimJournalError(
+                "Terminal publication root anchoring failed closed"
+            ) from exc
+
     def finalize_terminal(
         self,
         entry: WebAnalysisLiveClaimJournalEntry,
@@ -1153,6 +2211,29 @@ class WebAnalysisLiveClaimJournal:
                     raise WebAnalysisLiveClaimJournalError(
                         "Terminal claim differs from durable pending state"
                     )
+                gate_d_row = connection.execute(
+                    """
+                    SELECT 1 FROM web_analysis_live_claim_gate_d_contexts
+                    WHERE claim_id = ?
+                    """,
+                    (current.binding.claim_id,),
+                ).fetchone()
+                if gate_d_row is not None:
+                    publication = _terminal_publication_from_row(
+                        _load_terminal_publication(connection, current.binding.claim_id)
+                    )
+                    if (
+                        publication.pending_claim_state_digest != current.state_digest
+                        or publication.root_digest is None
+                        or publication.publication_digest is None
+                        or publication.intended_terminal_disposition is not disposition
+                        or publication.cleanup_result_digest != cleanup_result_digest
+                        or publication.resource_absence_digest != resource_absence_digest
+                        or publication.receipt_digest != terminal_receipt_digest
+                    ):
+                        raise WebAnalysisLiveClaimJournalError(
+                            "Terminal claim differs from its anchored publication"
+                        )
                 terminal_at = self._now()
                 state_digest = _state_digest(
                     binding_digest=current.binding.claim_digest,
@@ -1267,6 +2348,88 @@ class WebAnalysisLiveClaimJournal:
             ValueError,
         ) as exc:
             raise WebAnalysisLiveClaimJournalError("Live claim inspection failed closed") from exc
+
+    def inspect_gate_d_context(
+        self,
+        claim_id: str,
+    ) -> WebAnalysisLiveClaimGateDContext | None:
+        """Read exact Gate-D evidence without recreating progression authority."""
+
+        if type(claim_id) is not str or not claim_id.startswith("web-analysis-live-claim:"):
+            raise WebAnalysisLiveClaimJournalError("Live claim ID is invalid")
+        try:
+            with self._readonly() as connection:
+                self._validate_connection(connection)
+                row = connection.execute(
+                    """
+                    SELECT * FROM web_analysis_live_claim_gate_d_contexts
+                    WHERE claim_id = ?
+                    """,
+                    (claim_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                binding = _entry_from_row(connection, _load_claim(connection, claim_id)).binding
+                return _gate_d_context_from_row(cast(sqlite3.Row, row), binding=binding)
+        except WebAnalysisLiveClaimJournalError:
+            raise
+        except (
+            OSError,
+            RuntimeError,
+            sqlite3.DatabaseError,
+            SupervisorInvocationJournalError,
+            TypeError,
+            ValidationError,
+            ValueError,
+        ) as exc:
+            raise WebAnalysisLiveClaimJournalError(
+                "Gate-D context inspection failed closed"
+            ) from exc
+
+    def inspect_terminal_publication(
+        self,
+        claim_id: str,
+    ) -> WebAnalysisLiveClaimTerminalPublication | None:
+        """Read the durable same-publication intent or sealed-root anchor."""
+
+        if type(claim_id) is not str or not claim_id.startswith("web-analysis-live-claim:"):
+            raise WebAnalysisLiveClaimJournalError("Live claim ID is invalid")
+        try:
+            with self._readonly() as connection:
+                self._validate_connection(connection)
+                row = connection.execute(
+                    """
+                    SELECT * FROM web_analysis_live_claim_terminal_publications
+                    WHERE claim_id = ?
+                    """,
+                    (claim_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                publication = _terminal_publication_from_row(cast(sqlite3.Row, row))
+                claim = _entry_from_row(connection, _load_claim(connection, claim_id))
+                if (
+                    publication.claim_id != claim.binding.claim_id
+                    or publication.claim_digest != claim.binding.claim_digest
+                ):
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Terminal publication differs from its live claim"
+                    )
+                return publication
+        except WebAnalysisLiveClaimJournalError:
+            raise
+        except (
+            OSError,
+            RuntimeError,
+            sqlite3.DatabaseError,
+            SupervisorInvocationJournalError,
+            TypeError,
+            ValidationError,
+            ValueError,
+        ) as exc:
+            raise WebAnalysisLiveClaimJournalError(
+                "Terminal publication inspection failed closed"
+            ) from exc
 
     def inspect_preparation(
         self, preparation_identity: str
@@ -1422,7 +2585,45 @@ class WebAnalysisLiveClaimJournal:
                     raise WebAnalysisLiveClaimJournalError(
                         "Dispatch slot differs or was already consumed"
                     )
+                context_row = connection.execute(
+                    """
+                    SELECT * FROM web_analysis_live_claim_gate_d_contexts
+                    WHERE claim_id = ?
+                    """,
+                    (current.binding.claim_id,),
+                ).fetchone()
+                gate_d_context: WebAnalysisLiveClaimGateDContext | None = None
+                if context_row is not None:
+                    gate_d_context = _gate_d_context_from_row(
+                        cast(sqlite3.Row, context_row),
+                        binding=current.binding,
+                    )
+                    if gate_d_context.pre_dispatch_authorization_verification_digest is None:
+                        raise WebAnalysisLiveClaimJournalError(
+                            "Gate-D dispatch requires complete pre-dispatch context"
+                        )
+                    if gate_d_context.provider_route_attestation_digest is None:
+                        raise WebAnalysisLiveClaimJournalError(
+                            "Gate-D dispatch requires provider route attestation"
+                        )
                 dispatch_started_at = self._now()
+                if (
+                    gate_d_context is not None
+                    and gate_d_context.pre_dispatch_authorization_evaluated_at is not None
+                    and _parse_timestamp(dispatch_started_at)
+                    < _parse_timestamp(gate_d_context.pre_dispatch_authorization_evaluated_at)
+                ):
+                    raise WebAnalysisLiveClaimJournalError(
+                        "Dispatch marker predates Gate-D re-verification"
+                    )
+                if gate_d_context is not None:
+                    expires_at = gate_d_context.pre_dispatch_authorization_expires_at
+                    if expires_at is None or _parse_timestamp(
+                        dispatch_started_at
+                    ) >= _parse_timestamp(expires_at):
+                        raise WebAnalysisLiveClaimJournalError(
+                            "Gate-D authorization expired before dispatch marker"
+                        )
                 state_digest = _state_digest(
                     binding_digest=current.binding.claim_digest,
                     phase=WebAnalysisLiveClaimPhase.LIVE_START,
@@ -1529,6 +2730,26 @@ class WebAnalysisLiveClaimJournal:
             raise WebAnalysisLiveClaimJournalError(
                 "Only unfinished claims can enter pending-cleanup"
             )
+        context_row = connection.execute(
+            """
+            SELECT * FROM web_analysis_live_claim_gate_d_contexts
+            WHERE claim_id = ?
+            """,
+            (current.binding.claim_id,),
+        ).fetchone()
+        if context_row is not None:
+            gate_d_context = _gate_d_context_from_row(
+                cast(sqlite3.Row, context_row),
+                binding=current.binding,
+            )
+            if (
+                gate_d_context.pre_dispatch_authorization_evaluated_at is not None
+                and _parse_timestamp(occurred_at)
+                < _parse_timestamp(gate_d_context.pre_dispatch_authorization_evaluated_at)
+            ):
+                raise WebAnalysisLiveClaimJournalError(
+                    "Pending-cleanup marker predates Gate-D re-verification"
+                )
         state_digest = _state_digest(
             binding_digest=current.binding.claim_digest,
             phase=WebAnalysisLiveClaimPhase.PENDING_CLEANUP,
@@ -1818,6 +3039,42 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         ("web_analysis_live_claims", "claim_id", "claim_id", "NO ACTION", "NO ACTION")
     }:
         raise WebAnalysisLiveClaimJournalError("Live claim journal foreign key differs")
+    gate_d_foreign_key_rows = connection.execute(
+        "PRAGMA foreign_key_list(web_analysis_live_claim_gate_d_contexts)"
+    ).fetchall()
+    gate_d_signatures = {
+        (
+            str(row["table"]),
+            str(row["from"]),
+            str(row["to"]),
+            str(row["on_update"]),
+            str(row["on_delete"]),
+        )
+        for row in gate_d_foreign_key_rows
+    }
+    if gate_d_signatures != {
+        ("web_analysis_live_claims", "claim_id", "claim_id", "NO ACTION", "NO ACTION")
+    }:
+        raise WebAnalysisLiveClaimJournalError("Live claim Gate-D foreign key differs")
+    publication_foreign_key_rows = connection.execute(
+        "PRAGMA foreign_key_list(web_analysis_live_claim_terminal_publications)"
+    ).fetchall()
+    publication_signatures = {
+        (
+            str(row["table"]),
+            str(row["from"]),
+            str(row["to"]),
+            str(row["on_update"]),
+            str(row["on_delete"]),
+        )
+        for row in publication_foreign_key_rows
+    }
+    if publication_signatures != {
+        ("web_analysis_live_claims", "claim_id", "claim_id", "NO ACTION", "NO ACTION")
+    }:
+        raise WebAnalysisLiveClaimJournalError(
+            "Live claim terminal publication foreign key differs"
+        )
     if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise WebAnalysisLiveClaimJournalError("Live claim journal has orphaned events")
     quick_check = connection.execute("PRAGMA quick_check").fetchall()
@@ -1838,6 +3095,261 @@ def _binding_bytes(binding: WebAnalysisLiveClaimBinding) -> bytes:
         label="Web analysis live claim binding",
         max_bytes=_MAX_BINDING_BYTES,
     )
+
+
+def _timestamp_from_datetime(value: datetime, *, label: str) -> str:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise WebAnalysisLiveClaimJournalError(f"{label} must be timezone-aware")
+    if value.utcoffset() != UTC.utcoffset(value):
+        raise WebAnalysisLiveClaimJournalError(f"{label} must use UTC")
+    return value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _parse_timestamp(value: str) -> datetime:
+    _validate_timestamp(value, field="timestamp")
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _canonical_lease_ids(value: tuple[str, ...]) -> tuple[str, ...]:
+    if type(value) is not tuple or len(value) != 1:
+        raise WebAnalysisLiveClaimJournalError(
+            "Gate-D context requires a tuple containing exactly one lease identity"
+        )
+    for lease_id in value:
+        if type(lease_id) is not str or len(lease_id) != 38 or not lease_id.startswith("lease_"):
+            raise WebAnalysisLiveClaimJournalError("Gate-D lease identity is invalid")
+        suffix = lease_id.removeprefix("lease_")
+        try:
+            decoded = bytes.fromhex(suffix)
+        except ValueError as exc:
+            raise WebAnalysisLiveClaimJournalError("Gate-D lease identity is invalid") from exc
+        if len(decoded) != 16 or suffix != suffix.lower():
+            raise WebAnalysisLiveClaimJournalError("Gate-D lease identity is invalid")
+    return value
+
+
+def _lease_ids_bytes(lease_ids: tuple[str, ...]) -> bytes:
+    return canonical_json_bytes(
+        lease_ids,
+        label="Web analysis Gate-D lease identities",
+        max_bytes=512,
+    )
+
+
+def _insert_gate_d_context(
+    connection: sqlite3.Connection,
+    context: WebAnalysisLiveClaimGateDContext,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO web_analysis_live_claim_gate_d_contexts (
+            claim_id, claim_digest,
+            initial_authorization_verification_digest,
+            initial_authorization_evaluated_at, initial_authorization_expires_at,
+            pre_dispatch_authorization_verification_digest,
+            pre_dispatch_authorization_evaluated_at,
+            pre_dispatch_authorization_expires_at,
+            provider_route_attestation_digest,
+            transport_execution_id, lease_ids_json,
+            worker_context_digest, job_metadata_digest,
+            transport_binding_digest, context_digest
+        ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)
+        """,
+        (
+            context.claim_id,
+            context.claim_digest,
+            context.initial_authorization_verification_digest,
+            context.initial_authorization_evaluated_at,
+            context.initial_authorization_expires_at,
+            context.context_digest,
+        ),
+    )
+
+
+def _load_gate_d_context(connection: sqlite3.Connection, claim_id: str) -> sqlite3.Row:
+    row = connection.execute(
+        """
+        SELECT * FROM web_analysis_live_claim_gate_d_contexts
+        WHERE claim_id = ?
+        """,
+        (claim_id,),
+    ).fetchone()
+    if row is None:
+        raise WebAnalysisLiveClaimJournalError("Gate-D context was not found")
+    return cast(sqlite3.Row, row)
+
+
+def _gate_d_context_from_row(
+    row: sqlite3.Row,
+    *,
+    binding: WebAnalysisLiveClaimBinding,
+) -> WebAnalysisLiveClaimGateDContext:
+    try:
+        lease_ids_raw = row["lease_ids_json"]
+        lease_ids: tuple[str, ...] | None
+        if lease_ids_raw is None:
+            lease_ids = None
+        else:
+            if type(lease_ids_raw) is not bytes or not lease_ids_raw:
+                raise WebAnalysisLiveClaimJournalError("Gate-D lease identity bytes are invalid")
+            decoded = parse_strict_json_bytes(
+                lease_ids_raw,
+                label="Web analysis Gate-D lease identities",
+                max_bytes=512,
+            )
+            if type(decoded) is not list:
+                raise WebAnalysisLiveClaimJournalError("Gate-D lease identity list is invalid")
+            lease_ids = _canonical_lease_ids(tuple(decoded))
+            if _lease_ids_bytes(lease_ids) != lease_ids_raw:
+                raise WebAnalysisLiveClaimJournalError(
+                    "Gate-D lease identity bytes are not canonical"
+                )
+        context = WebAnalysisLiveClaimGateDContext(
+            claimId=_required_text(row, "claim_id"),
+            claimDigest=_required_digest(row, "claim_digest"),
+            initialAuthorizationVerificationDigest=_required_digest(
+                row,
+                "initial_authorization_verification_digest",
+            ),
+            initialAuthorizationEvaluatedAt=_required_timestamp(
+                row,
+                "initial_authorization_evaluated_at",
+            ),
+            initialAuthorizationExpiresAt=_required_timestamp(
+                row,
+                "initial_authorization_expires_at",
+            ),
+            preDispatchAuthorizationVerificationDigest=_optional_digest(
+                row,
+                "pre_dispatch_authorization_verification_digest",
+            ),
+            preDispatchAuthorizationEvaluatedAt=_optional_timestamp(
+                row,
+                "pre_dispatch_authorization_evaluated_at",
+            ),
+            preDispatchAuthorizationExpiresAt=_optional_timestamp(
+                row,
+                "pre_dispatch_authorization_expires_at",
+            ),
+            providerRouteAttestationDigest=_optional_digest(
+                row,
+                "provider_route_attestation_digest",
+            ),
+            transportExecutionId=_optional_text(row, "transport_execution_id"),
+            leaseIds=lease_ids,
+            workerContextDigest=_optional_digest(row, "worker_context_digest"),
+            jobMetadataDigest=_optional_digest(row, "job_metadata_digest"),
+            transportBindingDigest=_optional_digest(row, "transport_binding_digest"),
+            contextDigest=_required_digest(row, "context_digest"),
+        )
+        if context.claim_id != binding.claim_id or context.claim_digest != binding.claim_digest:
+            raise WebAnalysisLiveClaimJournalError("Gate-D context differs from its live claim")
+        if (
+            context.transport_execution_id is not None
+            and context.transport_execution_id != f"exec_{binding.resources.resource_owner}"
+        ):
+            raise WebAnalysisLiveClaimJournalError(
+                "Gate-D transport execution differs from its live claim"
+            )
+        return context
+    except WebAnalysisLiveClaimJournalError:
+        raise
+    except (TypeError, ValidationError, ValueError) as exc:
+        raise WebAnalysisLiveClaimJournalError(
+            "Gate-D context row failed integrity checks"
+        ) from exc
+
+
+def _canonical_terminal_publication(
+    publication: WebAnalysisLiveClaimTerminalPublication,
+) -> WebAnalysisLiveClaimTerminalPublication:
+    if type(publication) is not WebAnalysisLiveClaimTerminalPublication:
+        raise WebAnalysisLiveClaimJournalError("Terminal publication type is invalid")
+    try:
+        return WebAnalysisLiveClaimTerminalPublication.model_validate(
+            publication.model_dump(mode="python", by_alias=True)
+        )
+    except (TypeError, ValidationError, ValueError) as exc:
+        raise WebAnalysisLiveClaimJournalError("Terminal publication is invalid") from exc
+
+
+def _insert_terminal_publication(
+    connection: sqlite3.Connection,
+    publication: WebAnalysisLiveClaimTerminalPublication,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO web_analysis_live_claim_terminal_publications (
+            claim_id, claim_digest, pending_claim_state_digest,
+            output_root, run_path, run_id, receipt_digest,
+            cleanup_result_digest, resource_absence_digest,
+            intended_terminal_disposition, live_attestation_digest,
+            intent_digest, root_digest, publication_digest
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            publication.claim_id,
+            publication.claim_digest,
+            publication.pending_claim_state_digest,
+            publication.output_root,
+            publication.run_path,
+            publication.run_id,
+            publication.receipt_digest,
+            publication.cleanup_result_digest,
+            publication.resource_absence_digest,
+            publication.intended_terminal_disposition.value,
+            publication.live_attestation_digest,
+            publication.intent_digest,
+            publication.root_digest,
+            publication.publication_digest,
+        ),
+    )
+
+
+def _load_terminal_publication(
+    connection: sqlite3.Connection,
+    claim_id: str,
+) -> sqlite3.Row:
+    row = connection.execute(
+        """
+        SELECT * FROM web_analysis_live_claim_terminal_publications
+        WHERE claim_id = ?
+        """,
+        (claim_id,),
+    ).fetchone()
+    if row is None:
+        raise WebAnalysisLiveClaimJournalError("Terminal publication was not found")
+    return cast(sqlite3.Row, row)
+
+
+def _terminal_publication_from_row(
+    row: sqlite3.Row,
+) -> WebAnalysisLiveClaimTerminalPublication:
+    try:
+        return WebAnalysisLiveClaimTerminalPublication(
+            claimId=_required_text(row, "claim_id"),
+            claimDigest=_required_digest(row, "claim_digest"),
+            pendingClaimStateDigest=_required_digest(row, "pending_claim_state_digest"),
+            outputRoot=_required_text(row, "output_root"),
+            runPath=_required_text(row, "run_path"),
+            runId=_required_text(row, "run_id"),
+            receiptDigest=_required_digest(row, "receipt_digest"),
+            cleanupResultDigest=_required_digest(row, "cleanup_result_digest"),
+            resourceAbsenceDigest=_required_digest(row, "resource_absence_digest"),
+            intendedTerminalDisposition=WebAnalysisLiveClaimTerminalDisposition(
+                _required_text(row, "intended_terminal_disposition")
+            ),
+            liveAttestationDigest=_optional_digest(row, "live_attestation_digest"),
+            intentDigest=_required_digest(row, "intent_digest"),
+            rootDigest=_optional_digest(row, "root_digest"),
+            publicationDigest=_optional_digest(row, "publication_digest"),
+        )
+    except WebAnalysisLiveClaimJournalError:
+        raise
+    except (TypeError, ValidationError, ValueError) as exc:
+        raise WebAnalysisLiveClaimJournalError(
+            "Terminal publication row failed integrity checks"
+        ) from exc
 
 
 def _canonical_binding(binding: WebAnalysisLiveClaimBinding) -> WebAnalysisLiveClaimBinding:
@@ -2472,6 +3984,7 @@ __all__ = [
     "ReservedWebAnalysisLiveClaim",
     "StartedWebAnalysisLiveClaim",
     "WebAnalysisLiveClaimBinding",
+    "WebAnalysisLiveClaimGateDContext",
     "WebAnalysisLiveClaimJournal",
     "WebAnalysisLiveClaimJournalEntry",
     "WebAnalysisLiveClaimJournalError",
@@ -2479,6 +3992,7 @@ __all__ = [
     "WebAnalysisLiveClaimPhase",
     "WebAnalysisLiveClaimResourceLocator",
     "WebAnalysisLiveClaimTerminalDisposition",
+    "WebAnalysisLiveClaimTerminalPublication",
     "WebAnalysisOneCallAuthorizationCoordinate",
     "build_web_analysis_live_claim_binding",
 ]

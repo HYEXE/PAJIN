@@ -1,6 +1,9 @@
 import base64
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
+from typing import Any, cast
 from urllib.parse import quote, quote_plus
 
 import pytest
@@ -46,6 +49,132 @@ def test_secret_lease_is_one_use_audience_bound_and_redacted() -> None:
     assert revoked.remaining_uses == 0
     assert "provider/example/api-key" not in str(snapshot)
     assert "longer-secret-value" not in str(snapshot)
+
+
+def test_exact_secret_lease_id_preserves_normal_lease_semantics() -> None:
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    broker = SecretBroker(clock=lambda: now)
+    broker.register("provider/example/api-key", "exact-id-secret")
+
+    lease = broker.issue_exact(
+        "provider/example/api-key",
+        lease_id=f"lease_{'a' * 32}",
+        audience="worker:exact",
+        binding="provider-api-key",
+        scope="claim_exact",
+        ttl_seconds=20,
+        max_uses=1,
+    )
+
+    assert lease.lease_id == f"lease_{'a' * 32}"
+    assert lease.issued_at == now
+    assert lease.expires_at == now + timedelta(seconds=20)
+    material = broker.materialize(
+        lease.lease_id,
+        audience="worker:exact",
+        scope="claim_exact",
+    )
+    assert material.value == "exact-id-secret"
+    with pytest.raises(PermissionError, match="no remaining uses"):
+        broker.materialize(
+            lease.lease_id,
+            audience="worker:exact",
+            scope="claim_exact",
+        )
+
+
+def test_revoking_unmaterialized_exact_lease_eliminates_remaining_authority() -> None:
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    broker = SecretBroker(clock=lambda: now)
+    broker.register("provider/example/api-key", "exact-id-secret")
+    lease = broker.issue_exact(
+        "provider/example/api-key",
+        lease_id=f"lease_{'c' * 32}",
+        audience="worker:exact",
+        binding="provider-api-key",
+        scope="claim_exact",
+        ttl_seconds=20,
+        max_uses=1,
+    )
+
+    revoked = broker.revoke(
+        lease.lease_id,
+        "cleanup before materialization",
+        scope="claim_exact",
+    )
+    inspected = broker.inspect(
+        lease.lease_id,
+        audience="worker:exact",
+        scope="claim_exact",
+    )
+
+    assert revoked.status is SecretLeaseStatus.REVOKED
+    assert revoked.remaining_uses == 0
+    assert inspected == revoked
+
+
+@pytest.mark.parametrize(
+    "lease_id",
+    [
+        "",
+        "lease_" + "a" * 31,
+        "lease_" + "a" * 33,
+        "lease_" + "A" * 32,
+        "lease_" + "g" * 32,
+        "other_" + "a" * 32,
+        "lease_" + "a" * 32 + "\n",
+    ],
+)
+def test_exact_secret_lease_id_rejects_noncanonical_values(lease_id: str) -> None:
+    broker = SecretBroker()
+    broker.register("provider/example/api-key", "exact-id-secret")
+
+    with pytest.raises(ValueError, match=r"lease_\[a-f0-9\]"):
+        broker.issue_exact(
+            "provider/example/api-key",
+            lease_id=lease_id,
+            audience="worker:exact",
+            binding="provider-api-key",
+        )
+
+
+def test_exact_secret_lease_id_rejects_non_string_value() -> None:
+    broker = SecretBroker()
+    broker.register("provider/example/api-key", "exact-id-secret")
+
+    with pytest.raises(TypeError, match="must be a string"):
+        broker.issue_exact(
+            "provider/example/api-key",
+            lease_id=cast(Any, 1),
+            audience="worker:exact",
+            binding="provider-api-key",
+        )
+
+
+def test_exact_secret_lease_id_duplicate_is_atomic_under_concurrent_issuance() -> None:
+    broker = SecretBroker()
+    broker.register("provider/example/api-key", "exact-id-secret")
+    lease_id = f"lease_{'b' * 32}"
+    ready = Barrier(2)
+
+    def issue() -> str:
+        ready.wait()
+        try:
+            lease = broker.issue_exact(
+                "provider/example/api-key",
+                lease_id=lease_id,
+                audience="worker:exact",
+                binding="provider-api-key",
+            )
+        except ValueError:
+            return "duplicate"
+        return lease.status.value
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [future.result() for future in (pool.submit(issue), pool.submit(issue))]
+
+    assert sorted(results) == ["active", "duplicate"]
+    assert [item["lease_id"] for item in broker.snapshot()] == [lease_id]
 
 
 def test_secret_lease_expires_before_materialization() -> None:

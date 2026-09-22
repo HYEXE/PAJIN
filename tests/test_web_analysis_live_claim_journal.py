@@ -11,10 +11,12 @@ import sqlite3
 import subprocess
 import sys
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
+from threading import Barrier
 from typing import Any, cast
 from unittest.mock import Mock
 
@@ -32,6 +34,7 @@ from pajin.web_assessment.analysis_live_claim_journal import (
     ReservedWebAnalysisLiveClaim,
     StartedWebAnalysisLiveClaim,
     WebAnalysisLiveClaimBinding,
+    WebAnalysisLiveClaimGateDContext,
     WebAnalysisLiveClaimJournal,
     WebAnalysisLiveClaimJournalEntry,
     WebAnalysisLiveClaimJournalError,
@@ -164,6 +167,39 @@ def _journal(path: Path) -> WebAnalysisLiveClaimJournal:
     return WebAnalysisLiveClaimJournal(path, clock=_StepClock(), allow_create=True)
 
 
+def _reserve_gate_d(
+    journal: WebAnalysisLiveClaimJournal,
+    binding: WebAnalysisLiveClaimBinding,
+) -> ReservedWebAnalysisLiveClaim:
+    return journal.reserve_with_gate_d_context(
+        binding,
+        initial_authorization_verification_digest=_digest("initial-authorization"),
+        initial_authorization_evaluated_at=NOW - timedelta(seconds=1),
+        initial_authorization_expires_at=NOW + timedelta(minutes=1),
+    )
+
+
+def _record_gate_d(
+    journal: WebAnalysisLiveClaimJournal,
+    started: StartedWebAnalysisLiveClaim,
+    *,
+    tag: str = "a",
+) -> StartedWebAnalysisLiveClaim:
+    binding = started.entry.binding
+    return journal.record_gate_d_pre_dispatch_context(
+        started,
+        pre_dispatch_authorization_verification_digest=_digest(f"pre-dispatch-authorization:{tag}"),
+        pre_dispatch_authorization_evaluated_at=NOW + timedelta(microseconds=1),
+        pre_dispatch_authorization_expires_at=NOW + timedelta(minutes=1),
+        provider_route_attestation_digest=_digest(f"provider-route-attestation:{tag}"),
+        transport_execution_id=f"exec_{binding.resources.resource_owner}",
+        lease_ids=(f"lease_{_digest(f'lease:{tag}')[:32]}",),
+        worker_context_digest=_digest(f"worker-context:{tag}"),
+        job_metadata_digest=_digest(f"job-metadata:{tag}"),
+        transport_binding_digest=_digest(f"transport-binding:{tag}"),
+    )
+
+
 def _spawn_reserve(
     path: str,
     expected_store_id: str,
@@ -188,6 +224,30 @@ def _spawn_reserve(
         output.put(f"error:{type(exc).__name__}:{exc}")
     else:
         output.put("claimed")
+
+
+def _spawn_targeted_recovery(
+    path: str,
+    expected_store_id: str,
+    binding_json: str,
+    start: Any,
+    ready: Any,
+    output: Any,
+) -> None:
+    try:
+        journal = WebAnalysisLiveClaimJournal(
+            Path(path), expected_store_id=expected_store_id, allow_create=False
+        )
+        binding = WebAnalysisLiveClaimBinding.model_validate_json(binding_json)
+        ready.put("ready")
+        if not start.wait(timeout=15):
+            output.put("error:start-timeout")
+            return
+        recovered = journal.recover_binding_pending_cleanup(binding)
+    except Exception as exc:  # pragma: no cover - surfaced by the parent assertion
+        output.put(f"error:{type(exc).__name__}:{exc}")
+    else:
+        output.put(recovered.model_dump_json(by_alias=True))
 
 
 def _terminate_processes(processes: list[Any]) -> None:
@@ -534,6 +594,259 @@ signal.pause()
     assert second_reopen.inspect(binding.claim_id) == terminal
 
 
+@pytest.mark.parametrize(
+    ("starting_phase", "expected_dispatch_count"),
+    (("reservation", 0), ("live-start", 0), ("dispatch-started", 1)),
+)
+def test_targeted_recovery_moves_only_exact_binding_and_is_idempotent(
+    tmp_path: Path,
+    starting_phase: str,
+    expected_dispatch_count: int,
+) -> None:
+    journal = _journal(tmp_path / f"live-claims-targeted-{starting_phase}.sqlite3")
+    target = _binding()
+    other = _binding(
+        preparation_tag="preparation-other",
+        admission_tag="admission-other",
+        authorization_tag="authorization-other",
+    )
+    target_handle: Any = journal.reserve(target)
+    if starting_phase in {"live-start", "dispatch-started"}:
+        target_handle = journal.begin_live(target_handle)
+    if starting_phase == "dispatch-started":
+        target_handle = journal.mark_dispatch_started(target_handle)
+    target_before = target_handle.entry
+    other_before = journal.reserve(other).entry
+
+    recovered = journal.recover_binding_pending_cleanup(target)
+
+    assert type(recovered) is WebAnalysisLiveClaimJournalEntry
+    assert recovered.phase is WebAnalysisLiveClaimPhase.PENDING_CLEANUP
+    assert recovered.pending_outcome is WebAnalysisLiveClaimPendingOutcome.OUTCOME_UNKNOWN
+    assert recovered.dispatch_count == expected_dispatch_count
+    assert len(recovered.event_digests) == len(target_before.event_digests) + 1
+    assert journal.inspect(other.claim_id) == other_before
+
+    repeated = journal.recover_binding_pending_cleanup(target)
+    assert repeated == recovered
+    assert repeated.event_digests == recovered.event_digests
+    assert journal.inspect(other.claim_id) == other_before
+
+    def advance_stale_handle() -> object:
+        if starting_phase == "reservation":
+            return journal.begin_live(target_handle)
+        if starting_phase == "live-start":
+            return journal.mark_dispatch_started(target_handle)
+        return journal.mark_pending_cleanup(
+            target_handle,
+            outcome=WebAnalysisLiveClaimPendingOutcome.SUCCESS_OBSERVED,
+        )
+
+    with pytest.raises(WebAnalysisLiveClaimJournalError):
+        advance_stale_handle()
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="foreign or consumed"):
+        advance_stale_handle()
+    assert journal.inspect(target.claim_id) == recovered
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="handle type is invalid"):
+        journal.begin_live(cast(Any, recovered))
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (
+        WebAnalysisLiveClaimPendingOutcome.NOT_DISPATCHED,
+        WebAnalysisLiveClaimPendingOutcome.SUCCESS_OBSERVED,
+        WebAnalysisLiveClaimPendingOutcome.FAILURE_OBSERVED,
+    ),
+)
+def test_targeted_recovery_preserves_known_pending_outcomes(
+    tmp_path: Path,
+    outcome: WebAnalysisLiveClaimPendingOutcome,
+) -> None:
+    journal = _journal(tmp_path / f"live-claims-targeted-{outcome.value}.sqlite3")
+    binding = _binding()
+    handle: Any = journal.reserve(binding)
+    if outcome is not WebAnalysisLiveClaimPendingOutcome.NOT_DISPATCHED:
+        handle = journal.mark_dispatch_started(journal.begin_live(handle))
+    pending = journal.mark_pending_cleanup(handle, outcome=outcome)
+
+    recovered = journal.recover_binding_pending_cleanup(binding)
+
+    assert recovered == pending
+    assert recovered.pending_outcome is outcome
+    assert recovered.event_digests == pending.event_digests
+
+
+def test_targeted_recovery_rejects_foreign_terminal_and_tampered_claims(
+    tmp_path: Path,
+) -> None:
+    journal = _journal(tmp_path / "live-claims-targeted-rejections.sqlite3")
+    binding = _binding()
+    reserved = journal.reserve(binding).entry
+    foreign_bindings = (
+        _binding(
+            preparation_tag="preparation-foreign",
+            admission_tag="admission-foreign",
+            authorization_tag="authorization-foreign",
+        ),
+        _binding(
+            preparation_tag="preparation-a",
+            admission_tag="admission-new-authorization",
+            authorization_tag="authorization-new",
+        ),
+        _binding(
+            preparation_tag="preparation-new",
+            admission_tag="admission-new-preparation",
+            authorization_tag="authorization-a",
+        ),
+    )
+
+    for foreign in foreign_bindings:
+        with pytest.raises(WebAnalysisLiveClaimJournalError, match="was not found"):
+            journal.recover_binding_pending_cleanup(foreign)
+    assert journal.inspect(binding.claim_id) == reserved
+
+    pending = journal.recover_binding_pending_cleanup(binding)
+    terminal = journal.finalize_terminal(
+        pending,
+        disposition=WebAnalysisLiveClaimTerminalDisposition.ABANDONED,
+        cleanup_result_digest=SHA_A,
+        resource_absence_digest=SHA_B,
+        terminal_receipt_digest=SHA_C,
+    )
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="Terminal live claim"):
+        journal.recover_binding_pending_cleanup(binding)
+    assert journal.inspect(binding.claim_id) == terminal
+
+    tampered_binding = _binding(
+        preparation_tag="preparation-tampered",
+        admission_tag="admission-tampered",
+        authorization_tag="authorization-tampered",
+    )
+    tampered = journal.reserve(tampered_binding).entry
+    with sqlite3.connect(journal.path) as connection:
+        connection.execute("DROP TRIGGER web_analysis_live_claims_transition")
+        connection.execute(
+            "UPDATE web_analysis_live_claims SET state_digest = ? WHERE claim_id = ?",
+            (_other_digest(tampered.state_digest), tampered_binding.claim_id),
+        )
+        connection.execute(journal_module._CLAIMS_TRANSITION_SQL)
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="integrity checks"):
+        journal.recover_binding_pending_cleanup(tampered_binding)
+
+
+@pytest.mark.parametrize("uncertainty", ("rollback", "committed"))
+def test_targeted_recovery_uncertainty_is_retryable_without_touching_other_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    uncertainty: str,
+) -> None:
+    journal = _journal(tmp_path / f"live-claims-targeted-{uncertainty}.sqlite3")
+    binding = _binding()
+    dispatched = journal.mark_dispatch_started(journal.begin_live(journal.reserve(binding))).entry
+    other = _binding(
+        preparation_tag="preparation-other",
+        admission_tag="admission-other",
+        authorization_tag="authorization-other",
+    )
+    other_before = journal.reserve(other).entry
+    real_transaction = cast(Any, journal_module)._write_transaction_opened
+
+    @contextmanager
+    def uncertain_transaction(path: Path) -> Iterator[sqlite3.Connection]:
+        if uncertainty == "rollback":
+            with real_transaction(path) as connection:
+                yield connection
+                raise RuntimeError("injected pre-commit rollback")
+        else:
+            with real_transaction(path) as connection:
+                yield connection
+            raise RuntimeError("injected post-commit uncertainty")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(journal_module, "_write_transaction_opened", uncertain_transaction)
+        with pytest.raises(WebAnalysisLiveClaimJournalError, match="failed closed"):
+            journal.recover_binding_pending_cleanup(binding)
+
+    durable = journal.inspect(binding.claim_id)
+    assert durable is not None
+    assert durable.phase is (
+        WebAnalysisLiveClaimPhase.LIVE_START
+        if uncertainty == "rollback"
+        else WebAnalysisLiveClaimPhase.PENDING_CLEANUP
+    )
+    assert durable.dispatch_count == 1
+    assert journal.inspect(other.claim_id) == other_before
+
+    recovered = journal.recover_binding_pending_cleanup(binding)
+    assert recovered.phase is WebAnalysisLiveClaimPhase.PENDING_CLEANUP
+    assert recovered.pending_outcome is WebAnalysisLiveClaimPendingOutcome.OUTCOME_UNKNOWN
+    assert recovered.dispatch_count == 1
+    assert len(recovered.event_digests) == len(dispatched.event_digests) + 1
+    assert journal.inspect(other.claim_id) == other_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="spawned SQLite process race requires POSIX")
+def test_two_processes_targeted_recovery_converge_without_touching_other_rows(
+    tmp_path: Path,
+) -> None:
+    journal = _journal(tmp_path / "live-claims-targeted-process-race.sqlite3")
+    binding = _binding()
+    started = journal.begin_live(journal.reserve(binding)).entry
+    other = _binding(
+        preparation_tag="preparation-other",
+        admission_tag="admission-other",
+        authorization_tag="authorization-other",
+    )
+    other_before = journal.reserve(other).entry
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    ready = context.Queue()
+    output = context.Queue()
+    processes = [
+        context.Process(
+            target=_spawn_targeted_recovery,
+            args=(
+                str(journal.path),
+                journal.store_id,
+                binding.model_dump_json(by_alias=True),
+                start,
+                ready,
+                output,
+            ),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+    try:
+        assert [ready.get(timeout=20) for _ in processes] == ["ready", "ready"]
+        start.set()
+        raw_results = [output.get(timeout=20) for _ in processes]
+    except queue.Empty:
+        pytest.fail("spawned targeted-recovery process did not report an outcome")
+    finally:
+        _terminate_processes(processes)
+        ready.close()
+        output.close()
+        ready.join_thread()
+        output.join_thread()
+
+    assert all(process.exitcode == 0 for process in processes)
+    assert all(not result.startswith("error:") for result in raw_results)
+    results = tuple(
+        WebAnalysisLiveClaimJournalEntry.model_validate_json(item) for item in raw_results
+    )
+    assert results[0] == results[1]
+    assert results[0].phase is WebAnalysisLiveClaimPhase.PENDING_CLEANUP
+    assert results[0].pending_outcome is WebAnalysisLiveClaimPendingOutcome.OUTCOME_UNKNOWN
+    assert results[0].dispatch_count == 0
+    assert len(results[0].event_digests) == len(started.event_digests) + 1
+    assert journal.inspect(binding.claim_id) == results[0]
+    assert journal.inspect(other.claim_id) == other_before
+
+
 def test_cleanup_failure_appends_evidence_but_keeps_claim_pending_and_non_reusable(
     tmp_path: Path,
 ) -> None:
@@ -832,3 +1145,470 @@ def test_resource_owner_and_owned_names_cannot_be_injected(tmp_path: Path) -> No
 
     with pytest.raises(ValidationError, match="resource locator differs"):
         WebAnalysisLiveClaimBinding.model_validate(wire)
+
+
+def test_gate_d_context_is_atomic_audit_only_and_required_before_bound_dispatch(
+    tmp_path: Path,
+) -> None:
+    journal = _journal(tmp_path / "live-claims-gate-d.sqlite3")
+    binding = _binding()
+    reserved = _reserve_gate_d(journal, binding)
+
+    initial = journal.inspect_gate_d_context(binding.claim_id)
+
+    assert type(initial) is WebAnalysisLiveClaimGateDContext
+    assert initial.claim_id == binding.claim_id
+    assert initial.claim_digest == binding.claim_digest
+    assert initial.initial_authorization_evaluated_at == "2026-09-22T02:59:59.000000Z"
+    assert initial.initial_authorization_expires_at == "2026-09-22T03:01:00.000000Z"
+    assert initial.pre_dispatch_authorization_verification_digest is None
+    assert initial.provider_route_attestation_digest is None
+    assert initial.lease_ids is None
+    assert initial.model_invocation_authorized is False
+    assert initial.provider_dispatch_authorized is False
+    assert initial.target_request_authorized is False
+    assert initial.execution_authorized is False
+    assert initial.automatic_redispatch_authorized is False
+
+    started = journal.begin_live(reserved)
+    rebound = _record_gate_d(journal, started)
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="foreign or consumed"):
+        journal.mark_dispatch_started(started)
+    full = journal.inspect_gate_d_context(binding.claim_id)
+    assert full is not None
+    assert full.pre_dispatch_authorization_evaluated_at == "2026-09-22T03:00:00.000001Z"
+    assert full.pre_dispatch_authorization_expires_at == "2026-09-22T03:01:00.000000Z"
+    assert full.provider_route_attestation_digest == _digest("provider-route-attestation:a")
+    assert full.transport_execution_id == f"exec_{binding.resources.resource_owner}"
+    assert full.lease_ids == (f"lease_{_digest('lease:a')[:32]}",)
+    dispatched = journal.mark_dispatch_started(rebound)
+    assert dispatched.entry.dispatch_count == 1
+    assert dispatched.entry.dispatch_started_at == "2026-09-22T03:00:00.000002Z"
+
+    reopened = WebAnalysisLiveClaimJournal(
+        journal.path,
+        expected_store_id=journal.store_id,
+        allow_create=False,
+    )
+    assert reopened.inspect_gate_d_context(binding.claim_id) == full
+
+    legacy = _binding(
+        preparation_tag="legacy-preparation",
+        admission_tag="legacy-admission",
+        authorization_tag="legacy-authorization",
+    )
+    legacy_started = journal.begin_live(journal.reserve(legacy))
+    assert journal.inspect_gate_d_context(legacy.claim_id) is None
+    assert journal.mark_dispatch_started(legacy_started).entry.dispatch_count == 1
+
+    incomplete_binding = _binding(
+        preparation_tag="incomplete-preparation",
+        admission_tag="incomplete-admission",
+        authorization_tag="incomplete-authorization",
+    )
+    incomplete_started = journal.begin_live(_reserve_gate_d(journal, incomplete_binding))
+    with pytest.raises(
+        WebAnalysisLiveClaimJournalError,
+        match="complete pre-dispatch context",
+    ):
+        journal.mark_dispatch_started(incomplete_started)
+    incomplete = journal.inspect(incomplete_binding.claim_id)
+    assert incomplete is not None
+    assert incomplete.phase is WebAnalysisLiveClaimPhase.LIVE_START
+    assert incomplete.dispatch_count == 0
+
+
+def test_gate_d_context_rejects_partial_stale_and_noncanonical_evidence_without_consumption(
+    tmp_path: Path,
+) -> None:
+    journal = _journal(tmp_path / "live-claims-gate-d-validation.sqlite3")
+    binding = _binding()
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="digest is invalid"):
+        journal.reserve_with_gate_d_context(
+            binding,
+            initial_authorization_verification_digest="A" * 64,
+            initial_authorization_evaluated_at=NOW - timedelta(seconds=1),
+            initial_authorization_expires_at=NOW + timedelta(minutes=1),
+        )
+    assert journal.inspect(binding.claim_id) is None
+    assert journal.inspect_gate_d_context(binding.claim_id) is None
+
+    expired_binding = _binding(
+        preparation_tag="expired-preparation",
+        admission_tag="expired-admission",
+        authorization_tag="expired-authorization",
+    )
+    expired_journal = _journal(tmp_path / "live-claims-gate-d-expired-reservation.sqlite3")
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="expired before reservation"):
+        expired_journal.reserve_with_gate_d_context(
+            expired_binding,
+            initial_authorization_verification_digest=_digest("expired-initial"),
+            initial_authorization_evaluated_at=NOW - timedelta(seconds=1),
+            initial_authorization_expires_at=NOW,
+        )
+    assert expired_journal.inspect(expired_binding.claim_id) is None
+    assert expired_journal.inspect_gate_d_context(expired_binding.claim_id) is None
+
+    reserved = _reserve_gate_d(journal, binding)
+    started = journal.begin_live(reserved)
+    foreign_binding = _binding(
+        preparation_tag="foreign-context-preparation",
+        admission_tag="foreign-context-admission",
+        authorization_tag="foreign-context-authorization",
+    )
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="differs from the live claim"):
+        journal.record_gate_d_pre_dispatch_context(
+            started,
+            pre_dispatch_authorization_verification_digest=_digest("foreign-context"),
+            pre_dispatch_authorization_evaluated_at=NOW + timedelta(microseconds=1),
+            pre_dispatch_authorization_expires_at=NOW + timedelta(minutes=1),
+            provider_route_attestation_digest=_digest("foreign-provider-route"),
+            transport_execution_id=f"exec_{foreign_binding.resources.resource_owner}",
+            lease_ids=(f"lease_{SHA_A[:32]}",),
+            worker_context_digest=SHA_A,
+            job_metadata_digest=SHA_B,
+            transport_binding_digest=SHA_C,
+        )
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="tuple"):
+        journal.record_gate_d_pre_dispatch_context(
+            started,
+            pre_dispatch_authorization_verification_digest=_digest("pre-dispatch"),
+            pre_dispatch_authorization_evaluated_at=NOW + timedelta(microseconds=1),
+            pre_dispatch_authorization_expires_at=NOW + timedelta(minutes=1),
+            provider_route_attestation_digest=_digest("provider-route"),
+            transport_execution_id=f"exec_{binding.resources.resource_owner}",
+            lease_ids=cast(Any, [f"lease_{'a' * 32}"]),
+            worker_context_digest=SHA_A,
+            job_metadata_digest=SHA_B,
+            transport_binding_digest=SHA_C,
+        )
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="exactly one"):
+        journal.record_gate_d_pre_dispatch_context(
+            started,
+            pre_dispatch_authorization_verification_digest=_digest("zero-lease"),
+            pre_dispatch_authorization_evaluated_at=NOW + timedelta(microseconds=1),
+            pre_dispatch_authorization_expires_at=NOW + timedelta(minutes=1),
+            provider_route_attestation_digest=_digest("zero-lease-provider-route"),
+            transport_execution_id=f"exec_{binding.resources.resource_owner}",
+            lease_ids=(),
+            worker_context_digest=SHA_A,
+            job_metadata_digest=SHA_B,
+            transport_binding_digest=SHA_C,
+        )
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="digest is invalid"):
+        journal.record_gate_d_pre_dispatch_context(
+            started,
+            pre_dispatch_authorization_verification_digest=_digest("pre-dispatch"),
+            pre_dispatch_authorization_evaluated_at=NOW + timedelta(microseconds=1),
+            pre_dispatch_authorization_expires_at=NOW + timedelta(minutes=1),
+            provider_route_attestation_digest="A" * 64,
+            transport_execution_id=f"exec_{binding.resources.resource_owner}",
+            lease_ids=(f"lease_{SHA_A[:32]}",),
+            worker_context_digest=SHA_A,
+            job_metadata_digest=SHA_B,
+            transport_binding_digest=SHA_C,
+        )
+    rebound = _record_gate_d(journal, started)
+    assert type(rebound) is StartedWebAnalysisLiveClaim
+
+    initial = WebAnalysisLiveClaimGateDContext(
+        claimId=binding.claim_id,
+        claimDigest=binding.claim_digest,
+        initialAuthorizationVerificationDigest=_digest("initial"),
+        initialAuthorizationEvaluatedAt="2026-09-22T03:00:00.000000Z",
+        initialAuthorizationExpiresAt="2026-09-22T03:01:00.000000Z",
+    )
+    partial = initial.model_dump(mode="python", by_alias=True)
+    partial["preDispatchAuthorizationVerificationDigest"] = _digest("pre-dispatch")
+    partial["contextDigest"] = ""
+    with pytest.raises(ValidationError, match="all present or all absent"):
+        WebAnalysisLiveClaimGateDContext.model_validate(partial)
+
+    copied_time = initial.model_dump(mode="python", by_alias=True)
+    copied_time.update(
+        {
+            "preDispatchAuthorizationVerificationDigest": _digest("pre-dispatch"),
+            "preDispatchAuthorizationEvaluatedAt": initial.initial_authorization_evaluated_at,
+            "preDispatchAuthorizationExpiresAt": initial.initial_authorization_expires_at,
+            "providerRouteAttestationDigest": _digest("provider-route"),
+            "transportExecutionId": f"exec_{binding.resources.resource_owner}",
+            "leaseIds": (f"lease_{SHA_A[:32]}",),
+            "workerContextDigest": SHA_A,
+            "jobMetadataDigest": SHA_B,
+            "transportBindingDigest": SHA_C,
+            "contextDigest": "",
+        }
+    )
+    missing_route = dict(copied_time)
+    missing_route.pop("providerRouteAttestationDigest")
+    with pytest.raises(ValidationError, match="all present or all absent"):
+        WebAnalysisLiveClaimGateDContext.model_validate(missing_route)
+    with pytest.raises(ValidationError, match="must follow initial"):
+        WebAnalysisLiveClaimGateDContext.model_validate(copied_time)
+
+    mismatched_expiry = dict(copied_time)
+    mismatched_expiry.update(
+        {
+            "preDispatchAuthorizationEvaluatedAt": "2026-09-22T03:00:00.000001Z",
+            "preDispatchAuthorizationExpiresAt": "2026-09-22T03:02:00.000000Z",
+            "contextDigest": "",
+        }
+    )
+    with pytest.raises(ValidationError, match="expiry differs"):
+        WebAnalysisLiveClaimGateDContext.model_validate(mismatched_expiry)
+
+    stale_binding = _binding(
+        preparation_tag="stale-preparation",
+        admission_tag="stale-admission",
+        authorization_tag="stale-authorization",
+    )
+    stale_started = journal.begin_live(_reserve_gate_d(journal, stale_binding))
+    assert stale_started.entry.live_started_at is not None
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="predates live-start"):
+        journal.record_gate_d_pre_dispatch_context(
+            stale_started,
+            pre_dispatch_authorization_verification_digest=_digest("stale-pre-dispatch"),
+            pre_dispatch_authorization_evaluated_at=NOW,
+            pre_dispatch_authorization_expires_at=NOW + timedelta(minutes=1),
+            provider_route_attestation_digest=_digest("stale-provider-route"),
+            transport_execution_id=f"exec_{stale_binding.resources.resource_owner}",
+            lease_ids=(f"lease_{SHA_A[:32]}",),
+            worker_context_digest=SHA_A,
+            job_metadata_digest=SHA_B,
+            transport_binding_digest=SHA_C,
+        )
+    assert journal.inspect_gate_d_context(stale_binding.claim_id) is not None
+
+
+def test_gate_d_dispatch_marker_refuses_authorization_at_exact_expiry(
+    tmp_path: Path,
+) -> None:
+    expiry = NOW + timedelta(microseconds=2)
+    clock = Mock(side_effect=(NOW, NOW + timedelta(microseconds=1), expiry))
+    journal = WebAnalysisLiveClaimJournal(
+        tmp_path / "live-claims-gate-d-expiry.sqlite3",
+        clock=clock,
+        allow_create=True,
+    )
+    binding = _binding()
+    reserved = journal.reserve_with_gate_d_context(
+        binding,
+        initial_authorization_verification_digest=_digest("initial-expiry-bound"),
+        initial_authorization_evaluated_at=NOW - timedelta(seconds=1),
+        initial_authorization_expires_at=expiry,
+    )
+    started = journal.begin_live(reserved)
+    rebound = journal.record_gate_d_pre_dispatch_context(
+        started,
+        pre_dispatch_authorization_verification_digest=_digest("pre-dispatch-expiry-bound"),
+        pre_dispatch_authorization_evaluated_at=NOW + timedelta(microseconds=1),
+        pre_dispatch_authorization_expires_at=expiry,
+        provider_route_attestation_digest=_digest("expiry-provider-route"),
+        transport_execution_id=f"exec_{binding.resources.resource_owner}",
+        lease_ids=(f"lease_{SHA_A[:32]}",),
+        worker_context_digest=SHA_A,
+        job_metadata_digest=SHA_B,
+        transport_binding_digest=SHA_C,
+    )
+
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="expired before dispatch marker"):
+        journal.mark_dispatch_started(rebound)
+
+    durable = journal.inspect(binding.claim_id)
+    assert durable is not None
+    assert durable.phase is WebAnalysisLiveClaimPhase.LIVE_START
+    assert durable.dispatch_count == 0
+    assert durable.dispatch_started_at is None
+    assert len(durable.event_digests) == 2
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="foreign or consumed"):
+        journal.mark_dispatch_started(rebound)
+
+    with (
+        sqlite3.connect(journal.path) as connection,
+        pytest.raises(sqlite3.IntegrityError, match="invalid Web analysis live claim"),
+    ):
+        connection.execute(
+            """
+            UPDATE web_analysis_live_claims
+            SET dispatch_started_at = ?, dispatch_count = 1
+            WHERE claim_id = ?
+            """,
+            (
+                expiry.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+                binding.claim_id,
+            ),
+        )
+    assert journal.inspect(binding.claim_id) == durable
+
+
+def test_gate_d_pre_dispatch_commit_uncertainty_is_read_only_recoverable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = _journal(tmp_path / "live-claims-gate-d-uncertain.sqlite3")
+    binding = _binding()
+    started = journal.begin_live(_reserve_gate_d(journal, binding))
+    real_transaction = cast(Any, journal_module)._write_transaction_opened
+
+    @contextmanager
+    def commit_then_raise(path: Path) -> Iterator[sqlite3.Connection]:
+        with real_transaction(path) as connection:
+            yield connection
+        raise RuntimeError("injected post-commit uncertainty")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(journal_module, "_write_transaction_opened", commit_then_raise)
+        with pytest.raises(
+            WebAnalysisLiveClaimJournalError,
+            match="durable state requires inspection",
+        ):
+            _record_gate_d(journal, started)
+
+    durable_context = journal.inspect_gate_d_context(binding.claim_id)
+    assert durable_context is not None
+    assert durable_context.pre_dispatch_authorization_verification_digest == _digest(
+        "pre-dispatch-authorization:a"
+    )
+    assert durable_context.provider_route_attestation_digest == _digest(
+        "provider-route-attestation:a"
+    )
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="foreign or consumed"):
+        _record_gate_d(journal, started)
+    recovered = journal.recover_binding_pending_cleanup(binding)
+    assert recovered.phase is WebAnalysisLiveClaimPhase.PENDING_CLEANUP
+    assert recovered.pending_outcome is WebAnalysisLiveClaimPendingOutcome.OUTCOME_UNKNOWN
+    assert recovered.dispatch_count == 0
+    assert journal.inspect_gate_d_context(binding.claim_id) == durable_context
+
+
+def test_gate_d_pre_dispatch_rejects_foreign_handle_and_concurrent_double_cas(
+    tmp_path: Path,
+) -> None:
+    first = _journal(tmp_path / "live-claims-gate-d-first.sqlite3")
+    second = _journal(tmp_path / "live-claims-gate-d-second.sqlite3")
+    first_binding = _binding()
+    second_binding = _binding(
+        preparation_tag="second-preparation",
+        admission_tag="second-admission",
+        authorization_tag="second-authorization",
+    )
+    first_started = first.begin_live(_reserve_gate_d(first, first_binding))
+    second_started = second.begin_live(_reserve_gate_d(second, second_binding))
+
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="foreign or consumed"):
+        first.record_gate_d_pre_dispatch_context(
+            second_started,
+            pre_dispatch_authorization_verification_digest=_digest("foreign"),
+            pre_dispatch_authorization_evaluated_at=NOW + timedelta(microseconds=1),
+            pre_dispatch_authorization_expires_at=NOW + timedelta(minutes=1),
+            provider_route_attestation_digest=_digest("foreign-provider-route"),
+            transport_execution_id=f"exec_{second_binding.resources.resource_owner}",
+            lease_ids=(f"lease_{SHA_A[:32]}",),
+            worker_context_digest=SHA_A,
+            job_metadata_digest=SHA_B,
+            transport_binding_digest=SHA_C,
+        )
+    assert first.inspect_gate_d_context(first_binding.claim_id) is not None
+    assert second.inspect_gate_d_context(second_binding.claim_id) is not None
+
+    barrier = Barrier(2)
+
+    def race(tag: str) -> StartedWebAnalysisLiveClaim | WebAnalysisLiveClaimJournalError:
+        barrier.wait(timeout=10)
+        try:
+            return _record_gate_d(first, first_started, tag=tag)
+        except WebAnalysisLiveClaimJournalError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(race, ("first", "second")))
+
+    winners = tuple(item for item in results if type(item) is StartedWebAnalysisLiveClaim)
+    rejected = tuple(item for item in results if type(item) is WebAnalysisLiveClaimJournalError)
+    assert len(winners) == 1
+    assert len(rejected) == 1
+    assert "foreign or consumed" in str(rejected[0])
+    context = first.inspect_gate_d_context(first_binding.claim_id)
+    assert context is not None
+    assert context.pre_dispatch_authorization_verification_digest in {
+        _digest("pre-dispatch-authorization:first"),
+        _digest("pre-dispatch-authorization:second"),
+    }
+    assert (
+        context.pre_dispatch_authorization_verification_digest,
+        context.provider_route_attestation_digest,
+    ) in {
+        (
+            _digest("pre-dispatch-authorization:first"),
+            _digest("provider-route-attestation:first"),
+        ),
+        (
+            _digest("pre-dispatch-authorization:second"),
+            _digest("provider-route-attestation:second"),
+        ),
+    }
+    assert first.mark_dispatch_started(winners[0]).entry.dispatch_count == 1
+
+
+def test_gate_d_context_row_tampering_fails_closed(tmp_path: Path) -> None:
+    journal = _journal(tmp_path / "live-claims-gate-d-tamper.sqlite3")
+    binding = _binding()
+    started = journal.begin_live(_reserve_gate_d(journal, binding))
+    _record_gate_d(journal, started)
+
+    with sqlite3.connect(journal.path) as connection:
+        connection.execute("DROP TRIGGER web_analysis_live_claim_gate_d_contexts_immutable")
+        connection.execute("DROP TRIGGER web_analysis_live_claim_gate_d_contexts_transition")
+        connection.execute(
+            """
+            UPDATE web_analysis_live_claim_gate_d_contexts
+            SET initial_authorization_expires_at = ?,
+                pre_dispatch_authorization_expires_at = ?
+            WHERE claim_id = ?
+            """,
+            (
+                "2026-09-22T03:02:00.000000Z",
+                "2026-09-22T03:02:00.000000Z",
+                binding.claim_id,
+            ),
+        )
+        connection.execute(journal_module._GATE_D_CONTEXTS_IMMUTABLE_SQL)
+        connection.execute(journal_module._GATE_D_CONTEXTS_TRANSITION_SQL)
+
+    with pytest.raises(WebAnalysisLiveClaimJournalError, match="integrity checks"):
+        journal.inspect_gate_d_context(binding.claim_id)
+
+
+def test_schema_version_one_is_rejected_without_implicit_migration(tmp_path: Path) -> None:
+    journal = _journal(tmp_path / "live-claims-version-one.sqlite3")
+    store_id = journal.store_id
+    with sqlite3.connect(journal.path) as connection:
+        connection.execute("DROP TRIGGER web_analysis_live_claim_metadata_no_update")
+        connection.execute(
+            "UPDATE web_analysis_live_claim_metadata SET value = '1' WHERE key = 'schema_version'"
+        )
+        connection.execute(
+            "UPDATE web_analysis_live_claim_metadata SET value = ? WHERE key = 'schema_digest'",
+            (SHA_A,),
+        )
+        connection.execute(journal_module._METADATA_NO_UPDATE_SQL)
+        connection.execute("PRAGMA user_version = 1")
+
+    with pytest.raises(
+        WebAnalysisLiveClaimJournalError,
+        match="connection or version differs",
+    ):
+        WebAnalysisLiveClaimJournal(
+            journal.path,
+            expected_store_id=store_id,
+            allow_create=False,
+        )
+
+    with sqlite3.connect(journal.path) as connection:
+        metadata = dict(
+            connection.execute("SELECT key, value FROM web_analysis_live_claim_metadata")
+        )
+        user_version = connection.execute("PRAGMA user_version").fetchone()
+    assert metadata["schema_version"] == "1"
+    assert metadata["schema_digest"] == SHA_A
+    assert user_version == (1,)

@@ -106,8 +106,10 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   attested Capacity v2·zero-dispatch preparation·non-executing admission과 ADR-0319 Gate A의 actual
   live final-view materialization/attestation/cleanup, ADR-0320 Gate B dual-identity durable CAS와
   cleanup-only crash recovery, ADR-0321 Gate C external one-call authorization verifier는 검증됐다.
-  production external trust anchor와 실제 signed authorization은 아직 provision되지 않았고 Gate D
-  compact runtime/receipt, 성공 model proposal, Skill→Recipe/Capability binding,
+  ADR-0322 Gate D compact runtime·receipt·strict loader, Worker pre-cleanup durability barrier와
+  model·transport cleanup/absence 결합은 최종 검증해 로컬 커밋으로 보존했다.
+  production external trust anchor와 실제 signed authorization은 아직 provision되지 않았고 성공 model
+  proposal, Skill→Recipe/Capability binding,
   target 실행과 독립 성능 검증은 없다. 별도 사용자 승인 없이는 새 model completion을 진행하지 않는다.
   금지 field와 알려진 target
   canary 검사는 의미적으로 위장된 모든
@@ -183,8 +185,28 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   명시적으로 실행해야 하고 Gate D가 실제 owner-bound cleanup을 수행해야 한다. Gate C는 externally
   provisioned public-key anchor의 independent digest와 최대 180초 signed authorization을 요구하고
   exact request·model·transport mismatch, expiry, Campaign approval 재해석과 nonce replay를 fail closed한다.
-  현재 테스트 key는 production issuer가 아니며 실제 external authorization artifact도 없다. live
-  completion 전에는 Gate D additive compact runtime/receipt와 실제 외부 authorization이 모두 필요하다.
+  현재 테스트 key는 production issuer가 아니며 실제 external authorization artifact도 없다. Gate D는
+  exact Provider route를 attest하고 synchronous Worker v6 barrier에서 claim을 cleanup 전에 pending으로
+  전환한다. Gate A+transport cleanup 뒤 durable publication intent, full strict unanchored candidate,
+  one-use root CAS, terminal CAS/reload를 요구하도록 통합·검증됐다. intent 없는 Run, self-sealed wrong root,
+  publication-row drift와 ancestor/root/campaign/Run symlink relocation은 권위가 아니다. Gate D context용
+  live-claim journal schema v2는 v1을 암묵 이행하지 않는다. authorized/live
+  dispatch에 쓰이지 않은 retained v1 store는 Gate D authority가 아닌 별도 cleanup/audit 대상이다.
+  dispatch marker 뒤 process state를 잃은 quiescent recovery는 durable count를 보존해도
+  in-memory attestation/authorization/result 증거를 재구성하지 않으며 explicit abandoned recovery로만
+  terminalize할 수 있다. 같은 broker로 exact credential lease의 revocation을 증명할 수 없는 process-loss
+  recovery는 absent/revoked를 합성하거나 lease를 재발급하지 않고 pending-cleanup에 남으며 terminal
+  receipt를 만들 수 없다. ID를 `issue_exact` 전에 보존하므로 store-then-interrupt 또는 context CAS 전
+  crash에서도 context 부재를 zero-lease 증거로 쓰지 않고 exact deterministic ID의 same-broker revoke를
+  요구한다. Worker hard deadline/cancellation/process-control은 ordinary failure로 흡수하지 않고 proven
+  cleanup 뒤 ABANDONED로 기록해 원래 exception을 재전파하며, 증명 실패는 pending에 남긴다. 현재
+  OpenAI-compatible local Qwen transport도
+  `provider-api-key` Worker secret request 1개를 생성하며 zero-lease transport는 구현되지 않았다.
+  live completion 전에는 실제 외부 authorization, cleanup까지 이어지는 same-broker 운영 전제와
+  별도 사용자 승인이 모두
+  필요하다. pre-dispatch authorization의 exact expiry bound는 Gate D context와 marker transaction에서
+  Python guard와 SQLite transition trigger가 원자적으로 검사해야 하며, 사후 receipt rejection만으로 이미
+  발생한 expired dispatch를 회수할 수 없다.
   성공 structured output, model quality,
   latency·peak memory·stability, full WEB-006 governed Run·PoC replay, WEB-008 action 연결은 미검증이다.
   현재 artifact는 target request, Permit, Finding, Graph, report, SARIF, PoC, 외부 전달 권위를

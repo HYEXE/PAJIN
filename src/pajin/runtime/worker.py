@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import os
 import re
+import signal
+import threading
 from abc import abstractmethod
 from base64 import b64encode
 from collections.abc import Awaitable, Mapping
@@ -13,7 +17,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
-from typing import Protocol
+from types import FrameType
+from typing import Never, Protocol
 from uuid import uuid4
 
 from pydantic import (
@@ -38,6 +43,8 @@ LARGE_PROVIDER_ACTION = "openai-chat-completion-v2"
 MAX_LARGE_PROVIDER_INPUT_BYTES = 16 * 1024 * 1024
 _MAX_EGRESS_PROXY_RESPONSE_BYTES = 8 * 1024 * 1024
 _MAX_EGRESS_OBSERVER_CONTEXT_BYTES = 64 * 1024
+_MAX_PRE_CLEANUP_BARRIER_CONTEXT_BYTES = 64 * 1024
+_PRE_CLEANUP_SIGNAL_DEADLINE_LOCK = threading.Lock()
 
 
 class WorkerStatus(StrEnum):
@@ -86,7 +93,9 @@ class EgressPolicy(BaseModel):
     )
     max_requests: int = Field(default=1, ge=1, le=100)
     max_request_bytes: int | None = Field(
-        default=None, ge=1, le=MAX_LARGE_PROVIDER_INPUT_BYTES,
+        default=None,
+        ge=1,
+        le=MAX_LARGE_PROVIDER_INPUT_BYTES,
         exclude_if=lambda value: value is None,
     )
 
@@ -207,9 +216,11 @@ class WorkerJob(BaseModel):
     def validate_network_contract(self) -> WorkerJob:
         if len(self.stdin.encode("utf-8")) > self.stdin_byte_limit:
             raise ValueError("worker stdin exceeded its UTF-8 byte limit")
-        if (self.egress_policy is not None
-                and self.egress_policy.max_request_bytes is not None
-                and self.egress_policy.max_request_bytes > self.stdin_byte_limit):
+        if (
+            self.egress_policy is not None
+            and self.egress_policy.max_request_bytes is not None
+            and self.egress_policy.max_request_bytes > self.stdin_byte_limit
+        ):
             raise ValueError("egress request limit exceeds the Worker action transport")
         if self.network is NetworkMode.NONE and self.egress_policy is not None:
             raise ValueError("egress policy is not allowed for network-none jobs")
@@ -222,13 +233,15 @@ class WorkerJob(BaseModel):
 
     @property
     def stdin_byte_limit(self) -> int:
-        return (MAX_LARGE_PROVIDER_INPUT_BYTES if self.command == [LARGE_PROVIDER_ACTION]
-                else _MAX_WORKER_STDIN_BYTES)
+        return (
+            MAX_LARGE_PROVIDER_INPUT_BYTES
+            if self.command == [LARGE_PROVIDER_ACTION]
+            else _MAX_WORKER_STDIN_BYTES
+        )
 
     @property
     def request_byte_limit_override(self) -> int | None:
-        return (MAX_LARGE_PROVIDER_INPUT_BYTES if self.command == [LARGE_PROVIDER_ACTION]
-                else None)
+        return MAX_LARGE_PROVIDER_INPUT_BYTES if self.command == [LARGE_PROVIDER_ACTION] else None
 
 
 class WorkerResult(BaseModel):
@@ -545,6 +558,107 @@ class DockerEgressLifecycleObservationError(RuntimeError):
         )
 
 
+class WorkerAttemptOutcome(StrEnum):
+    """Host-visible classification at the pre-cleanup durability boundary."""
+
+    RESULT_OBSERVED = "result-observed"
+    OUTCOME_UNKNOWN = "outcome-unknown"
+
+
+class DockerPreCleanupBarrierObservation(BaseModel):
+    """Bounded summary of one Worker attempt before Docker cleanup begins."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    execution_id: str = Field(pattern=_SAFE_RUNTIME_IDENTIFIER_PATTERN)
+    outcome: WorkerAttemptOutcome
+    worker_status: WorkerStatus | None = None
+    failure_code: WorkerFailureCode | None = None
+    result_sha256: str | None = Field(default=None, pattern=r"^sha256:[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def validate_result_binding(self) -> DockerPreCleanupBarrierObservation:
+        result_fields = (self.worker_status, self.failure_code, self.result_sha256)
+        if self.outcome is WorkerAttemptOutcome.RESULT_OBSERVED:
+            if self.worker_status is None or self.result_sha256 is None:
+                raise ValueError("observed Worker result requires status and digest")
+            if self.failure_code is not None and self.worker_status is not WorkerStatus.FAILED:
+                raise ValueError("Worker failure code requires failed result status")
+        elif any(value is not None for value in result_fields):
+            raise ValueError("outcome-unknown cannot assert Worker result fields")
+        return self
+
+    @classmethod
+    def from_result(cls, result: WorkerResult) -> DockerPreCleanupBarrierObservation:
+        encoded = json.dumps(
+            result.model_dump(mode="json"),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return cls(
+            execution_id=result.execution_id,
+            outcome=WorkerAttemptOutcome.RESULT_OBSERVED,
+            worker_status=result.status,
+            failure_code=result.failure_code,
+            result_sha256=f"sha256:{sha256(encoded).hexdigest()}",
+        )
+
+    @classmethod
+    def outcome_unknown(cls, execution_id: str) -> DockerPreCleanupBarrierObservation:
+        return cls(
+            execution_id=execution_id,
+            outcome=WorkerAttemptOutcome.OUTCOME_UNKNOWN,
+        )
+
+
+class DockerWorkerPreCleanupBarrier(Protocol):
+    """Host-owned durable barrier invoked once before Docker resource cleanup."""
+
+    def stable_barrier_context(self) -> Mapping[str, object]: ...
+
+    async def before_cleanup(
+        self,
+        observation: DockerPreCleanupBarrierObservation,
+        result: WorkerResult | None,
+    ) -> None: ...
+
+
+class DockerWorkerSynchronousPreCleanupBarrier(Protocol):
+    """Host-owned durability barrier with a hard POSIX execution deadline.
+
+    Unlike the additive legacy async callback, this callback must not yield.  It
+    executes on the event-loop's main thread under a process real-time timer, so
+    Python CPU work and interruptible blocking system calls cannot outlive Docker
+    cleanup after the deadline fires. Implementations must never suppress
+    :class:`DockerPreCleanupBarrierDeadlineExceeded`.
+    """
+
+    def stable_barrier_context(self) -> Mapping[str, object]: ...
+
+    def before_cleanup_sync(
+        self,
+        observation: DockerPreCleanupBarrierObservation,
+        result: WorkerResult | None,
+    ) -> None: ...
+
+
+class DockerPreCleanupBarrierDeadlineExceeded(BaseException):
+    """Raised inside a synchronous barrier when its hard deadline expires."""
+
+
+class DockerPreCleanupBarrierError(RuntimeError):
+    """Raised after the durable pre-cleanup callback fails closed."""
+
+    def __init__(self, *, cause: BaseException) -> None:
+        diagnostic = audit_safe_exception_diagnostic(cause, stage="worker-backend")
+        super().__init__(
+            "Docker pre-cleanup durability barrier failed: "
+            f"{diagnostic or 'barrier failed without a diagnostic'}"
+        )
+
+
 @dataclass(frozen=True)
 class _EgressRuntime:
     network_name: str
@@ -598,6 +712,9 @@ class DockerWorkerBackend:
     _cleanup_command_timeout_seconds = 5.0
     _cleanup_attempts = 3
     _process_stop_timeout_seconds = 2.0
+    # The v6 backend identity fixes this host-owned synchronous durability deadline;
+    # it is deliberately not caller-configurable or copied into callback context.
+    _pre_cleanup_barrier_timeout_seconds = 30.0
     _cli_stdout_limit_bytes = 64 * 1024
     _cli_stderr_limit_bytes = 64 * 1024
     _cli_output_limit_exit_code = 125
@@ -618,6 +735,9 @@ class DockerWorkerBackend:
         external_network_routes: Mapping[str, str] | None = None,
         runtime_image_bindings: Mapping[str, str] | None = None,
         egress_lifecycle_observer: DockerEgressLifecycleObserver | None = None,
+        pre_cleanup_barrier: (
+            DockerWorkerPreCleanupBarrier | DockerWorkerSynchronousPreCleanupBarrier | None
+        ) = None,
     ) -> None:
         if not allowed_images:
             raise ValueError("at least one Docker image must be allowlisted")
@@ -691,6 +811,45 @@ class DockerWorkerBackend:
             except (TypeError, ValueError) as exc:
                 raise ValueError("egress lifecycle observer context is not canonical JSON") from exc
             self._egress_observer_context = parsed_context
+        self._configure_pre_cleanup_barrier(pre_cleanup_barrier)
+
+    def _configure_pre_cleanup_barrier(
+        self,
+        barrier: DockerWorkerPreCleanupBarrier | DockerWorkerSynchronousPreCleanupBarrier | None,
+    ) -> None:
+        if barrier is None:
+            return
+        synchronous_callback = getattr(barrier, "before_cleanup_sync", None)
+        asynchronous_callback = getattr(barrier, "before_cleanup", None)
+        if bool(callable(synchronous_callback)) == bool(callable(asynchronous_callback)):
+            raise ValueError("pre-cleanup barrier must provide exactly one callback execution mode")
+        if callable(synchronous_callback) and inspect.iscoroutinefunction(synchronous_callback):
+            raise ValueError("synchronous pre-cleanup barrier callback must not be async")
+        try:
+            raw_context = barrier.stable_barrier_context()
+            if not isinstance(raw_context, Mapping) or any(
+                not isinstance(key, str) for key in raw_context
+            ):
+                raise ValueError("barrier context is not a string-keyed mapping")
+            encoded_context = json.dumps(
+                raw_context,
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            if len(encoded_context) > _MAX_PRE_CLEANUP_BARRIER_CONTEXT_BYTES:
+                raise ValueError("barrier context exceeds its byte limit")
+            parsed_context = json.loads(encoded_context)
+            if type(parsed_context) is not dict:
+                raise ValueError("barrier context is not a JSON object")
+        except (RecursionError, TypeError, ValueError) as exc:
+            raise ValueError("pre-cleanup barrier context is not canonical JSON") from exc
+        # Preserve the exact historical Docker backend instance state when the
+        # additive barrier is absent. Some sealed runtimes attest that state.
+        self._pre_cleanup_barrier = barrier
+        self._pre_cleanup_barrier_context = parsed_context
+        self._pre_cleanup_barrier_is_synchronous = callable(synchronous_callback)
 
     def stable_execution_context(self) -> dict[str, object]:
         context: dict[str, object] = {
@@ -719,12 +878,58 @@ class DockerWorkerBackend:
                     sort_keys=True,
                 )
             )
+        barrier_context = getattr(self, "_pre_cleanup_barrier_context", None)
+        if barrier_context is not None:
+            synchronous = getattr(self, "_pre_cleanup_barrier_is_synchronous", False)
+            context["implementationVersion"] = (
+                "pajin.docker-worker/v6" if synchronous else "pajin.docker-worker/v5"
+            )
+            context["preCleanupBarrier"] = json.loads(
+                json.dumps(
+                    barrier_context,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            if synchronous:
+                context["preCleanupBarrierExecution"] = {
+                    "mode": "posix-main-thread-real-timer",
+                    "timeoutSeconds": self._pre_cleanup_barrier_timeout_seconds,
+                }
         return context
 
     def binds_egress_lifecycle_observer(self, observer: object) -> bool:
         """Return whether this backend owns the exact observer instance."""
 
         return self._egress_lifecycle_observer is observer
+
+    def binds_pre_cleanup_barrier(self, barrier: object) -> bool:
+        """Return whether this backend owns the exact pre-cleanup barrier instance."""
+
+        return getattr(self, "_pre_cleanup_barrier", None) is barrier
+
+    @property
+    def _has_pre_cleanup_barrier(self) -> bool:
+        return getattr(self, "_pre_cleanup_barrier", None) is not None
+
+    async def _run_attempt_pre_cleanup_barrier(
+        self,
+        job: WorkerJob,
+        result: WorkerResult | None,
+    ) -> None:
+        if not self._has_pre_cleanup_barrier:
+            return
+        barrier_result = (
+            result if result is not None and result.status is not WorkerStatus.TIMED_OUT else None
+        )
+        observation = (
+            DockerPreCleanupBarrierObservation.from_result(barrier_result)
+            if barrier_result is not None
+            else DockerPreCleanupBarrierObservation.outcome_unknown(job.execution_id)
+        )
+        await self._run_pre_cleanup_barrier(observation, result=barrier_result)
 
     async def run(
         self,
@@ -734,11 +939,13 @@ class DockerWorkerBackend:
     ) -> WorkerResult:
         started_at = datetime.now(UTC)
         if job.image not in self._allowed_images:
-            return self._rejected(job, started_at, "container image is not allowlisted")
+            result = self._rejected(job, started_at, "container image is not allowlisted")
+            await self._run_attempt_pre_cleanup_barrier(job, result)
+            return result
         try:
             wire_stdin = self._wire_stdin(job, secrets or [])
         except ValueError as exc:
-            return WorkerResult(
+            result = WorkerResult(
                 execution_id=job.execution_id,
                 backend=self.name,
                 status=WorkerStatus.REJECTED,
@@ -750,19 +957,31 @@ class DockerWorkerBackend:
                 started_at=started_at,
                 finished_at=datetime.now(UTC),
             )
+            await self._run_attempt_pre_cleanup_barrier(job, result)
+            return result
 
         container_name = self._container_name(job.execution_id)
         egress_runtime: _EgressRuntime | None = None
         process: asyncio.subprocess.Process | None = None
         force_remove = False
+        attempt_result: WorkerResult | None = None
         observer_observation: DockerEgressLifecycleObservation | None = None
         observer_attached = False
+        body_control_flow: asyncio.CancelledError | SystemExit | KeyboardInterrupt | None = None
         try:
             if job.network is NetworkMode.EGRESS_PROXY:
                 try:
-                    egress_runtime = await self._setup_egress(job)
+                    if self._has_pre_cleanup_barrier:
+                        egress_runtime = self._new_egress_runtime(job)
+                        await self._setup_egress(
+                            job,
+                            runtime=egress_runtime,
+                            cleanup_on_failure=False,
+                        )
+                    else:
+                        egress_runtime = await self._setup_egress(job)
                 except RuntimeError as exc:
-                    return WorkerResult(
+                    attempt_result = WorkerResult(
                         execution_id=job.execution_id,
                         backend=self.name,
                         status=WorkerStatus.FAILED,
@@ -778,6 +997,7 @@ class DockerWorkerBackend:
                         started_at=started_at,
                         finished_at=datetime.now(UTC),
                     )
+                    return attempt_result
             args = self._docker_args(
                 job,
                 container_name,
@@ -792,7 +1012,7 @@ class DockerWorkerBackend:
                     stderr=asyncio.subprocess.PIPE,
                 )
             except OSError as exc:
-                return WorkerResult(
+                attempt_result = WorkerResult(
                     execution_id=job.execution_id,
                     backend=self.name,
                     status=WorkerStatus.FAILED,
@@ -807,6 +1027,7 @@ class DockerWorkerBackend:
                     started_at=started_at,
                     finished_at=datetime.now(UTC),
                 )
+                return attempt_result
 
             if egress_runtime is not None and self._egress_lifecycle_observer is not None:
                 observer_observation = DockerEgressLifecycleObservation(
@@ -838,12 +1059,20 @@ class DockerWorkerBackend:
                     egress_runtime.proxy_name,
                     job.limits.stderr_bytes,
                 )
-            return self._result_from_process_capture(
+            attempt_result = self._result_from_process_capture(
                 job,
                 capture,
                 network_log=network_log,
                 started_at=started_at,
             )
+            return attempt_result
+        except (asyncio.CancelledError, SystemExit, KeyboardInterrupt) as exc:
+            body_control_flow = exc
+            # The container name is known before the Docker CLI is spawned. Remove by
+            # name even when process control races subprocess creation and no handle was
+            # returned to this task.
+            force_remove = True
+            raise
         except BaseException:
             # The container name is known before the Docker CLI is spawned. Remove by
             # name even when cancellation races subprocess creation and no handle was
@@ -851,27 +1080,71 @@ class DockerWorkerBackend:
             force_remove = True
             raise
         finally:
-            if force_remove or process is not None or egress_runtime is not None:
-                cleanup_resources: list[tuple[str, str]] = []
-                if force_remove or process is not None:
-                    cleanup_resources.append(("container", container_name))
-                if egress_runtime is not None:
-                    cleanup_resources.extend(
-                        [
-                            ("egress proxy", egress_runtime.proxy_name),
-                            ("network", egress_runtime.network_name),
-                        ]
+            await self._finish_attempt_cleanup(
+                job=job,
+                attempt_result=attempt_result,
+                process=process,
+                container_name=container_name,
+                egress_runtime=egress_runtime,
+                force_remove=force_remove,
+                observer_observation=(observer_observation if observer_attached else None),
+                body_control_flow=body_control_flow,
+            )
+
+    async def _finish_attempt_cleanup(
+        self,
+        *,
+        job: WorkerJob,
+        attempt_result: WorkerResult | None,
+        process: asyncio.subprocess.Process | None,
+        container_name: str,
+        egress_runtime: _EgressRuntime | None,
+        force_remove: bool,
+        observer_observation: DockerEgressLifecycleObservation | None,
+        body_control_flow: asyncio.CancelledError | SystemExit | KeyboardInterrupt | None,
+    ) -> None:
+        barrier_failure: BaseException | None = None
+        try:
+            await self._run_attempt_pre_cleanup_barrier(job, attempt_result)
+        except BaseException as exc:
+            barrier_failure = exc
+
+        try:
+            await self._cleanup_after_attempt(
+                process=process,
+                container_name=container_name,
+                egress_runtime=egress_runtime,
+                force_remove=force_remove,
+                observer_observation=observer_observation,
+            )
+        except BaseException as cleanup_error:
+            if barrier_failure is None:
+                if self._has_pre_cleanup_barrier and body_control_flow is not None:
+                    self._raise_control_flow_after_cleanup_failure(
+                        body_control_flow,
+                        cleanup_error,
                     )
-                await self._drain_cleanup(
-                    self._cleanup_execution(
-                        process=process,
-                        container_name=container_name,
-                        egress_runtime=egress_runtime,
-                        force_remove=force_remove,
-                        observer_observation=(observer_observation if observer_attached else None),
-                    ),
-                    resources=cleanup_resources,
+                raise
+            barrier_failure.add_note(
+                "Docker cleanup also failed after the pre-cleanup durability barrier: "
+                + audit_safe_exception_diagnostic(
+                    cleanup_error,
+                    stage="docker-cleanup",
                 )
+            )
+            if body_control_flow is not None:
+                self._raise_control_flow_after_barrier_failure(
+                    body_control_flow,
+                    barrier_failure,
+                )
+            raise barrier_failure from barrier_failure.__cause__
+        if barrier_failure is not None:
+            if body_control_flow is not None:
+                self._raise_control_flow_after_barrier_failure(
+                    body_control_flow,
+                    barrier_failure,
+                )
+            raise barrier_failure
 
     async def _execute_container_process(
         self,
@@ -893,7 +1166,17 @@ class DockerWorkerBackend:
                 wire_stdin=wire_stdin,
                 timeout_seconds=job.limits.timeout_seconds,
                 container_name=container_name,
+                defer_container_cleanup=self._has_pre_cleanup_barrier,
             )
+            if timed_out and self._has_pre_cleanup_barrier:
+                return _ContainerProcessCapture(
+                    timed_out=True,
+                    exit_code=None,
+                    stdout=b"",
+                    stderr=b"",
+                    stdout_truncated=False,
+                    stderr_truncated=False,
+                )
             (stdout, stdout_truncated), (stderr, stderr_truncated) = await asyncio.gather(
                 stdout_task,
                 stderr_task,
@@ -919,6 +1202,7 @@ class DockerWorkerBackend:
         wire_stdin: bytes,
         timeout_seconds: float,
         container_name: str,
+        defer_container_cleanup: bool = False,
     ) -> bool:
         async def send_stdin_and_wait_for_exit() -> None:
             assert process.stdin is not None
@@ -937,15 +1221,16 @@ class DockerWorkerBackend:
         try:
             await asyncio.wait_for(send_stdin_and_wait_for_exit(), timeout=timeout_seconds)
         except TimeoutError:
-            if process.returncode is None:
-                with suppress(ProcessLookupError):
-                    process.kill()
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(
-                        process.wait(),
-                        timeout=self._process_stop_timeout_seconds,
-                    )
-            await self._force_remove(container_name)
+            if not defer_container_cleanup:
+                if process.returncode is None:
+                    with suppress(ProcessLookupError):
+                        process.kill()
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(
+                            process.wait(),
+                            timeout=self._process_stop_timeout_seconds,
+                        )
+                await self._force_remove(container_name)
             return True
         return False
 
@@ -1010,9 +1295,10 @@ class DockerWorkerBackend:
                 "--env",
                 "no_proxy=localhost,127.0.0.1",
             ]
+        auto_remove_args = [] if self._has_pre_cleanup_barrier else ["--rm"]
         return [
             "run",
-            "--rm",
+            *auto_remove_args,
             "--interactive",
             "--init",
             "--pull",
@@ -1051,22 +1337,32 @@ class DockerWorkerBackend:
             *job.command,
         ]
 
-    async def _setup_egress(self, job: WorkerJob) -> _EgressRuntime:
-        policy = job.egress_policy
-        if policy is None:
-            raise RuntimeError("egress policy is missing")
+    def _new_egress_runtime(self, job: WorkerJob) -> _EgressRuntime:
         # Keep resource ownership collision-resistant even on long-lived Docker
         # hosts. Cleanup is name-based after CLI timeouts, so truncating this
         # nonce could otherwise make an unrelated execution a removal target.
         suffix = uuid4().hex
-        network_name = f"pajin-egress-{suffix}"
-        proxy_name = f"pajin-proxy-{suffix}"
         external_network = self._external_network_routes.get(job.command[0], self._external_network)
-        runtime = _EgressRuntime(
-            network_name=network_name,
-            proxy_name=proxy_name,
+        return _EgressRuntime(
+            network_name=f"pajin-egress-{suffix}",
+            proxy_name=f"pajin-proxy-{suffix}",
             external_network_name=external_network,
         )
+
+    async def _setup_egress(
+        self,
+        job: WorkerJob,
+        *,
+        runtime: _EgressRuntime | None = None,
+        cleanup_on_failure: bool = True,
+    ) -> _EgressRuntime:
+        policy = job.egress_policy
+        if policy is None:
+            raise RuntimeError("egress policy is missing")
+        runtime = runtime or self._new_egress_runtime(job)
+        network_name = runtime.network_name
+        proxy_name = runtime.proxy_name
+        external_network = runtime.external_network_name
         ready = False
         try:
             code, _, error = await self._run_cli(
@@ -1088,7 +1384,7 @@ class DockerWorkerBackend:
                 [
                     "run",
                     "--detach",
-                    "--rm",
+                    *([] if self._has_pre_cleanup_barrier else ["--rm"]),
                     "--init",
                     "--pull",
                     "never",
@@ -1137,7 +1433,7 @@ class DockerWorkerBackend:
             ready = True
             return runtime
         finally:
-            if not ready:
+            if not ready and cleanup_on_failure:
                 await self._drain_cleanup(
                     self._cleanup_egress(runtime),
                     resources=[
@@ -1197,6 +1493,152 @@ class DockerWorkerBackend:
         )
         data = (output + error).encode("utf-8")[:limit]
         return data.decode("utf-8", errors="replace")
+
+    async def _run_pre_cleanup_barrier(
+        self,
+        observation: DockerPreCleanupBarrierObservation,
+        *,
+        result: WorkerResult | None,
+    ) -> None:
+        barrier = getattr(self, "_pre_cleanup_barrier", None)
+        if barrier is None:
+            return
+
+        if getattr(self, "_pre_cleanup_barrier_is_synchronous", False):
+            try:
+                self._run_synchronous_pre_cleanup_barrier(
+                    barrier,
+                    observation,
+                    result=result,
+                )
+            except (
+                DockerPreCleanupBarrierDeadlineExceeded,
+                asyncio.CancelledError,
+                SystemExit,
+                KeyboardInterrupt,
+            ):
+                raise
+            except BaseException as exc:
+                raise DockerPreCleanupBarrierError(cause=exc) from exc
+            return
+
+        async def invoke_bounded_callback() -> None:
+            async with asyncio.timeout(self._pre_cleanup_barrier_timeout_seconds):
+                await barrier.before_cleanup(observation, result)
+
+        try:
+            callback_task = asyncio.create_task(invoke_bounded_callback())
+        except BaseException as exc:
+            raise DockerPreCleanupBarrierError(cause=exc) from exc
+
+        interrupted = False
+        while not callback_task.done():
+            try:
+                await asyncio.shield(callback_task)
+            except asyncio.CancelledError:
+                interrupted = True
+            except BaseException:
+                break
+        try:
+            callback_task.result()
+        except BaseException as exc:
+            raise DockerPreCleanupBarrierError(cause=exc) from exc
+        if interrupted:
+            raise asyncio.CancelledError()
+
+    def _run_synchronous_pre_cleanup_barrier(
+        self,
+        barrier: object,
+        observation: DockerPreCleanupBarrierObservation,
+        *,
+        result: WorkerResult | None,
+    ) -> None:
+        callback = getattr(barrier, "before_cleanup_sync", None)
+        if not callable(callback):
+            raise RuntimeError("synchronous pre-cleanup barrier callback is unavailable")
+        if os.name != "posix" or not all(
+            hasattr(signal, attribute)
+            for attribute in ("SIGALRM", "ITIMER_REAL", "getitimer", "setitimer")
+        ):
+            raise RuntimeError("synchronous pre-cleanup barrier requires POSIX real timers")
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError("synchronous pre-cleanup barrier requires the main thread")
+        if not _PRE_CLEANUP_SIGNAL_DEADLINE_LOCK.acquire(blocking=False):
+            raise RuntimeError("synchronous pre-cleanup barrier deadline is already in use")
+
+        previous_handler: signal._HANDLER | None = None
+        previous_timer: tuple[float, float] | None = None
+        handler_installed = False
+
+        def deadline_handler(signum: int, frame: FrameType | None) -> None:
+            del signum, frame
+            raise DockerPreCleanupBarrierDeadlineExceeded(
+                "synchronous pre-cleanup barrier exceeded its hard deadline"
+            )
+
+        try:
+            previous_handler = signal.getsignal(signal.SIGALRM)
+            previous_timer = signal.getitimer(signal.ITIMER_REAL)
+            if previous_timer != (0.0, 0.0):
+                raise RuntimeError(
+                    "synchronous pre-cleanup barrier cannot replace an active real timer"
+                )
+            signal.signal(signal.SIGALRM, deadline_handler)
+            handler_installed = True
+            signal.setitimer(
+                signal.ITIMER_REAL,
+                self._pre_cleanup_barrier_timeout_seconds,
+            )
+            returned = callback(observation, result)
+            if inspect.iscoroutine(returned):
+                returned.close()
+            if inspect.isawaitable(returned):
+                raise TypeError("synchronous pre-cleanup barrier callback returned an awaitable")
+            if returned is not None:
+                raise TypeError("synchronous pre-cleanup barrier callback must return None")
+        finally:
+            try:
+                if handler_installed:
+                    signal.setitimer(signal.ITIMER_REAL, 0.0)
+                    assert previous_handler is not None
+                    signal.signal(signal.SIGALRM, previous_handler)
+                    assert previous_timer is not None
+                    signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+            finally:
+                _PRE_CLEANUP_SIGNAL_DEADLINE_LOCK.release()
+
+    async def _cleanup_after_attempt(
+        self,
+        *,
+        process: asyncio.subprocess.Process | None,
+        container_name: str,
+        egress_runtime: _EgressRuntime | None,
+        force_remove: bool,
+        observer_observation: DockerEgressLifecycleObservation | None,
+    ) -> None:
+        if not (force_remove or process is not None or egress_runtime is not None):
+            return
+        remove_worker = force_remove or (self._has_pre_cleanup_barrier and process is not None)
+        cleanup_resources: list[tuple[str, str]] = []
+        if remove_worker or process is not None:
+            cleanup_resources.append(("container", container_name))
+        if egress_runtime is not None:
+            cleanup_resources.extend(
+                [
+                    ("egress proxy", egress_runtime.proxy_name),
+                    ("network", egress_runtime.network_name),
+                ]
+            )
+        await self._drain_cleanup(
+            self._cleanup_execution(
+                process=process,
+                container_name=container_name,
+                egress_runtime=egress_runtime,
+                force_remove=remove_worker,
+                observer_observation=observer_observation,
+            ),
+            resources=cleanup_resources,
+        )
 
     async def _cleanup_egress(self, runtime: _EgressRuntime) -> None:
         failures: list[_CleanupFailure] = []
@@ -1294,40 +1736,88 @@ class DockerWorkerBackend:
         cleanup_task = asyncio.create_task(
             asyncio.wait_for(cleanup, timeout=self._cleanup_timeout_seconds)
         )
-        interrupted = False
+        interruption: asyncio.CancelledError | None = None
         while not cleanup_task.done():
             try:
                 await asyncio.shield(cleanup_task)
-            except asyncio.CancelledError:
-                interrupted = True
+            except asyncio.CancelledError as exc:
+                if interruption is None:
+                    interruption = exc
             except Exception:
                 break
         try:
             cleanup_task.result()
-        except DockerEgressLifecycleObservationError:
-            raise
-        except WorkerCleanupError:
-            raise
-        except asyncio.CancelledError as exc:
-            raise WorkerCleanupError(
+        except BaseException as exc:
+            cleanup_error = self._normalize_cleanup_task_failure(exc, resources=resources)
+            if interruption is not None and self._has_pre_cleanup_barrier:
+                self._raise_control_flow_after_cleanup_failure(interruption, cleanup_error)
+            if cleanup_error is exc:
+                raise
+            raise cleanup_error from exc
+        if interruption is not None:
+            if self._has_pre_cleanup_barrier:
+                raise interruption
+            raise asyncio.CancelledError()
+
+    def _normalize_cleanup_task_failure(
+        self,
+        failure: BaseException,
+        *,
+        resources: list[tuple[str, str]],
+    ) -> BaseException:
+        if isinstance(
+            failure,
+            (DockerEgressLifecycleObservationError, WorkerCleanupError),
+        ):
+            return failure
+        if isinstance(failure, asyncio.CancelledError):
+            return WorkerCleanupError(
                 self._cleanup_failures(
                     resources,
                     "cleanup task was cancelled before removal could be confirmed",
                 )
-            ) from exc
-        except TimeoutError as exc:
-            raise WorkerCleanupError(
+            )
+        if isinstance(failure, TimeoutError):
+            return WorkerCleanupError(
                 self._cleanup_failures(
                     resources,
                     f"cleanup exceeded {self._cleanup_timeout_seconds:g} seconds",
                 )
-            ) from exc
-        except Exception as exc:
-            raise WorkerCleanupError(
-                self._cleanup_failures_from_exception(exc, resources=resources)
-            ) from exc
-        if interrupted:
-            raise asyncio.CancelledError()
+            )
+        if isinstance(failure, Exception):
+            return WorkerCleanupError(
+                self._cleanup_failures_from_exception(failure, resources=resources)
+            )
+        return failure
+
+    @staticmethod
+    def _raise_control_flow_after_cleanup_failure(
+        control_flow: asyncio.CancelledError | SystemExit | KeyboardInterrupt,
+        cleanup_error: BaseException,
+    ) -> Never:
+        control_flow.add_note(
+            "Docker cleanup also failed while preserving Worker process control: "
+            + audit_safe_exception_diagnostic(cleanup_error, stage="docker-cleanup")
+        )
+        try:
+            raise cleanup_error
+        except BaseException:
+            raise control_flow from control_flow.__cause__
+
+    @staticmethod
+    def _raise_control_flow_after_barrier_failure(
+        control_flow: asyncio.CancelledError | SystemExit | KeyboardInterrupt,
+        barrier_failure: BaseException,
+    ) -> Never:
+        control_flow.add_note(
+            "Docker pre-cleanup durability barrier also failed while preserving Worker "
+            "process control: "
+            + audit_safe_exception_diagnostic(barrier_failure, stage="worker-backend")
+        )
+        try:
+            raise barrier_failure
+        except BaseException:
+            raise control_flow from control_flow.__cause__
 
     async def _remove_docker_resource(
         self,
@@ -1544,8 +2034,11 @@ class DockerWorkerBackend:
             allow_nan=False,
             sort_keys=True,
         ).encode("utf-8")
-        wire_limit = (MAX_LARGE_PROVIDER_INPUT_BYTES + 100_000
-                      if job.command == [LARGE_PROVIDER_ACTION] else _MAX_WORKER_WIRE_INPUT_BYTES)
+        wire_limit = (
+            MAX_LARGE_PROVIDER_INPUT_BYTES + 100_000
+            if job.command == [LARGE_PROVIDER_ACTION]
+            else _MAX_WORKER_WIRE_INPUT_BYTES
+        )
         if len(wire) > wire_limit:
             raise ValueError("secret-bearing Worker envelope exceeded its byte limit")
         return wire

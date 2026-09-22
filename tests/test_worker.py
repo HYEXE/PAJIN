@@ -1,7 +1,10 @@
 import asyncio
 import json
+import os
+import signal
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -12,10 +15,15 @@ from pajin.runtime.worker import (
     MAX_LARGE_PROVIDER_INPUT_BYTES,
     DockerEgressLifecycleObservation,
     DockerEgressLifecycleObservationError,
+    DockerPreCleanupBarrierDeadlineExceeded,
+    DockerPreCleanupBarrierError,
+    DockerPreCleanupBarrierObservation,
     DockerWorkerBackend,
     EgressPolicy,
     NetworkMode,
     SimulatedWorkerBackend,
+    WorkerAttemptOutcome,
+    WorkerCleanupError,
     WorkerFailureCode,
     WorkerJob,
     WorkerLimits,
@@ -57,6 +65,103 @@ class _RecordingEgressObserver:
         self.observations.append(observation)
         if self.fail_stage == "cleaned":
             raise RuntimeError("observer-secret-MUST-NOT-PERSIST")
+
+
+class _RecordingPreCleanupBarrier:
+    def __init__(
+        self,
+        *,
+        events: list[str],
+        fail: bool = False,
+        entered: asyncio.Event | None = None,
+        release: asyncio.Event | None = None,
+        cancelled: asyncio.Event | None = None,
+    ) -> None:
+        self.events = events
+        self.fail = fail
+        self.entered = entered
+        self.release = release
+        self.cancelled = cancelled
+        self.context: object = {
+            "barrierId": "test-durable-barrier",
+            "contractVersion": 1,
+        }
+        self.observations: list[DockerPreCleanupBarrierObservation] = []
+        self.results: list[WorkerResult | None] = []
+
+    def stable_barrier_context(self) -> dict[str, object]:
+        return cast(dict[str, object], self.context)
+
+    def replace_context_for_test(self, context: object) -> None:
+        self.context = context
+
+    async def before_cleanup(
+        self,
+        observation: DockerPreCleanupBarrierObservation,
+        result: WorkerResult | None,
+    ) -> None:
+        self.events.append("barrier")
+        self.observations.append(observation)
+        self.results.append(result)
+        if self.entered is not None:
+            self.entered.set()
+        if self.release is not None:
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.events.append("barrier-cancelled")
+                if self.cancelled is not None:
+                    self.cancelled.set()
+                raise
+        if self.fail:
+            raise RuntimeError("barrier-secret-MUST-NOT-PERSIST")
+
+
+class _SynchronousBlockingPreCleanupBarrier:
+    def __init__(self, *, events: list[str]) -> None:
+        self.events = events
+        self.observations: list[DockerPreCleanupBarrierObservation] = []
+        self.results: list[WorkerResult | None] = []
+        self.late_mutation = False
+
+    def stable_barrier_context(self) -> dict[str, object]:
+        return {
+            "barrierId": "test-hard-bounded-durable-barrier",
+            "contractVersion": 1,
+        }
+
+    def before_cleanup_sync(
+        self,
+        observation: DockerPreCleanupBarrierObservation,
+        result: WorkerResult | None,
+    ) -> None:
+        self.events.append("barrier")
+        self.observations.append(observation)
+        self.results.append(result)
+        while True:
+            pass
+        self.late_mutation = True
+
+
+class _SynchronousRaisingPreCleanupBarrier:
+    def __init__(self, *, events: list[str], error: BaseException) -> None:
+        self.events = events
+        self.error = error
+
+    def stable_barrier_context(self) -> dict[str, object]:
+        return {
+            "barrierId": "test-raising-durable-barrier",
+            "contractVersion": 1,
+        }
+
+    def before_cleanup_sync(
+        self,
+        observation: DockerPreCleanupBarrierObservation,
+        result: WorkerResult | None,
+    ) -> None:
+        del observation, result
+        self.events.append("barrier")
+        raise self.error
 
 
 class _FakeStdin:
@@ -350,15 +455,18 @@ def test_large_input_is_scoped_to_the_versioned_provider_action() -> None:
     assert "max_request_bytes" not in EgressPolicy(allow=["https://example.com/**"]).model_dump()
     with pytest.raises(ValidationError, match="transport"):
         WorkerJob(
-            image="pajin-worker:dev", command=["mock-agent-probe"],
+            image="pajin-worker:dev",
+            command=["mock-agent-probe"],
             network=NetworkMode.EGRESS_PROXY,
             egress_policy=EgressPolicy(
-                allow=["https://example.com/**"], max_request_bytes=2_000_000,
+                allow=["https://example.com/**"],
+                max_request_bytes=2_000_000,
             ),
         )
     with pytest.raises(ValidationError, match="UTF-8 byte limit"):
         WorkerJob(
-            image="pajin-worker:dev", command=[LARGE_PROVIDER_ACTION],
+            image="pajin-worker:dev",
+            command=[LARGE_PROVIDER_ACTION],
             stdin="한" * (MAX_LARGE_PROVIDER_INPUT_BYTES // 3 + 1),
         )
 
@@ -551,6 +659,77 @@ def test_docker_backend_builds_fail_closed_security_profile() -> None:
     assert args[-2:] == ["pajin-worker:dev", "mock-agent-probe"]
 
 
+def test_docker_backend_disables_auto_remove_only_with_pre_cleanup_barrier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        plain_backend = DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
+        barrier_backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=_RecordingPreCleanupBarrier(events=[]),
+        )
+        job = WorkerJob(
+            image="pajin-worker:dev",
+            command=["http-get"],
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(allow=["https://example.com/**"]),
+        )
+
+        plain_worker_args = plain_backend._docker_args(
+            job,
+            "pajin-worker-plain",
+            network_name="pajin-egress-plain",
+        )
+        barrier_worker_args = barrier_backend._docker_args(
+            job,
+            "pajin-worker-barrier",
+            network_name="pajin-egress-barrier",
+        )
+        assert "--rm" in plain_worker_args
+        assert "--rm" not in barrier_worker_args
+
+        calls: dict[str, list[list[str]]] = {"plain": [], "barrier": []}
+
+        async def run_plain(
+            args: list[str],
+            *,
+            timeout: float = 10,
+        ) -> tuple[int, str, str]:
+            del timeout
+            calls["plain"].append(args)
+            if args[:3] == ["inspect", "--format", "{{.State.Health.Status}}"]:
+                return 0, "healthy", ""
+            return 0, "created", ""
+
+        async def run_barrier(
+            args: list[str],
+            *,
+            timeout: float = 10,
+        ) -> tuple[int, str, str]:
+            del timeout
+            calls["barrier"].append(args)
+            if args[:3] == ["inspect", "--format", "{{.State.Health.Status}}"]:
+                return 0, "healthy", ""
+            return 0, "created", ""
+
+        monkeypatch.setattr(plain_backend, "_run_cli", run_plain)
+        monkeypatch.setattr(barrier_backend, "_run_cli", run_barrier)
+        monkeypatch.setattr(plain_backend, "_proxy_health_initial_delay_seconds", 0.0)
+        monkeypatch.setattr(barrier_backend, "_proxy_health_initial_delay_seconds", 0.0)
+
+        await plain_backend._setup_egress(job)
+        await barrier_backend._setup_egress(job)
+
+        plain_proxy_args = next(args for args in calls["plain"] if args[:2] == ["run", "--detach"])
+        barrier_proxy_args = next(
+            args for args in calls["barrier"] if args[:2] == ["run", "--detach"]
+        )
+        assert "--rm" in plain_proxy_args
+        assert "--rm" not in barrier_proxy_args
+
+    asyncio.run(scenario())
+
+
 def test_docker_resource_names_keep_full_collision_resistant_nonce(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -740,6 +919,197 @@ def test_docker_backend_observer_context_is_frozen_and_versioned() -> None:
             "contractVersion": 1,
             "observerId": "test-host-observer",
         }
+
+    asyncio.run(scenario())
+
+
+def test_docker_backend_pre_cleanup_barrier_context_is_frozen_and_versioned() -> None:
+    async def scenario() -> None:
+        barrier = _RecordingPreCleanupBarrier(events=[])
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            external_network_routes={"http-get": "target-net"},
+            pre_cleanup_barrier=barrier,
+        )
+
+        first = backend.stable_execution_context()
+        barrier.replace_context_for_test({"barrierId": "mutated", "contractVersion": 1})
+        second = backend.stable_execution_context()
+
+        assert first == second
+        assert first["implementationVersion"] == "pajin.docker-worker/v5"
+        assert first["preCleanupBarrier"] == {
+            "barrierId": "test-durable-barrier",
+            "contractVersion": 1,
+        }
+        assert backend.binds_pre_cleanup_barrier(barrier)
+        assert not backend.binds_pre_cleanup_barrier(object())
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "not-a-mapping",
+        {"unsupported": object()},
+        {1: "non-string-key"},
+        {"oversized": "x" * (64 * 1024)},
+    ],
+    ids=["non-mapping", "non-json", "non-string-key", "oversized"],
+)
+def test_docker_backend_rejects_noncanonical_pre_cleanup_barrier_context(
+    context: object,
+) -> None:
+    barrier = _RecordingPreCleanupBarrier(events=[])
+    barrier.replace_context_for_test(context)
+
+    with pytest.raises(ValueError, match="barrier context is not canonical JSON"):
+        DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+
+
+def test_docker_backend_calls_durable_barrier_before_success_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier = _RecordingPreCleanupBarrier(events=events)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        runtime = SimpleNamespace(
+            network_name="pajin-egress-test",
+            proxy_name="pajin-proxy-test",
+            external_network_name="target-net",
+        )
+        process = _FakeProcess(
+            stdout=_completed_reader(b'{"status":200}'),
+            stderr=_completed_reader(),
+        )
+        job = WorkerJob(
+            execution_id="exec_barrier_success",
+            image="pajin-worker:dev",
+            command=["http-get"],
+            stdin="payload",
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(allow=["https://example.com/**"]),
+        )
+
+        monkeypatch.setattr(backend, "_new_egress_runtime", lambda worker_job: runtime)
+
+        async def setup_egress(
+            worker_job: WorkerJob,
+            *,
+            runtime: object,
+            cleanup_on_failure: bool,
+        ) -> object:
+            assert worker_job is job
+            assert runtime is not None
+            assert not cleanup_on_failure
+            return runtime
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            del args, kwargs
+            return process
+
+        async def read_proxy_logs(proxy_name: str, limit: int) -> str:
+            assert proxy_name == "pajin-proxy-test"
+            assert limit == job.limits.stderr_bytes
+            return ""
+
+        async def cleanup_egress(cleanup_runtime: object) -> None:
+            assert cleanup_runtime is runtime
+            events.append("egress-cleanup")
+
+        async def force_remove(container_name: str) -> None:
+            assert container_name.startswith("pajin-")
+            assert process.returncode == 0
+            events.append("worker-remove")
+
+        monkeypatch.setattr(backend, "_setup_egress", setup_egress)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_read_proxy_logs", read_proxy_logs)
+        monkeypatch.setattr(backend, "_force_remove", force_remove)
+        monkeypatch.setattr(backend, "_cleanup_egress", cleanup_egress)
+
+        result = await backend.run(job)
+
+        assert result.status is WorkerStatus.SUCCEEDED
+        assert events == ["barrier", "worker-remove", "egress-cleanup"]
+        assert len(barrier.observations) == 1
+        observation = barrier.observations[0]
+        assert observation.execution_id == job.execution_id
+        assert observation.outcome is WorkerAttemptOutcome.RESULT_OBSERVED
+        assert observation.worker_status is WorkerStatus.SUCCEEDED
+        assert observation.failure_code is None
+        assert observation.result_sha256 is not None
+        assert observation.result_sha256.startswith("sha256:")
+        assert barrier.results == [result]
+        assert barrier.results[0] is result
+
+    asyncio.run(scenario())
+
+
+def test_docker_backend_defers_partial_egress_cleanup_until_after_barrier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier = _RecordingPreCleanupBarrier(events=events)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        runtime = SimpleNamespace(
+            network_name="pajin-egress-partial",
+            proxy_name="pajin-proxy-partial",
+            external_network_name="target-net",
+        )
+        job = WorkerJob(
+            execution_id="exec_barrier_partial",
+            image="pajin-worker:dev",
+            command=["http-get"],
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(allow=["https://example.com/**"]),
+        )
+
+        monkeypatch.setattr(backend, "_new_egress_runtime", lambda worker_job: runtime)
+
+        async def setup_egress(
+            worker_job: WorkerJob,
+            *,
+            runtime: object,
+            cleanup_on_failure: bool,
+        ) -> object:
+            assert worker_job is job
+            assert runtime is not None
+            assert not cleanup_on_failure
+            events.append("setup-failed")
+            raise RuntimeError("partial setup failed")
+
+        async def cleanup_egress(cleanup_runtime: object) -> None:
+            assert cleanup_runtime is runtime
+            events.append("cleanup")
+
+        monkeypatch.setattr(backend, "_setup_egress", setup_egress)
+        monkeypatch.setattr(backend, "_cleanup_egress", cleanup_egress)
+
+        result = await backend.run(job)
+
+        assert result.status is WorkerStatus.FAILED
+        assert result.failure_code is WorkerFailureCode.EGRESS_PROXY_SETUP_FAILED
+        assert events == ["setup-failed", "barrier", "cleanup"]
+        assert len(barrier.observations) == 1
+        observation = barrier.observations[0]
+        assert observation.outcome is WorkerAttemptOutcome.RESULT_OBSERVED
+        assert observation.worker_status is WorkerStatus.FAILED
+        assert observation.failure_code is WorkerFailureCode.EGRESS_PROXY_SETUP_FAILED
+        assert barrier.results == [result]
+        assert barrier.results[0] is result
 
     asyncio.run(scenario())
 
@@ -1067,6 +1437,763 @@ def test_docker_backend_cancellation_during_reader_forces_cleanup(
     asyncio.run(scenario())
 
 
+def test_docker_backend_cancellation_records_unknown_before_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier = _RecordingPreCleanupBarrier(events=events)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        job = WorkerJob(
+            execution_id="exec_barrier_cancelled",
+            image="pajin-worker:dev",
+            command=["mock-agent-probe"],
+        )
+        stdout = _BlockingReader()
+        process = _FakeProcess(stdout=stdout, stderr=_completed_reader())
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            del args, kwargs
+            return process
+
+        async def force_remove(container_name: str) -> None:
+            assert container_name.startswith("pajin-")
+            events.append("cleanup")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_force_remove", force_remove)
+
+        task = asyncio.create_task(backend.run(job))
+        await stdout.started.wait()
+        await process.waited.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert events == ["barrier", "cleanup"]
+        assert len(barrier.observations) == 1
+        assert barrier.observations[0] == (
+            DockerPreCleanupBarrierObservation.outcome_unknown(job.execution_id)
+        )
+        assert barrier.results == [None]
+
+    asyncio.run(scenario())
+
+
+def test_docker_backend_drains_barrier_before_cleanup_when_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier_entered = asyncio.Event()
+        barrier_release = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        barrier = _RecordingPreCleanupBarrier(
+            events=events,
+            entered=barrier_entered,
+            release=barrier_release,
+        )
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        runtime = SimpleNamespace(
+            network_name="pajin-egress-cancel",
+            proxy_name="pajin-proxy-cancel",
+            external_network_name="target-net",
+        )
+        process = _FakeProcess(
+            stdout=_completed_reader(b"ok"),
+            stderr=_completed_reader(),
+        )
+        job = WorkerJob(
+            execution_id="exec_barrier_wait",
+            image="pajin-worker:dev",
+            command=["http-get"],
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(allow=["https://example.com/**"]),
+        )
+
+        monkeypatch.setattr(backend, "_new_egress_runtime", lambda worker_job: runtime)
+
+        async def setup_egress(
+            worker_job: WorkerJob,
+            *,
+            runtime: object,
+            cleanup_on_failure: bool,
+        ) -> object:
+            assert worker_job is job
+            assert runtime is not None
+            assert not cleanup_on_failure
+            return runtime
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            del args, kwargs
+            return process
+
+        async def read_proxy_logs(proxy_name: str, limit: int) -> str:
+            del proxy_name, limit
+            return ""
+
+        async def cleanup_egress(cleanup_runtime: object) -> None:
+            assert cleanup_runtime is runtime
+            cleanup_started.set()
+            events.append("cleanup")
+
+        async def force_remove(container_name: str) -> None:
+            assert container_name.startswith("pajin-")
+
+        monkeypatch.setattr(backend, "_setup_egress", setup_egress)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_read_proxy_logs", read_proxy_logs)
+        monkeypatch.setattr(backend, "_force_remove", force_remove)
+        monkeypatch.setattr(backend, "_cleanup_egress", cleanup_egress)
+
+        task = asyncio.create_task(backend.run(job))
+        await barrier_entered.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+
+        assert not cleanup_started.is_set()
+        assert len(barrier.observations) == 1
+        barrier_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert cleanup_started.is_set()
+        assert events == ["barrier", "cleanup"]
+        assert len(barrier.observations) == 1
+        assert barrier.results[0] is not None
+        assert barrier.results[0].status is WorkerStatus.SUCCEEDED
+
+    asyncio.run(scenario())
+
+
+def test_docker_backend_callback_failure_still_cleans_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier = _RecordingPreCleanupBarrier(events=events, fail=True)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        runtime = SimpleNamespace(
+            network_name="pajin-egress-barrier-failure",
+            proxy_name="pajin-proxy-barrier-failure",
+            external_network_name="target-net",
+        )
+        process = _FakeProcess(
+            stdout=_completed_reader(b"ok"),
+            stderr=_completed_reader(),
+        )
+        job = WorkerJob(
+            execution_id="exec_barrier_failure",
+            image="pajin-worker:dev",
+            command=["http-get"],
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(allow=["https://example.com/**"]),
+        )
+        spawn_count = 0
+
+        monkeypatch.setattr(backend, "_new_egress_runtime", lambda worker_job: runtime)
+
+        async def setup_egress(
+            worker_job: WorkerJob,
+            *,
+            runtime: object,
+            cleanup_on_failure: bool,
+        ) -> object:
+            assert worker_job is job
+            assert runtime is not None
+            assert not cleanup_on_failure
+            return runtime
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            nonlocal spawn_count
+            del args, kwargs
+            spawn_count += 1
+            return process
+
+        async def read_proxy_logs(proxy_name: str, limit: int) -> str:
+            del proxy_name, limit
+            return ""
+
+        async def cleanup_egress(cleanup_runtime: object) -> None:
+            assert cleanup_runtime is runtime
+            events.append("cleanup")
+
+        async def force_remove(container_name: str) -> None:
+            assert container_name.startswith("pajin-")
+
+        monkeypatch.setattr(backend, "_setup_egress", setup_egress)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_read_proxy_logs", read_proxy_logs)
+        monkeypatch.setattr(backend, "_force_remove", force_remove)
+        monkeypatch.setattr(backend, "_cleanup_egress", cleanup_egress)
+
+        with pytest.raises(DockerPreCleanupBarrierError) as exc_info:
+            await backend.run(job)
+
+        assert "barrier-secret-MUST-NOT-PERSIST" not in str(exc_info.value)
+        assert events == ["barrier", "cleanup"]
+        assert spawn_count == 1
+        assert len(barrier.observations) == 1
+        assert barrier.results[0] is not None
+        assert barrier.results[0].status is WorkerStatus.SUCCEEDED
+
+    asyncio.run(scenario())
+
+
+def test_docker_backend_callback_timeout_cancels_then_cleans_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier_entered = asyncio.Event()
+        barrier_release = asyncio.Event()
+        barrier_cancelled = asyncio.Event()
+        barrier = _RecordingPreCleanupBarrier(
+            events=events,
+            entered=barrier_entered,
+            release=barrier_release,
+            cancelled=barrier_cancelled,
+        )
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        monkeypatch.setattr(backend, "_pre_cleanup_barrier_timeout_seconds", 0.01)
+        runtime = SimpleNamespace(
+            network_name="pajin-egress-barrier-timeout",
+            proxy_name="pajin-proxy-barrier-timeout",
+            external_network_name="target-net",
+        )
+        job = WorkerJob(
+            execution_id="exec_barrier_callback_timeout",
+            image="pajin-worker:dev",
+            command=["http-get"],
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(allow=["https://example.com/**"]),
+        )
+
+        monkeypatch.setattr(backend, "_new_egress_runtime", lambda worker_job: runtime)
+
+        async def setup_egress(
+            worker_job: WorkerJob,
+            *,
+            runtime: object,
+            cleanup_on_failure: bool,
+        ) -> object:
+            assert worker_job is job
+            assert runtime is not None
+            assert not cleanup_on_failure
+            events.append("setup-failed")
+            raise RuntimeError("partial setup failed")
+
+        async def cleanup_egress(cleanup_runtime: object) -> None:
+            assert cleanup_runtime is runtime
+            assert barrier_cancelled.is_set()
+            events.append("cleanup")
+
+        monkeypatch.setattr(backend, "_setup_egress", setup_egress)
+        monkeypatch.setattr(backend, "_cleanup_egress", cleanup_egress)
+
+        with pytest.raises(DockerPreCleanupBarrierError) as exc_info:
+            await backend.run(job)
+
+        assert barrier_entered.is_set()
+        assert barrier_cancelled.is_set()
+        assert "TimeoutError" in str(exc_info.value)
+        assert events == ["setup-failed", "barrier", "barrier-cancelled", "cleanup"]
+        assert len(barrier.observations) == 1
+        assert len(barrier.results) == 1
+        assert barrier.results[0] is not None
+        assert barrier.results[0].status is WorkerStatus.FAILED
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "interruption",
+    [
+        DockerPreCleanupBarrierDeadlineExceeded("injected deadline"),
+        asyncio.CancelledError(),
+        SystemExit("injected exit"),
+        KeyboardInterrupt(),
+    ],
+    ids=["deadline", "cancelled", "system-exit", "keyboard-interrupt"],
+)
+def test_docker_backend_synchronous_barrier_preserves_control_flow_base_exceptions(
+    interruption: BaseException,
+) -> None:
+    async def scenario() -> None:
+        barrier = _SynchronousRaisingPreCleanupBarrier(events=[], error=interruption)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        observation = DockerPreCleanupBarrierObservation.outcome_unknown(
+            "exec_sync_barrier_interruption"
+        )
+
+        with pytest.raises(type(interruption)) as exc_info:
+            await backend._run_pre_cleanup_barrier(observation, result=None)
+
+        assert exc_info.value is interruption
+
+    asyncio.run(scenario())
+
+
+def test_docker_backend_preserves_sync_barrier_failure_when_cleanup_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier_error = RuntimeError("barrier-secret-MUST-NOT-PERSIST")
+        barrier = _SynchronousRaisingPreCleanupBarrier(
+            events=events,
+            error=barrier_error,
+        )
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        process = _FakeProcess(
+            stdout=_completed_reader(b'{"status":200}'),
+            stderr=_completed_reader(),
+        )
+        job = WorkerJob(
+            execution_id="exec_sync_barrier_cleanup_failure",
+            image="pajin-worker:dev",
+            command=["http-get"],
+            stdin="payload",
+        )
+        cleanup_error = WorkerCleanupError(
+            backend._cleanup_failures(
+                [("container", "pajin-worker-cleanup-failure")],
+                "injected cleanup failure",
+            )
+        )
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            del args, kwargs
+            return process
+
+        async def cleanup_after_attempt(**kwargs: object) -> None:
+            del kwargs
+            events.append("cleanup")
+            raise cleanup_error
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_cleanup_after_attempt", cleanup_after_attempt)
+
+        with pytest.raises(DockerPreCleanupBarrierError) as exc_info:
+            await backend.run(job)
+
+        assert exc_info.value.__cause__ is barrier_error
+        assert exc_info.value.__context__ is cleanup_error
+        assert getattr(exc_info.value, "__notes__", []) == [
+            "Docker cleanup also failed after the pre-cleanup durability barrier: "
+            "exception_type=WorkerCleanupError; stage=docker-cleanup; detail=omitted"
+        ]
+        assert "barrier-secret-MUST-NOT-PERSIST" not in str(exc_info.value)
+        assert events == ["barrier", "cleanup"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "interruption_kind",
+    ("cancelled", "system-exit", "keyboard-interrupt"),
+)
+def test_barrier_backend_preserves_body_control_flow_when_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    interruption_kind: str,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier = _RecordingPreCleanupBarrier(events=events)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        job = WorkerJob(
+            execution_id=f"exec_body_{interruption_kind}",
+            image="pajin-worker:dev",
+            command=["mock-agent-probe"],
+        )
+        interruption: asyncio.CancelledError | SystemExit | KeyboardInterrupt
+        if interruption_kind == "cancelled":
+            interruption = asyncio.CancelledError("injected body cancellation")
+        elif interruption_kind == "system-exit":
+            interruption = SystemExit("injected body exit")
+        else:
+            interruption = KeyboardInterrupt("injected body interrupt")
+        cleanup_error = WorkerCleanupError(
+            backend._cleanup_failures(
+                [("container", "pajin-worker-body-control-flow")],
+                "cleanup-secret-MUST-NOT-PERSIST",
+            )
+        )
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            del args, kwargs
+            raise interruption
+
+        async def cleanup_after_attempt(**kwargs: object) -> None:
+            del kwargs
+            events.append("cleanup")
+            raise cleanup_error
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_cleanup_after_attempt", cleanup_after_attempt)
+
+        with pytest.raises(type(interruption)) as exc_info:
+            await backend.run(job)
+
+        assert exc_info.value is interruption
+        assert exc_info.value.__context__ is cleanup_error
+        assert getattr(exc_info.value, "__notes__", []) == [
+            "Docker cleanup also failed while preserving Worker process control: "
+            "exception_type=WorkerCleanupError; stage=docker-cleanup; detail=omitted"
+        ]
+        assert "cleanup-secret-MUST-NOT-PERSIST" not in str(exc_info.value)
+        assert events == ["barrier", "cleanup"]
+        assert barrier.results == [None]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "interruption_kind",
+    ("cancelled", "system-exit", "keyboard-interrupt"),
+)
+def test_barrier_backend_preserves_body_control_flow_when_barrier_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    interruption_kind: str,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier = _RecordingPreCleanupBarrier(events=events, fail=True)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        job = WorkerJob(
+            execution_id=f"exec_body_barrier_{interruption_kind}",
+            image="pajin-worker:dev",
+            command=["mock-agent-probe"],
+        )
+        interruption: asyncio.CancelledError | SystemExit | KeyboardInterrupt
+        if interruption_kind == "cancelled":
+            interruption = asyncio.CancelledError("injected body cancellation")
+        elif interruption_kind == "system-exit":
+            interruption = SystemExit("injected body exit")
+        else:
+            interruption = KeyboardInterrupt("injected body interrupt")
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            del args, kwargs
+            raise interruption
+
+        async def cleanup_after_attempt(**kwargs: object) -> None:
+            del kwargs
+            events.append("cleanup")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_cleanup_after_attempt", cleanup_after_attempt)
+
+        with pytest.raises(type(interruption)) as exc_info:
+            await backend.run(job)
+
+        assert exc_info.value is interruption
+        assert isinstance(exc_info.value.__context__, DockerPreCleanupBarrierError)
+        assert getattr(exc_info.value, "__notes__", []) == [
+            "Docker pre-cleanup durability barrier also failed while preserving Worker "
+            "process control: exception_type=Exception; "
+            "stage=worker-backend; detail=omitted"
+        ]
+        assert "barrier-secret-MUST-NOT-PERSIST" not in str(exc_info.value)
+        assert events == ["barrier", "cleanup"]
+        assert barrier.results == [None]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "interruption_kind",
+    ("cancelled", "system-exit", "keyboard-interrupt"),
+)
+def test_barrier_backend_preserves_body_control_flow_across_barrier_and_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    interruption_kind: str,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier = _RecordingPreCleanupBarrier(events=events, fail=True)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        job = WorkerJob(
+            execution_id=f"exec_body_triple_{interruption_kind}",
+            image="pajin-worker:dev",
+            command=["mock-agent-probe"],
+        )
+        interruption: asyncio.CancelledError | SystemExit | KeyboardInterrupt
+        if interruption_kind == "cancelled":
+            interruption = asyncio.CancelledError("injected body cancellation")
+        elif interruption_kind == "system-exit":
+            interruption = SystemExit("injected body exit")
+        else:
+            interruption = KeyboardInterrupt("injected body interrupt")
+        cleanup_error = WorkerCleanupError(
+            backend._cleanup_failures(
+                [("container", "pajin-worker-triple-control-flow")],
+                "cleanup-secret-MUST-NOT-PERSIST",
+            )
+        )
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            del args, kwargs
+            raise interruption
+
+        async def cleanup_after_attempt(**kwargs: object) -> None:
+            del kwargs
+            events.append("cleanup")
+            raise cleanup_error
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_cleanup_after_attempt", cleanup_after_attempt)
+
+        with pytest.raises(type(interruption)) as exc_info:
+            await backend.run(job)
+
+        assert exc_info.value is interruption
+        barrier_error = exc_info.value.__context__
+        assert isinstance(barrier_error, DockerPreCleanupBarrierError)
+        assert getattr(barrier_error, "__notes__", []) == [
+            "Docker cleanup also failed after the pre-cleanup durability barrier: "
+            "exception_type=WorkerCleanupError; stage=docker-cleanup; detail=omitted"
+        ]
+        assert getattr(exc_info.value, "__notes__", []) == [
+            "Docker pre-cleanup durability barrier also failed while preserving Worker "
+            "process control: exception_type=Exception; "
+            "stage=worker-backend; detail=omitted"
+        ]
+        combined = " ".join(
+            [
+                str(exc_info.value),
+                str(barrier_error),
+                *getattr(exc_info.value, "__notes__", []),
+                *getattr(barrier_error, "__notes__", []),
+            ]
+        )
+        assert "cleanup-secret-MUST-NOT-PERSIST" not in combined
+        assert "barrier-secret-MUST-NOT-PERSIST" not in combined
+        assert events == ["barrier", "cleanup"]
+        assert barrier.results == [None]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("barrier_present", (True, False), ids=("barrier", "legacy"))
+def test_cleanup_failure_priority_during_cancellation_depends_on_barrier_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    barrier_present: bool,
+) -> None:
+    async def scenario() -> None:
+        barrier = _RecordingPreCleanupBarrier(events=[])
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier if barrier_present else None,
+        )
+        cleanup_started = asyncio.Event()
+        cleanup_release = asyncio.Event()
+        cleanup_error = WorkerCleanupError(
+            backend._cleanup_failures(
+                [("container", "pajin-worker-drain-control-flow")],
+                "cleanup-secret-MUST-NOT-PERSIST",
+            )
+        )
+
+        async def failing_cleanup() -> None:
+            cleanup_started.set()
+            await cleanup_release.wait()
+            raise cleanup_error
+
+        task = asyncio.create_task(
+            backend._drain_cleanup(
+                failing_cleanup(),
+                resources=[("container", "pajin-worker-drain-control-flow")],
+            )
+        )
+        await cleanup_started.wait()
+        task.cancel("injected during-cleanup cancellation")
+        await asyncio.sleep(0)
+        cleanup_release.set()
+
+        if barrier_present:
+            with pytest.raises(asyncio.CancelledError) as exc_info:
+                await task
+            assert exc_info.value.args == ("injected during-cleanup cancellation",)
+            assert exc_info.value.__context__ is cleanup_error
+            assert getattr(exc_info.value, "__notes__", []) == [
+                "Docker cleanup also failed while preserving Worker process control: "
+                "exception_type=WorkerCleanupError; stage=docker-cleanup; detail=omitted"
+            ]
+        else:
+            with pytest.raises(WorkerCleanupError) as exc_info:
+                await task
+            assert exc_info.value is cleanup_error
+        if barrier_present:
+            assert "cleanup-secret-MUST-NOT-PERSIST" not in str(exc_info.value)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="hard barrier deadline requires POSIX signals")
+def test_docker_backend_hard_deadline_interrupts_synchronous_barrier_before_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier = _SynchronousBlockingPreCleanupBarrier(events=events)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        monkeypatch.setattr(backend, "_pre_cleanup_barrier_timeout_seconds", 0.01)
+        runtime = SimpleNamespace(
+            network_name="pajin-egress-hard-barrier-timeout",
+            proxy_name="pajin-proxy-hard-barrier-timeout",
+            external_network_name="target-net",
+        )
+        job = WorkerJob(
+            execution_id="exec_hard_barrier_timeout",
+            image="pajin-worker:dev",
+            command=["http-get"],
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(allow=["https://example.com/**"]),
+        )
+
+        context = backend.stable_execution_context()
+        assert context["implementationVersion"] == "pajin.docker-worker/v6"
+        assert context["preCleanupBarrierExecution"] == {
+            "mode": "posix-main-thread-real-timer",
+            "timeoutSeconds": 0.01,
+        }
+        monkeypatch.setattr(backend, "_new_egress_runtime", lambda worker_job: runtime)
+
+        async def setup_egress(
+            worker_job: WorkerJob,
+            *,
+            runtime: object,
+            cleanup_on_failure: bool,
+        ) -> object:
+            assert worker_job is job
+            assert runtime is not None
+            assert not cleanup_on_failure
+            events.append("setup-failed")
+            raise RuntimeError("partial setup failed")
+
+        async def cleanup_egress(cleanup_runtime: object) -> None:
+            assert cleanup_runtime is runtime
+            assert not barrier.late_mutation
+            events.append("cleanup")
+
+        monkeypatch.setattr(backend, "_setup_egress", setup_egress)
+        monkeypatch.setattr(backend, "_cleanup_egress", cleanup_egress)
+
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_timer = signal.getitimer(signal.ITIMER_REAL)
+        assert previous_timer == (0.0, 0.0)
+
+        def existing_handler(signum: int, frame: object) -> None:
+            del signum, frame
+
+        signal.signal(signal.SIGALRM, existing_handler)
+        try:
+            with pytest.raises(DockerPreCleanupBarrierDeadlineExceeded):
+                await backend.run(job)
+
+            assert signal.getsignal(signal.SIGALRM) is existing_handler
+            assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous_handler)
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+        assert events == ["setup-failed", "barrier", "cleanup"]
+        assert len(barrier.observations) == 1
+        assert len(barrier.results) == 1
+        assert barrier.results[0] is not None
+        assert barrier.results[0].status is WorkerStatus.FAILED
+        assert not barrier.late_mutation
+        await asyncio.sleep(0.05)
+        assert not barrier.late_mutation
+
+    asyncio.run(scenario())
+
+
+def test_docker_backend_timeout_is_unknown_before_container_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TimeoutProcess(_FakeProcess):
+        async def wait(self) -> int:
+            if self.returncode is None:
+                await asyncio.Event().wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier = _RecordingPreCleanupBarrier(events=events)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        job = WorkerJob(
+            execution_id="exec_barrier_timeout",
+            image="pajin-worker:dev",
+            command=["mock-agent-probe"],
+            limits=WorkerLimits(timeout_seconds=0.1),
+        )
+        process = TimeoutProcess(
+            stdout=_completed_reader(),
+            stderr=_completed_reader(),
+        )
+
+        async def create_process(*args: object, **kwargs: object) -> TimeoutProcess:
+            del args, kwargs
+            return process
+
+        async def force_remove(container_name: str) -> None:
+            assert container_name.startswith("pajin-")
+            events.append("cleanup")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_force_remove", force_remove)
+
+        result = await backend.run(job)
+
+        assert result.status is WorkerStatus.TIMED_OUT
+        assert events == ["barrier", "cleanup"]
+        assert barrier.observations == [
+            DockerPreCleanupBarrierObservation.outcome_unknown(job.execution_id)
+        ]
+        assert barrier.results == [None]
+        assert process.kill_count == 1
+
+    asyncio.run(scenario())
+
+
 def test_docker_backend_cancellation_during_spawn_removes_by_known_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1126,6 +2253,47 @@ def test_docker_backend_exception_after_spawn_kills_and_removes_container(
 
         assert process.kill_count == 1
         assert removed.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_docker_backend_exception_records_unknown_before_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        barrier = _RecordingPreCleanupBarrier(events=events)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            pre_cleanup_barrier=barrier,
+        )
+        job = WorkerJob(
+            execution_id="exec_barrier_exception",
+            image="pajin-worker:dev",
+            command=["mock-agent-probe"],
+        )
+        process = _FakeProcess(stdout=_completed_reader(), stderr=_completed_reader())
+        process.stdin = _FailingStdin()
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            del args, kwargs
+            return process
+
+        async def force_remove(container_name: str) -> None:
+            assert container_name.startswith("pajin-")
+            events.append("cleanup")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_force_remove", force_remove)
+
+        with pytest.raises(RuntimeError, match="stdin write failed"):
+            await backend.run(job)
+
+        assert events == ["barrier", "cleanup"]
+        assert barrier.observations == [
+            DockerPreCleanupBarrierObservation.outcome_unknown(job.execution_id)
+        ]
+        assert barrier.results == [None]
 
     asyncio.run(scenario())
 

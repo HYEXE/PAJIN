@@ -5,6 +5,14 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0322](docs/adr/0322-enforce-cleanup-bound-compact-web-analysis-live-runtime.md):
+  WEB-007 Gate D를 legacy wire·receipt·runtime과 분리된 compact-only live 경로로 구성하고,
+  exact Provider-route attestation, synchronous Worker v6 pending-cleanup barrier, credential·model·
+  transport cleanup, durable publication intent→strict candidate→one-use root CAS→terminal reload 순서를
+  강제한다. authorization expiry는 dispatch-marker CAS에서 검사한다. 실패·process-control은 재사용
+  불가로 보존하고 성공 proposal은 cleanup-bound terminal cross-link 뒤에만 반환한다. Gate D context를
+  추가한 journal schema v2는 v1을 암묵 이행하지
+  않고, 사용되지 않은 v1 live store를 별도 audit/cleanup 대상으로 보존한다.
 - [ADR-0321](docs/adr/0321-verify-external-one-call-web-analysis-authorization.md):
   WEB-007의 외부 Ed25519 one-call authorization을 admission·preparation·exact request·선택 model·
   Capacity v2·transport와 최대 180초 validity에 결박한다. production verifier에는 signer와 private key가
