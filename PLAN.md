@@ -62,8 +62,10 @@ network의 실제 live model server까지 연결하고, Capacity v2 anchor와 fi
 owner-bound cleanup/absence를 attest했다. actual Docker conformance도 completion endpoint를 호출하지
 않은 채 통과했다. Gate B는 preparation·authorization identity 각각의 독립 UNIQUE를 가진 전용
 SQLite journal, 4단계 CAS, 1회 dispatch marker, deterministic cleanup owner와 cleanup-only crash
-recovery를 구현·검증했다. 다음은 Gate C one-call authorization과 Gate D additive compact
-receipt/runtime이며, 두 gate와 별도 사용자 승인 전에는 completion을 호출하지 않는다.
+recovery를 구현·검증했다. Gate C는 외부 Ed25519 trust anchor와 최대 180초 one-call authorization을
+exact admission·preparation·request·model·transport에 결박하고, 검증된 issuer·key ID·nonce를 Gate B의
+durable authorization identity로 파생하도록 구현·검증했다. 다음은 Gate D additive compact
+receipt/runtime이며, Gate D와 별도 사용자 승인 전에는 completion을 호출하지 않는다.
 
 2026-09-17 AGENTIC-001에서 Codex형 논리 agent lifecycle, Canonical Graph root에 결박된
 LLM 가설 확장, Hypothesis Frontier, 결정론적 Path Scorer, bounded Dynamic Supervisor와
@@ -181,8 +183,9 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
    held descriptor를 fresh owned volume에 복사해 actual live server의 read-only `/models` view와
    Capacity v2 anchor의 exact equality, owner-bound cleanup/absence를 attest하며 dispatch API를
    노출하지 않는다. Gate B의 dual-identity journal은 exact pair와 두 cross-identity 재조합을
-   원자적으로 거부하고 crash 뒤 cleanup-only 상태만 회수한다. 다음은 Gate C 외부 one-call
-   authorization과 Gate D additive compact receipt/runtime이며, 이 두 gate와 별도 사용자 승인 뒤 한 번의 fresh model
+   원자적으로 거부하고 crash 뒤 cleanup-only 상태만 회수한다. Gate C는 외부 서명 one-call
+   authorization의 exact request·model·transport·validity를 검증하고 같은 nonce를 Gate B의 독립
+   UNIQUE로 소비한다. 다음은 Gate D additive compact receipt/runtime이며, Gate D와 별도 사용자 승인 뒤 한 번의 fresh model
    completion으로 성공 WEB-007 proposal을 strict reload하고,
    별도 code-owned Skill→Recipe binding과
    WEB-008~010의 승인·Permit·Worker·독립 replay·Finding·Graph·보고·재계획을 연결한다.
@@ -225,8 +228,9 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
    owned volume으로 복사한 model을 internal-network live server의 exact read-only `/models` view에서
    attest하고 owned resource cleanup·absence까지 검증한다. Gate B는 preparation·authorization의
    독립 UNIQUE, reservation/live-start/pending-cleanup/terminal CAS와 dispatch 1회 marker, restart
-   cleanup recovery를 구현했다. 다음은 Gate C external one-call authorization과 Gate D additive
-   compact receipt/runtime이고, 이 두 gate와 별도 승인 뒤 새 invocation Run에서
+   cleanup recovery를 구현했다. Gate C는 external Ed25519 one-call authorization을 exact
+   admission·request·model·transport와 180초 validity에 결박하고 durable nonce identity를 파생한다.
+   다음은 Gate D additive compact receipt/runtime이고, Gate D와 별도 승인 뒤 새 invocation Run에서
    정확히 한 번 시도한다. fallback 진단이나 Permit 발급은 없다.
 3. [ ] **WEB-008 governed Campaign topology 연결** — discovery Worker, model invocation Run,
    compiled proposal을 source/validation 전의 정식 stage로 추가한다. 두 fresh-login 실행은
@@ -286,8 +290,8 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
     `5,232 > 4,096`으로 비실행 가능하다. additive compact wire의 최종 5-artifact offline proof는
     `2,484 <= 4,096`, margin 1,612와 Campaign `51,168 <= 65,536`을 독립 재계산·strict reload했다.
     non-executing admission은 exact preparation과 compact request를 다시 결박한다. Gate A live
-    attestation과 Gate B dual-identity durable CAS는 구현·검증됐다. 외부 one-call
-    authorization·additive compact runtime/receipt와 별도 사용자
+    attestation, Gate B dual-identity durable CAS, Gate C 외부 one-call authorization 검증은 구현·
+    검증됐다. additive compact runtime/receipt와 별도 사용자
     승인 아래 새 Run의 성공 proposal·strict
     reload·latency/memory 측정 전까지 완료로 표시하지 않는다.
 
@@ -342,7 +346,7 @@ PAJIN은 9개 Security Domain을 하나의 Canonical Graph와 Capability authori
 | 공통 엔진·Capability·Graph | CAP-001~006, GRAPH-001~006, legacy Profile 호환과 명시적 실행 gate | 기본·분산 실행으로 자동 확대하지 않음. [Capability](docs/capability/), [Graph](docs/graph/) |
 | Hybrid·협업·Supervisor | 제한된 WALK/CHAIN, MEM/HANDOFF, 검증된 proposal·invocation·approval·Permit | model output·metadata 자체는 실행·Finding 권위가 아님. [오케스트레이션 계약](docs/orchestration/) |
 | Pentest·Red Team | 승인된 GET Recon/Replay/Controls, 기존 KISA LLM/RAG와 고정 Web/MCP lab | 임의 대상·일반 보안 진단 전체 지원 아님. [Pentest adapter](docs/orchestration/PENTEST-004C2B2-concrete-child-deployment-adapters.md) |
-| Web/API | typed discovery/admission, 고정 SQLi 측정·Replay·Controls·product read, [WEB-003](docs/orchestration/WEB-003-exact-loopback-browser-assessment.md)의 고정 browser 평가, [WEB-004](docs/orchestration/WEB-004-bounded-authenticated-browser-campaign.md)의 비실행 Campaign 준비·passive discovery, [WEB-005](docs/orchestration/WEB-005-governed-local-authenticated-browser-campaign.md)의 signed Campaign/activation/Grant·Permit·Gateway·독립 Worker·Graph admission·Finding 3건·attack path 2건·보고서·SARIF·local PoC, [WEB-006](docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md)의 closed profile·진단 catalog·동일 인증 context bodyless discovery 증거, [WEB-007](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md)의 봉인 discovery 기반 local LLM 비실행 proposal 경계·attested Capacity v2·zero-dispatch live preparation·non-executing compact admission·descriptor-bound live materialization Gate A·dual-identity durable CAS Gate B, [SKILL-001](docs/orchestration/SKILL-001-versioned-analysis-skill-registry.md)의 catalogued-only 분석 Skill 5개, [SKILL-002](docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md)의 exact proposal-only selection·split projection·zero-dispatch 준비 Run | production 실행 inventory는 exact `127.0.0.1:3000`의 `juice-shop-local/v1` 하나다. Gate A live model view/cleanup과 Gate B durable claim/recovery는 검증됐지만 one-call authorization·compact dispatch receipt와 Provider 연결은 아직 없다. Recipe·Capability·Worker에도 연결되지 않았고 WEB-006 전체 governed 재검증과 WEB-007 실제 성공 proposal은 진행 중이다. 임의 사이트·SSO/MFA/CAPTCHA·가변 진단 cardinality·generic payload·container/remote target Worker·trusted egress receipt·외부 전달은 아님 |
+| Web/API | typed discovery/admission, 고정 SQLi 측정·Replay·Controls·product read, [WEB-003](docs/orchestration/WEB-003-exact-loopback-browser-assessment.md)의 고정 browser 평가, [WEB-004](docs/orchestration/WEB-004-bounded-authenticated-browser-campaign.md)의 비실행 Campaign 준비·passive discovery, [WEB-005](docs/orchestration/WEB-005-governed-local-authenticated-browser-campaign.md)의 signed Campaign/activation/Grant·Permit·Gateway·독립 Worker·Graph admission·Finding 3건·attack path 2건·보고서·SARIF·local PoC, [WEB-006](docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md)의 closed profile·진단 catalog·동일 인증 context bodyless discovery 증거, [WEB-007](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md)의 봉인 discovery 기반 local LLM 비실행 proposal 경계·attested Capacity v2·zero-dispatch live preparation·non-executing compact admission·descriptor-bound live materialization Gate A·dual-identity durable CAS Gate B·external one-call authorization Gate C, [SKILL-001](docs/orchestration/SKILL-001-versioned-analysis-skill-registry.md)의 catalogued-only 분석 Skill 5개, [SKILL-002](docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md)의 exact proposal-only selection·split projection·zero-dispatch 준비 Run | production 실행 inventory는 exact `127.0.0.1:3000`의 `juice-shop-local/v1` 하나다. Gate A live model view/cleanup, Gate B durable claim/recovery, Gate C external one-call verification은 검증됐지만 compact dispatch receipt와 Provider 연결은 아직 없다. Recipe·Capability·Worker에도 연결되지 않았고 WEB-006 전체 governed 재검증과 WEB-007 실제 성공 proposal은 진행 중이다. 임의 사이트·SSO/MFA/CAPTCHA·가변 진단 cardinality·generic payload·container/remote target Worker·trusted egress receipt·외부 전달은 아님 |
 | Network | 서비스 Surface·준비·증거 admission와 합성 6-case 측정 | raw socket·일반 스캔·서비스 취약점 확정 아님. [NET-002D](docs/orchestration/NET-002D-bounded-network-measurement-product-read-and-conformance.md) |
 | AI | 고정 M03 source·독립 Replay 2개·Controls 3개·product read, 별도 실제 모델 효과 평가 | 임의 모델·agent 안전성이나 일반 Finding으로 확장하지 않음. [AI-002D](docs/orchestration/AI-002D-bounded-ai-measurement-product-read-and-conformance.md) |
 | Cloud | CLOUD-001A~D의 준비·서명 증거 admission·정책 비교·fixture 요구 | 실제 provider·credential 사용 runtime, 정책 translator·live benchmark 필요. [CLOUD-001D](docs/benchmark/CLOUD-001D-fresh-credential-policy-replay-disposable-fixtures.md) |

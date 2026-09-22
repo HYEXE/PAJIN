@@ -16,6 +16,8 @@
   [ADR-0319](../adr/0319-separate-prepared-compact-admission-from-live-call-authority.md)
 - Durable dual-identity claim decision:
   [ADR-0320](../adr/0320-durably-claim-prepared-compact-web-analysis-and-recover-cleanup.md)
+- External one-call authorization decision:
+  [ADR-0321](../adr/0321-verify-external-one-call-web-analysis-authorization.md)
 
 ## Objective
 
@@ -75,8 +77,11 @@ review:
   read-only `/models` view against Capacity v2, and proves owner-bound cleanup and absence without
   exposing a model endpoint. Gate B now atomically consumes preparation and authorization identities
   under separate unique constraints, fixes the exact cleanup locator before live start, records a
-  one-dispatch marker, and recovers crashes only toward pending cleanup. External one-call
-  authorization verification and an additive compact runtime/receipt remain P0 gates before dispatch.
+  one-dispatch marker, and recovers crashes only toward pending cleanup. Gate C now verifies an
+  external Ed25519 one-call statement against the exact admission, preparation, request, selected
+  model, Capacity v2 Pin, and transport under a 180-second maximum lifetime. Its verified result is
+  still unclaimed and non-dispatch-ready. An additive compact runtime/receipt remains the final P0
+  gate before dispatch.
 
 WEB-007 does not make an arbitrary Web site executable. It does not add a production adapter,
 broaden the exact loopback origin, accept caller credentials, or weaken any existing WEB-006
@@ -411,8 +416,11 @@ Gate A of the ADR-0319 live boundary is implemented and verified through actual 
 materialization, final-view re-attestation, cleanup, and absence without a completion request. Gate B
 is implemented and verified through a dedicated dual-identity durable journal, actual spawned-process
 races, uncertain-transaction fault injection, and SIGKILL cleanup-only recovery. A fresh completion
-remains behind Gates C and D plus separate authorization, and no WEB-008 action may start before a
-successful advisory is sealed and strict-reloaded.
+remains behind Gate D plus a real externally signed authorization and separate call approval. Gate C
+is implemented and verified with a test issuer: it rejects expiry, request/model/transport mismatch,
+authority widening, local Campaign approval reinterpretation, and same-nonce reuse through Gate B's
+durable authorization identity. No WEB-008 action may start before a successful advisory is sealed
+and strict-reloaded.
 
 ## v1alpha2 expansion
 
@@ -478,7 +486,7 @@ destination-bound action with explicit authorization and a delivery receipt.
 | Performance | Adds one local inference to the analysis path | The old actual call hit the 30-second upstream I/O cap; the successor now pins 180 seconds at each relevant layer, but successful completion latency remains unmeasured |
 | Memory | Adds a local model runtime and bounded prompt/response buffers | Qwen3 4B Q8 is selected and pinned; peak RSS remains unmeasured |
 | Reliability | Model failure is isolated from target execution and closes its Run | Actual timeout was sealed terminally with no in-Run retry or target request |
-| Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Frozen source/model/SKILL-002 inputs, the independent Pin, and new immutable images pass structural checks; Capacity v2 reproduces 2,484/4,096 and 51,168/65,536, preparation and admission bind the proof and request, Gate A attests the descriptor-bound live view and cleanup, and Gate B durably consumes both identities with cleanup-only recovery; Gates C and D remain |
+| Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Frozen source/model/SKILL-002 inputs, the independent Pin, and new immutable images pass structural checks; Capacity v2 reproduces 2,484/4,096 and 51,168/65,536, preparation and admission bind the proof and request, Gate A attests the descriptor-bound live view and cleanup, Gate B durably consumes both identities with cleanup-only recovery, and Gate C verifies the external narrow grant; Gate D remains |
 | Migration | Additive sidecar Run; no existing artifact rewrite | Source and failure Runs strictly reload; legacy formats remain unchanged |
 
 What makes the v1alpha1 shape attractive is that we can validate the LLM boundary without giving it
@@ -590,8 +598,10 @@ dispatch false. Gate A adds a separate no-dispatch live materializer that binds 
 the Capacity v2 anchor, final read-only volume topology, and owner-bound cleanup. Its actual Docker
 conformance completed without a completion, Provider dispatch, or target request. ADR-0320 Gate B
 is also complete: the preparation and authorization identities are independently single-use, and
-restart returns only audit/cleanup state. Gates C and D and separate approval remain required before
-one fresh completion.
+restart returns only audit/cleanup state. ADR-0321 Gate C is complete: the external signed grant is
+bound to the exact admission/request/model/transport, maximum 180-second validity, and the Gate B
+nonce identity without creating dispatch or downstream authority. Gate D, a real external
+authorization artifact, and separate approval remain required before one fresh completion.
 
 ## Non-goals and open decisions
 
@@ -609,8 +619,8 @@ one fresh completion.
   The additive compact `system` plus `user` prototype historically measured
   `1,505 + 1,024 = 2,529`; the final sealed proof independently recomputed
   `1,460 + 1,024 = 2,484`, leaving 1,612 tokens, and passed conservative Campaign accounting at
-  `51,168 / 65,536`. Gates A and B of the four-gate live integration are verified; Gates C and D,
-  the hardware floor, successful latency,
+  `51,168 / 65,536`. Gates A, B, and C of the four-gate live integration are verified; Gate D, the
+  hardware floor, successful latency,
   peak memory, output stability, and an acceptance threshold remain to be verified.
 - The v1alpha2 action schemas, risk tiers, approval policy, maximum action graph, and replan cadence
   require a separate implementation contract before execution is enabled.

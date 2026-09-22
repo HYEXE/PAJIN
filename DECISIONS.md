@@ -5,6 +5,11 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0321](docs/adr/0321-verify-external-one-call-web-analysis-authorization.md):
+  WEB-007의 외부 Ed25519 one-call authorization을 admission·preparation·exact request·선택 model·
+  Capacity v2·transport와 최대 180초 validity에 결박한다. production verifier에는 signer와 private key가
+  없고 verified result도 dispatch-ready가 아니다. 검증된 issuer·key ID·nonce로 Gate B identity를
+  파생해 durable UNIQUE가 replay를 소비하며 local Campaign approval과 downstream 권위는 거부한다.
 - [ADR-0320](docs/adr/0320-durably-claim-prepared-compact-web-analysis-and-recover-cleanup.md):
   WEB-007 live call에 preparation·authorization identity 각각의 독립 UNIQUE를 갖는 전용 SQLite
   journal을 추가하고 reservation→live-start→pending-cleanup→terminal 단방향 전이, 별도 1회 dispatch

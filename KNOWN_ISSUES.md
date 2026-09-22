@@ -105,8 +105,9 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   tokenizer context에 들어가지 않고 historical Capacity v1은 live gate에 사용할 수 없다.
   attested Capacity v2·zero-dispatch preparation·non-executing admission과 ADR-0319 Gate A의 actual
   live final-view materialization/attestation/cleanup, ADR-0320 Gate B dual-identity durable CAS와
-  cleanup-only crash recovery는 검증됐다. Gate C one-call authorization, Gate D compact runtime/receipt,
-  성공 model proposal, Skill→Recipe/Capability binding,
+  cleanup-only crash recovery, ADR-0321 Gate C external one-call authorization verifier는 검증됐다.
+  production external trust anchor와 실제 signed authorization은 아직 provision되지 않았고 Gate D
+  compact runtime/receipt, 성공 model proposal, Skill→Recipe/Capability binding,
   target 실행과 독립 성능 검증은 없다. 별도 사용자 승인 없이는 새 model completion을 진행하지 않는다.
   금지 field와 알려진 target
   canary 검사는 의미적으로 위장된 모든
@@ -179,8 +180,12 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   Gate B journal은 한 pinned store 안의 독립 preparation/authorization UNIQUE와 single-use CAS,
   deterministic cleanup locator를 제공하지만 분산 consensus가 아니며 동일 store 전체 rollback을
   외부 retained head 없이 독립 감지하지 못한다. crash recovery는 quiescent 단일 coordinator가
-  명시적으로 실행해야 하고 Gate D가 실제 owner-bound cleanup을 수행해야 한다. live completion 전에는
-  외부 one-call authorization과 additive compact runtime/receipt가 모두 필요하다. 성공 structured output, model quality,
+  명시적으로 실행해야 하고 Gate D가 실제 owner-bound cleanup을 수행해야 한다. Gate C는 externally
+  provisioned public-key anchor의 independent digest와 최대 180초 signed authorization을 요구하고
+  exact request·model·transport mismatch, expiry, Campaign approval 재해석과 nonce replay를 fail closed한다.
+  현재 테스트 key는 production issuer가 아니며 실제 external authorization artifact도 없다. live
+  completion 전에는 Gate D additive compact runtime/receipt와 실제 외부 authorization이 모두 필요하다.
+  성공 structured output, model quality,
   latency·peak memory·stability, full WEB-006 governed Run·PoC replay, WEB-008 action 연결은 미검증이다.
   현재 artifact는 target request, Permit, Finding, Graph, report, SARIF, PoC, 외부 전달 권위를
   만들지 않는다.
