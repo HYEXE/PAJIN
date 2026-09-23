@@ -170,10 +170,12 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 
 ## Git과 원격 인수인계
 
-- 현재 branch는 `main`, HEAD는 이 문서를 포함한 Gate D local commit이고 `origin/main`은
-  `175f60003be1bfa89ac5dfd4a0c53593927246b5`다. local은 네 Gate commit만큼 앞서며 push하지 않았다.
-- Gate D의 additive runtime/receipt, Worker barrier, Gate A/B/transport extension, tests, ADR-0322와
-  운영 상태 문서는 하나의 로컬 커밋으로 보존한다. 실제 SHA와 clean 여부는 `git status --short`와
+- 이 문서 보정 전 branch는 `main`, HEAD는 `bc33453d41dc0d290c418e345ea0b44a7e9b467a`이고
+  `origin/main`은 `175f60003be1bfa89ac5dfd4a0c53593927246b5`다. 보정 전 local은 7개 커밋만큼
+  앞섰으며 push하지 않았다.
+- Gate A~D와 ADR-0323의 effective Pin·authorization v2·offline issuer·one-shot operator 보정은
+  보정 전 7개 로컬 커밋으로 보존됐다. 이 문서의 보정 커밋을 포함한 실제 SHA·ahead 수·clean 여부는
+  `git status --short --branch`와
   `git log -1`을 권위로 삼는다.
 - `output/`·`.pajin/`의 private/raw 근거는 로컬에만 보존되며 Git으로 전달되지 않는다.
   기존 `39c66a2` 원격 CI 결과는 이 새 변경의 검증 근거가 아니다.
