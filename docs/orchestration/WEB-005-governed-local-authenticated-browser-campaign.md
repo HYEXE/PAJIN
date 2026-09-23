@@ -385,3 +385,13 @@ server-side sessions remain on the local lab because cleanup was neither authori
 The live and PoC-replay records prove the exact installed Juice Shop slice, not arbitrary-site,
 production, remote-Worker, or external-delivery support. Repository-wide test, lint, type, format,
 and packaging results for this checkpoint are recorded in `HANDOFF.md`.
+
+## 2026-09-23 reader compatibility check
+
+Later WEB-006 schemas added three defaulted plan fields and two optional discovery-result fields.
+Parsing an older WEB-005 child and serializing those defaults changed its nested WEB-004 Run-reference
+digest, preventing the completed parent from strict reload. The current reader retains the original
+wire only when **all five** fields were absent with their original defaults; a partially upgraded
+shape cannot use this compatibility path. Current fully explicit WEB-006 wire and digest behavior
+is unchanged. Independent strict reload now accepts this historical completed parent and the new
+WEB-006 completed parent, each with three validated Findings. No sealed Run was rewritten.

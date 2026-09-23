@@ -14,9 +14,16 @@ Finding, authorize SARIF export, or perform external delivery.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Final, Literal, Self
+from typing import Final, Literal, Self, cast
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from pajin.capabilities.models import CapabilityDefinitionRef, CapabilitySideEffectClass
 from pajin.capabilities.web_browser_assessment import (
@@ -35,6 +42,9 @@ from pajin.capabilities.web_browser_assessment import (
 from pajin.discovery.canonicalization import discovery_digest
 from pajin.domain.models import StrictModel, ToolRiskTier
 from pajin.web_assessment.models import (
+    DEFAULT_WEB_ASSESSMENT_ADAPTER_IMPLEMENTATION_ID,
+    DEFAULT_WEB_ASSESSMENT_FINGERPRINT_VERSION_PATH,
+    DEFAULT_WEB_ASSESSMENT_TARGET_PRODUCT,
     AttackPath,
     IssueCheck,
     IssueStatus,
@@ -64,6 +74,12 @@ WEB_ASSESSMENT_CAMPAIGN_RESULT_API_VERSION: Final[
 
 _SHA256_PATTERN = r"^[a-f0-9]{64}$"
 _RUN_ID_PATTERN = r"^run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}$"
+_LEGACY_PLAN_FIELDS: Final = frozenset(
+    {"target_product", "fingerprint_version_path", "adapter_implementation_id"}
+)
+_LEGACY_RESULT_FIELDS: Final = frozenset(
+    {"discovery_evidence_reference", "discovery_evidence_digest"}
+)
 
 RunRole = Literal["source", "validation"]
 ReconciliationOutcome = Literal["local-corroborated", "mismatch", "inconclusive"]
@@ -71,6 +87,41 @@ ReconciliationOutcome = Literal["local-corroborated", "mismatch", "inconclusive"
 
 class _FrozenStrictModel(StrictModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+
+def _has_legacy_plan_wire(plan: WebAssessmentPlan) -> bool:
+    return _LEGACY_PLAN_FIELDS.isdisjoint(plan.model_fields_set) and (
+        plan.target_product == DEFAULT_WEB_ASSESSMENT_TARGET_PRODUCT
+        and plan.fingerprint_version_path == DEFAULT_WEB_ASSESSMENT_FINGERPRINT_VERSION_PATH
+        and plan.adapter_implementation_id == DEFAULT_WEB_ASSESSMENT_ADAPTER_IMPLEMENTATION_ID
+    )
+
+
+def _has_legacy_result_wire(result: LocalWebAssessmentResult) -> bool:
+    return _LEGACY_RESULT_FIELDS.isdisjoint(result.model_fields_set) and (
+        result.discovery_evidence_reference is None and result.discovery_evidence_digest is None
+    )
+
+
+def _has_legacy_run_reference_wire(
+    plan: WebAssessmentPlan,
+    result: LocalWebAssessmentResult,
+) -> bool:
+    return _has_legacy_plan_wire(plan) and _has_legacy_result_wire(result)
+
+
+def _omit_legacy_plan_fields(material: object) -> None:
+    if not isinstance(material, dict):
+        raise TypeError("WEB-004 legacy plan wire is not an object")
+    for field in _LEGACY_PLAN_FIELDS:
+        material.pop(field, None)
+
+
+def _omit_legacy_result_fields(material: object) -> None:
+    if not isinstance(material, dict):
+        raise TypeError("WEB-004 legacy Result wire is not an object")
+    for field in _LEGACY_RESULT_FIELDS:
+        material.pop(field, None)
 
 
 class LocalWebAssessmentScopePreview(_FrozenStrictModel):
@@ -380,6 +431,16 @@ class LocalWebAssessmentRunReference(_FrozenStrictModel):
     independent: Literal[False] = False
     finding_authority: Literal[False] = Field(default=False, alias="findingAuthority")
 
+    @model_serializer(mode="wrap")
+    def serialize_wire(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        material = cast(dict[str, object], handler(self))
+        if _has_legacy_run_reference_wire(self.plan, self.result):
+            if "plan" in material:
+                _omit_legacy_plan_fields(material["plan"])
+            if "result" in material:
+                _omit_legacy_result_fields(material["result"])
+        return material
+
     @field_validator("source_integrity_verified", mode="before")
     @classmethod
     def require_source_integrity_marker(cls, value: object) -> object:
@@ -562,6 +623,18 @@ class LocalWebAssessmentCampaignResult(_FrozenStrictModel):
         alias="externalDeliveryPerformed",
     )
 
+    @model_serializer(mode="wrap")
+    def serialize_wire(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        material = cast(dict[str, object], handler(self))
+        if (
+            "plan" in material
+            and _has_legacy_plan_wire(self.plan)
+            and _has_legacy_run_reference_wire(self.source.plan, self.source.result)
+            and _has_legacy_run_reference_wire(self.validation.plan, self.validation.result)
+        ):
+            _omit_legacy_plan_fields(material["plan"])
+        return material
+
     @field_validator("reconciled_at")
     @classmethod
     def normalize_reconciliation_time(cls, value: datetime) -> datetime:
@@ -724,6 +797,13 @@ def local_web_assessment_run_reference(
     canonical_plan = _canonical_source_plan(verified_source.plan)
     canonical_authorization = _canonical_local_authorization(verified_source.authorization)
     canonical_result = _canonical_result(verified_source.result)
+    if _has_legacy_run_reference_wire(verified_source.plan, verified_source.result):
+        plan_wire = verified_source.plan.model_dump(mode="json", by_alias=True)
+        _omit_legacy_plan_fields(plan_wire)
+        canonical_plan = WebAssessmentPlan.model_validate(plan_wire)
+        result_wire = verified_source.result.model_dump(mode="json", by_alias=True)
+        _omit_legacy_result_fields(result_wire)
+        canonical_result = LocalWebAssessmentResult.model_validate(result_wire)
     expected_screenshots = tuple(
         page.screenshot_reference for page in canonical_result.browser.pages
     )
