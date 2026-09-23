@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pajin-web-analysis-authorization-offline"
+version = "0.1.0"
+description = "Physically separated offline issuer for PAJIN Web analysis one-call authorization"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "cryptography>=50,<51",
+  "pydantic>=2.12,<3",
+]
+
+[project.scripts]
+pajin-web-analysis-authorization-offline = "pajin_web_analysis_authorization_offline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C90"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["pajin_web_analysis_authorization_offline"]
