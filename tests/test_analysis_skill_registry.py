@@ -378,6 +378,12 @@ def test_registry_has_no_execution_surface_or_forbidden_dependencies() -> None:
 
     production_root = package_root.parent
     allowed_consumer = production_root / "web_assessment" / "analysis_skill_projection.py"
+    bounded_consumers = {
+        production_root / "web_assessment" / "analysis_skill_compact.py": {
+            "canonical_skill_contract"
+        },
+        production_root / "web_assessment" / "compact_live_operator.py": {"SkillRegistryRef"},
+    }
     observed_consumers: set[Path] = set()
     for source_path in sorted(production_root.rglob("*.py")):
         if package_root in source_path.parents:
@@ -401,10 +407,19 @@ def test_registry_has_no_execution_surface_or_forbidden_dependencies() -> None:
         }
         if skill_imports:
             observed_consumers.add(source_path)
-            assert source_path == allowed_consumer, (
+            assert source_path == allowed_consumer or source_path in bounded_consumers, (
                 f"analysis Skills have an unexpected production consumer in {source_path}"
             )
-    assert observed_consumers == {allowed_consumer}
+            if source_path in bounded_consumers:
+                assert skill_imports == {"pajin.skills.models"}
+                imported_names = {
+                    alias.name
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom) and node.module == "pajin.skills.models"
+                    for alias in node.names
+                }
+                assert imported_names == bounded_consumers[source_path]
+    assert observed_consumers == {allowed_consumer, *bounded_consumers}
 
 
 def test_registry_projection_contains_no_private_ground_truth_or_target_material() -> None:

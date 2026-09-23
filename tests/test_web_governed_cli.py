@@ -3,15 +3,22 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 from pajin.cli import app, run_governed_local_web_campaign_command
 
 
 def test_governed_web_cli_exposes_only_bounded_operator_options() -> None:
-    result = CliRunner().invoke(app, ["web-campaign-run-governed-local", "--help"])
+    result = CliRunner().invoke(
+        app,
+        ["web-campaign-run-governed-local", "--help"],
+        color=True,
+        env={"CI": "true", "TERM": "xterm-256color", "FORCE_COLOR": "1", "COLUMNS": "80"},
+    )
 
     assert result.exit_code == 0
+    help_text = strip_ansi(result.output)
     for option in (
         "--origin",
         "--adapter-ref",
@@ -20,7 +27,7 @@ def test_governed_web_cli_exposes_only_bounded_operator_options() -> None:
         "--headless",
         "--headed",
     ):
-        assert option in result.output
+        assert option in help_text
     for forbidden in (
         "--credential",
         "--password",
@@ -33,7 +40,7 @@ def test_governed_web_cli_exposes_only_bounded_operator_options() -> None:
         "--route",
         "--payload",
     ):
-        assert forbidden not in result.output
+        assert forbidden not in help_text
 
 
 def test_governed_web_cli_requires_explicit_local_lab_confirmation(tmp_path: Path) -> None:

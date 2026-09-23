@@ -809,6 +809,7 @@ def test_loader_selects_exact_observed_older_seal_and_marks_later_tail(
         ("run-integrity.jsonl", b"\n"),
         ("run-integrity.jsonl", b"x" * (16 * 1024 * 1024 + 1)),
     ],
+    ids=("events-newline", "events-oversize-tail", "integrity-newline", "integrity-oversize-tail"),
 )
 def test_loader_stops_at_observed_root_before_arbitrary_bounded_tail(
     tmp_path: Path,
