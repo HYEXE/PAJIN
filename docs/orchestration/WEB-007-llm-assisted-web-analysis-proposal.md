@@ -352,10 +352,10 @@ Cancellation also terminalizes before propagation. Each runtime object can make 
 
 Every live successor receipt fixes one model dispatch and zero target requests. Automatic redispatch,
 Scope expansion, Tool/Capability/Permit issuance, execution, Finding promotion, Graph admission,
-report publication, SARIF/PoC generation, and external delivery remain literally unauthorized. No
-live compact-successor dispatch has occurred. Its future integration must consume the exact
-zero-dispatch preparation, which already binds the eligible Capacity v2 proof, before the built and
-pinned images may be used by a separately authorized fresh Run.
+report publication, SARIF/PoC generation, and external delivery remain literally unauthorized. A
+future attempt must bind a fresh zero-dispatch preparation and separate one-call authorization;
+the consumed claim and authorization from an earlier attempt provide no retry authority. The
+current operational outcome and next gate are recorded in `HANDOFF.md`.
 
 ### Offline compact-capacity checkpoint
 
@@ -650,7 +650,7 @@ destination-bound action with explicit authorization and a delivery receipt.
 | Dimension | v1alpha1 direction | Basis and validation need |
 | --- | --- | --- |
 | Security | Improves analysis containment; model quality risk remains | Adversarial parser, authority-denial, secret-scan, and failure-path tests pass; live success remains unverified |
-| Performance | Adds one local inference to the analysis path | The old actual call hit the 30-second upstream I/O cap; the successor now pins 180 seconds at each relevant layer, but successful completion latency remains unmeasured |
+| Performance | Adds one local inference to the analysis path | The old actual call hit the 30-second upstream I/O cap; the first compact live Worker reached its 180-second job bound without an observed response; successful completion latency remains unmeasured |
 | Memory | Adds a local model runtime and bounded prompt/response buffers | Qwen3 4B Q8 is selected and pinned; peak RSS remains unmeasured |
 | Reliability | Model failure is isolated from target execution and closes its Run | Actual timeout was sealed terminally with no in-Run retry or target request |
 | Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Capacity v2, preparation, admission, and the four base gates establish prerequisite lineage; live eligibility additionally requires the ADR-0323 effective Pins, authorization v2, separated issuer, zero-side-effect preflight, existing-store-only runner, and their acceptance verification |
@@ -804,9 +804,36 @@ authorization v2, a physically separated private-key issuer/provisioner, and a n
 runner with zero-side-effect preflight and existing-store-only execution. The implementation,
 focused runtime/receipt tests, Worker-wire conformance, issuer cross-verification, strict mypy, and
 Ruff checks are complete locally. Authorization v1 and the historical Pins remain non-live audit
-lineage. No fresh model completion, Provider dispatch, or target request has been made for this
-correction, and the first fresh completion remains prohibited without a separate explicit user
-approval.
+lineage. The later first authorized compact attempt consumed one dispatch marker and ended as an
+abandoned, strictly reloaded Run without response evidence or a target request. The original
+180-second Worker action, image, Pin, authorization, and receipt remain fixed for that history;
+changing a timeout for a new attempt requires an additive, independently authorized contract.
+
+### Time-budget gate for a future compact attempt
+
+The first compact attempt's Worker container was removed about 180 seconds after it started. The
+host Worker applies an outer 180-second `wait_for` to that process and maps a timed-out result to
+`outcome-unknown` before cleanup. This explains the observed boundary, but the sealed receipt does
+not identify whether model generation, the proxy exchange, or another internal step used the time.
+No successful completion latency can be inferred from this attempt.
+
+Changing the effective transport Pin alone cannot make a longer call valid. The pinned v3 Worker
+action accepts only an exact 180-second request timeout, its image is immutable, the compact
+transport Pin v1 requires 180 seconds for all three ceilings, and authorization v2 binds that
+action, image, transport identity, and exact Pin. The current Docker backend derives the proxy
+exchange ceiling from the Worker job ceiling, so merely assigning a different proxy Pin value would
+not enforce it. The existing terminal receipt and strict reader remain the audit interpretation of
+this failed attempt.
+
+Before a fresh live attempt, a separate decision must justify a bounded inference budget and an
+ordered Worker-open/proxy/job deadline policy, then bind it through additive Worker action and
+image, effective transport, authorization request, receipt, and strict reader versions. Negative
+tests must reject mixed old/new identities and prove that the old terminal Run still strictly
+reloads. A fresh preparation, admission, claim store, and authorization nonce are required; an
+unchanged Capacity v2 proof may be considered only after rechecking the exact model, request, and
+token profile. The short authorization validity window may remain distinct from the inference
+deadline because the durable dispatch marker checks expiry before the call. No budget value or new
+dispatch authority is selected by this review.
 
 ## Non-goals and open decisions
 

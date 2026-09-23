@@ -189,9 +189,11 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   main `pajin` 의존성이 없는 별도 offline issuer/provisioner와 main verifier cross-conformance는
   구현됐다. operational private seed, public trust anchor, retained digest와 live durable store를
   owner-only 비추적 파일로 생성·재검증하고 첫 signed v2 authorization을 발급·소비했다. 테스트 key는
-  production issuer가 아니다. 첫 dispatch는 response evidence 없이 약 187초 뒤 `outcome-unknown`으로
-  닫혀 180초 transport 한도에 닿았을 가능성이 있지만 원시 오류는 확인되지 않았다. terminal Run은
-  strict reload됐고 model·transport cleanup/absence와 credential revoke가 검증됐다. 같은 claim·
+  production issuer가 아니다. 첫 dispatch는 response evidence 없이 `outcome-unknown`으로 닫혔다.
+  Worker 컨테이너는 시작 179.87초 뒤 정리 SIGKILL됐고 코드의 180초 job 한도와 일치한다. barrier는
+  timed-out 결과를 불확실 상태로 기록하므로 바깥 Worker 한도 도달은 근거가 있으나 model·proxy의
+  내부 원인과 응답 여부는 알 수 없다. terminal Run은 strict reload됐고 model·transport
+  cleanup/absence와 credential revoke가 검증됐다. 같은 claim·
   authorization·Run은 재사용하거나 redispatch할 수 없다. Gate D는
   exact Provider route를 attest하고 synchronous Worker v6 barrier에서 claim을 cleanup 전에 pending으로
   전환한다. Gate A+transport cleanup 뒤 durable publication intent, full strict unanchored candidate,

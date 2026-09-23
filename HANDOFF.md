@@ -148,8 +148,8 @@ preparation·non-executing admission과 Gate A~D는 구현·검증됐다. 첫 co
 
 `PLAN.md`의 네 항목에 대한 코드·테스트·문서·격리 검증을 수행한다. 기존 완료분의
 commit/push·일반 CI와 Web·Network·AI·OPS·SYS 실행은 승인됐고 완료했다.
-현재 기능은 사용자 승인에 따라 논리 커밋으로 정리했으며 이 체크포인트에서 `origin/main`과
-동기화한다. 운영 배포·merge·tag·외부 알림은 없다.
+WEB-007의 첫 compact live 시도와 이번 비실행 원인 검토는 위 별도 체크포인트가 권위이며,
+현재 로컬 문서 변경은 push하지 않았다. 운영 배포·merge·tag·외부 알림은 없다.
 별도 물리 Linux host가 아직 없다는 기존 선택을 유지한다. main에서 직접 작업하며
 branch/worktree는 만들지 않았다. WEB-003 최종 diff에는 read-only 독립 리뷰 agent를 사용했고,
 그 agent는 파일을 수정하지 않았다.
@@ -164,15 +164,11 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 
 ## Git과 원격 인수인계
 
-- 이 문서 보정 전 branch는 `main`, HEAD는 `bc33453d41dc0d290c418e345ea0b44a7e9b467a`이고
-  `origin/main`은 `175f60003be1bfa89ac5dfd4a0c53593927246b5`다. 보정 전 local은 7개 커밋만큼
-  앞섰으며 push하지 않았다.
-- Gate A~D와 ADR-0323의 effective Pin·authorization v2·offline issuer·one-shot operator 보정은
-  보정 전 7개 로컬 커밋으로 보존됐다. 이 문서의 보정 커밋을 포함한 실제 SHA·ahead 수·clean 여부는
-  `git status --short --branch`와
-  `git log -1`을 권위로 삼는다.
+- 이번 비실행 검토의 기준은 `main`의 `807b7b3`이며 `origin/main`의 `b557276`보다 한 커밋 앞선다.
+  첫 시도의 상태 문서는 `807b7b3`에 보존됐고, 이번 검토의 문서 4파일은 로컬에만 있다.
+  새 문서 변경에 대한 원격 CI 결과는 없다. 실제 HEAD·ahead 수·working tree는
+  `git status --short --branch`와 `git log -1`로 다시 확인한다.
 - `output/`·`.pajin/`의 private/raw 근거는 로컬에만 보존되며 Git으로 전달되지 않는다.
-  기존 `39c66a2` 원격 CI 결과는 이 새 변경의 검증 근거가 아니다.
 
 ## WEB-003 — 실제 browser 평가 완료, 일반 Web 권위는 없음
 
@@ -369,8 +365,10 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   bundle을 1개 발급하고 무부작용 preflight `verified-not-claimed-no-dispatch`를 통과했다.
 - 해당 시도는 `2026-09-23T04:10:59Z`에 dispatch marker 1개를 소비했다. `04:14:06Z`에
   `outcome-unknown`·response evidence 없음·`failureStage=dispatch`로 pending-cleanup, `04:14:09Z`에
-  terminal `abandoned`로 닫혔다. dispatch→pending 약 187초는 고정 180초 transport timeout과
-  부합하지만 원시 오류가 봉인되지 않아 timeout 원인 자체는 미확정이다. draft·compiled proposal은
+  terminal `abandoned`로 닫혔다. Docker 이벤트의 Worker 시작→정리 SIGKILL은 179.87초이며,
+  코드의 180초 job `wait_for`와 일치한다. timed-out Worker 결과를 barrier가 `outcome-unknown`으로
+  바꾸고 `failureDigest`도 예외 없는 `dispatch` 분류와 일치한다. 직접 원인은 바깥 Worker job 한도
+  도달로 좁혀졌지만 model·proxy 내부 지연과 최종 응답 여부는 확인할 수 없다. draft·compiled proposal은
   없고 target request·Tool call은 0이다. 재발급·재시도·성공 승격 권위가 없다.
 - terminal Run `run_20260923T041004Z_d5ca5abc`, root
   `26cc81d84af36eaec7fa3a1b6db390bc5b28f8caf5c78c11debf546bf95a4e0f`은 retained store ID,
@@ -657,11 +655,12 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   Gate A 검사다. 전체 Ruff, 변경 Python format, Linux strict mypy **586 source**, 문서 정책 **4 passed**,
   `git diff --check`, local-path·secret 검사가 통과했다. Gate A Docker 검증은 materialization·
   re-attestation·cleanup만 수행했고 Gate B·C model·Provider·target 호출은 0이다.
-- 2026-09-23 첫 compact live 시도는 위 terminal Run과 journal에만 보존됐다. 다음 단계는
-  outcome-unknown의 원인을 비실행 근거로 분석하고 필요한 경우 versioned successor Pin·Capacity·
-  preparation 계약을 마련하는 것이다. 기존 claim·authorization·Run은 재사용하지 않고 store는 감사용으로
-  보존한다. redispatch는 금지한다.
-  실제 후속 completion에는 새 독립 준비와 별도 사용자 승인이 필요하다.
+- 2026-09-23 첫 compact live 시도는 위 terminal Run과 journal에만 보존됐다. 다음 단계는 기존
+  180초 Worker action/image와 effective transport Pin을 변경하지 않고, Worker-open보다 긴 job 한도와
+  관측 가능한 timeout 분류를 가진 별도 versioned successor 계약을 설계하는 것이다. 동일 4096/1024
+  요청을 유지할 경우 기존 Capacity v2 증거의 재사용 가능성을 검증하되 preparation·admission·claim
+  store·nonce는 새로 준비해야 한다. 기존 store는 감사용으로 보존하고 claim·authorization·Run의
+  redispatch는 금지한다. 새 completion은 별도 사용자 승인 전까지 실행하지 않는다.
 
 Private controller와 logs의 기준은 `.pajin/four-followups-20260912/`다. 실제 자격증명과
 private 모델 원문은 출력하거나 tracked 문서에 복사하지 않는다. 전 단계 근거는

@@ -216,10 +216,12 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
    durability barrier는 구현·최종 검증해 로컬 커밋으로 보존했다. exact Provider route와 publication intent→strict
    unanchored candidate→one-use root CAS→terminal row가 상호 결박되고 strict reload되기 전에는 성공
    proposal을 반환할 수 없다. 첫 signed compact 시도는 dispatch 1회 뒤 response evidence 없이
-   `outcome-unknown`·terminal `abandoned`로 닫혀 proposal을 만들지 못했다. 다음은 이 실패의
-   비실행 분석과 필요한 versioned successor 준비다. 별도 승인된 새 시도에서만 성공 WEB-007
-   proposal을 strict reload하고,
-   별도 code-owned Skill→Recipe binding과
+   `outcome-unknown`·terminal `abandoned`로 닫혀 proposal을 만들지 못했다. Docker 이벤트와 Worker
+   경로를 대조해 180초 job 한도 도달을 확인했다. 다음은 기존 v3 Worker/Pin/receipt reader를 보존하고
+   별도 versioned action·image·effective transport Pin·authorization·terminal reader에 서로 구분되는
+   timeout 한도와 비밀 없는 실패 분류를 결박하는 것이다. 새 preparation·admission·store·nonce를
+   사용하고 Capacity v2 재사용은 동일 요청·모델·token profile인지 검증한다. 별도 승인된 새 시도에서만
+   성공 WEB-007 proposal을 strict reload하고, 별도 code-owned Skill→Recipe binding과
    WEB-008~010의 승인·Permit·Worker·독립 replay·Finding·Graph·보고·재계획을 연결한다.
 4. [ ] **교차 target transfer 평가** — Juice Shop은 개발·결정론적 회귀 대상으로 유지하고, 별도
    승인된 두 번째 target에서 adapter 가정과 취약점 종류별 전이를 측정한다.
