@@ -25,7 +25,6 @@ from typing import Literal, Never, Protocol, cast
 
 from pydantic import JsonValue
 
-from pajin.benchmark.effectiveness.suite import RuntimePin
 from pajin.discovery.canonicalization import canonical_json_bytes
 from pajin.domain.models import ToolRequest
 from pajin.providers.models import ProviderChatRequest, ProviderChatResult, ProviderRegistration
@@ -50,16 +49,33 @@ from pajin.runtime.worker import (
 from pajin.tools.execution_receipts import normalize_host_receipt
 from pajin.web_assessment.analysis_capacity_v2 import (
     VerifiedWebAnalysisCapacityV2Run,
+    WebAnalysisCapacityV2Pin,
     WebAnalysisLiveModelCleanupOnlyResult,
     WebAnalysisLiveModelMaterializationAttestation,
     WebAnalysisLiveModelProviderRouteAttestation,
     WebAnalysisLiveModelResourceAbsenceProof,
 )
+from pajin.web_assessment.analysis_compact_live_pins import (
+    CompactWebAnalysisRuntimePin,
+    CompactWebAnalysisTransportPin,
+    verify_compact_web_analysis_live_pin_binding,
+)
+from pajin.web_assessment.analysis_compact_live_transport import (
+    cleanup_compact_web_analysis_transport_resources,
+    expected_compact_web_analysis_provider_worker_context,
+    expected_compact_web_analysis_transport_job_metadata,
+    interpret_compact_web_analysis_transport_result,
+    prepare_compact_web_analysis_transport_job,
+    verify_compact_web_analysis_provider_worker_context,
+    verify_compact_web_analysis_transport_cleanup_proof,
+)
 from pajin.web_assessment.analysis_live_authorization import (
-    SignedWebAnalysisOneCallAuthorization,
-    VerifiedWebAnalysisOneCallAuthorization,
     WebAnalysisOneCallAuthorizationTrustAnchor,
-    WebAnalysisOneCallAuthorizationVerifier,
+)
+from pajin.web_assessment.analysis_live_authorization_v2 import (
+    SignedWebAnalysisOneCallAuthorizationV2,
+    VerifiedWebAnalysisOneCallAuthorizationV2,
+    WebAnalysisOneCallAuthorizationVerifierV2,
 )
 from pajin.web_assessment.analysis_live_claim_journal import (
     DispatchStartedWebAnalysisLiveClaim,
@@ -105,6 +121,7 @@ from pajin.web_assessment.analysis_skill_live_invocation import (
     verify_planned_prepared_compact_skill_bound_web_analysis_admission,
 )
 from pajin.web_assessment.analysis_skill_live_preparation import (
+    CompactSkillBoundWebAnalysisLiveRequest,
     VerifiedCompactSkillBoundWebAnalysisPreparationRun,
 )
 from pajin.web_assessment.analysis_skill_projection import (
@@ -114,14 +131,6 @@ from pajin.web_assessment.analysis_skill_projection import (
 from pajin.web_assessment.analysis_transport import (
     WebAnalysisTransportCleanupProof,
     WebAnalysisTransportRuntimePin,
-    cleanup_web_analysis_transport_resources,
-    expected_web_analysis_provider_worker_context,
-    expected_web_analysis_transport_job_metadata,
-    interpret_web_analysis_transport_result,
-    prepare_web_analysis_transport_job,
-    verify_web_analysis_provider_worker_context,
-    verify_web_analysis_transport_cleanup_proof,
-    verify_web_analysis_transport_job_metadata,
     web_analysis_transport_pre_cleanup_barrier_context,
 )
 from pajin.web_assessment.discovery_artifact import VerifiedAuthenticatedDiscoveryRun
@@ -206,7 +215,9 @@ class CompactSkillBoundWebAnalysisLiveAnchors:
     capacity_pin_digest: str
     capacity_proof_digest: str
     capacity_materialization_attestation_digest: str
-    transport_pin_digest: str
+    lineage_transport_pin_digest: str
+    compact_runtime_pin_digest: str
+    compact_transport_pin_digest: str
     preparation_run_id: str
     preparation_root_digest: str
     preparation_digest: str
@@ -660,17 +671,37 @@ class DockerCompactSkillBoundWebAnalysisDispatchAdapter:
     def __init__(
         self,
         *,
-        runtime: RuntimePin,
-        transport_pin: WebAnalysisTransportRuntimePin,
-        expected_transport_pin_digest: str,
+        capacity_pin: WebAnalysisCapacityV2Pin,
+        live_request: CompactSkillBoundWebAnalysisLiveRequest,
+        lineage_transport_pin: WebAnalysisTransportRuntimePin,
+        compact_runtime_pin: CompactWebAnalysisRuntimePin,
+        compact_transport_pin: CompactWebAnalysisTransportPin,
+        expected_capacity_pin_digest: str,
+        expected_lineage_transport_pin_digest: str,
+        expected_compact_runtime_pin_digest: str,
+        expected_compact_transport_pin_digest: str,
         secrets: SecretBroker,
         docker_executable: str = "docker",
     ) -> None:
-        self._runtime = RuntimePin.model_validate_json(runtime.model_dump_json())
-        self._transport_pin = WebAnalysisTransportRuntimePin.model_validate(
-            transport_pin.model_dump(mode="json", by_alias=True)
+        self._capacity_pin = WebAnalysisCapacityV2Pin.model_validate(
+            capacity_pin.model_dump(mode="json", by_alias=True)
         )
-        self._expected_transport_pin_digest = expected_transport_pin_digest
+        self._live_request = CompactSkillBoundWebAnalysisLiveRequest.model_validate(
+            live_request.model_dump(mode="json", by_alias=True)
+        )
+        self._lineage_transport_pin = WebAnalysisTransportRuntimePin.model_validate(
+            lineage_transport_pin.model_dump(mode="json", by_alias=True)
+        )
+        self._compact_runtime_pin = CompactWebAnalysisRuntimePin.model_validate(
+            compact_runtime_pin.model_dump(mode="json", by_alias=True)
+        )
+        self._compact_transport_pin = CompactWebAnalysisTransportPin.model_validate(
+            compact_transport_pin.model_dump(mode="json", by_alias=True)
+        )
+        self._expected_capacity_pin_digest = expected_capacity_pin_digest
+        self._expected_lineage_transport_pin_digest = expected_lineage_transport_pin_digest
+        self._expected_compact_runtime_pin_digest = expected_compact_runtime_pin_digest
+        self._expected_compact_transport_pin_digest = expected_compact_transport_pin_digest
         self._secrets = secrets
         self._docker = docker_executable
         self._prepared: _PreparedProductionDispatchState | None = None
@@ -701,12 +732,18 @@ class DockerCompactSkillBoundWebAnalysisDispatchAdapter:
             method="POST",
             arguments=chat.model_dump(mode="python", by_alias=True),
         )
-        job = prepare_web_analysis_transport_job(
+        job = prepare_compact_web_analysis_transport_job(
             request,
             registration=canonical_registration,
-            runtime=self._runtime,
-            transport_pin=self._transport_pin,
-            expected_transport_pin_digest=self._expected_transport_pin_digest,
+            capacity_pin=self._capacity_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._expected_capacity_pin_digest,
+            expected_lineage_transport_pin_digest=(self._expected_lineage_transport_pin_digest),
+            live_request=self._live_request,
+            runtime_pin=self._compact_runtime_pin,
+            transport_pin=self._compact_transport_pin,
+            expected_runtime_pin_digest=self._expected_compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._expected_compact_transport_pin_digest,
             execution_id=execution_id,
         )
         if len(job.secret_requests) > 1:
@@ -726,12 +763,12 @@ class DockerCompactSkillBoundWebAnalysisDispatchAdapter:
             result_processor=result_processor,
         )
         backend = DockerWorkerBackend(
-            allowed_images={self._transport_pin.worker_image},
+            allowed_images={self._compact_transport_pin.worker_image},
             docker_executable=self._docker,
-            egress_proxy_image=self._transport_pin.proxy_image,
+            egress_proxy_image=self._compact_transport_pin.proxy_image,
             external_network=binding.resources.network_name,
             external_network_routes={
-                self._transport_pin.worker_action: binding.resources.network_name
+                self._compact_transport_pin.worker_action: binding.resources.network_name
             },
             pre_cleanup_barrier=barrier,
         )
@@ -853,12 +890,18 @@ class DockerCompactSkillBoundWebAnalysisDispatchAdapter:
             raise CompactSkillBoundWebAnalysisLiveRuntimeError(
                 "compact live prepared transport cannot be revalidated"
             )
-        rebound = prepare_web_analysis_transport_job(
+        rebound = prepare_compact_web_analysis_transport_job(
             prepared.request,
             registration=state.registration,
-            runtime=self._runtime,
-            transport_pin=self._transport_pin,
-            expected_transport_pin_digest=self._expected_transport_pin_digest,
+            capacity_pin=self._capacity_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._expected_capacity_pin_digest,
+            expected_lineage_transport_pin_digest=(self._expected_lineage_transport_pin_digest),
+            live_request=self._live_request,
+            runtime_pin=self._compact_runtime_pin,
+            transport_pin=self._compact_transport_pin,
+            expected_runtime_pin_digest=self._expected_compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._expected_compact_transport_pin_digest,
             execution_id=prepared.execution_id,
         )
         if rebound != prepared.job:
@@ -1213,15 +1256,31 @@ class DockerCompactSkillBoundWebAnalysisDispatchAdapter:
             "type": "pajin.runtime.worker.DockerWorkerBackend",
             "context": backend.stable_execution_context(),
         }
-        verified = verify_web_analysis_provider_worker_context(
+        verified = verify_compact_web_analysis_provider_worker_context(
             observed,
-            transport_pin=self._transport_pin,
+            capacity_pin=self._capacity_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._expected_capacity_pin_digest,
+            expected_lineage_transport_pin_digest=(self._expected_lineage_transport_pin_digest),
+            live_request=self._live_request,
+            runtime_pin=self._compact_runtime_pin,
+            transport_pin=self._compact_transport_pin,
+            expected_runtime_pin_digest=self._expected_compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._expected_compact_transport_pin_digest,
             expected_external_network=binding.resources.network_name,
             expected_claim_digest=binding.claim_digest,
             expected_execution_id=execution_id,
         )
-        expected = expected_web_analysis_provider_worker_context(
-            self._transport_pin,
+        expected = expected_compact_web_analysis_provider_worker_context(
+            self._compact_runtime_pin,
+            self._compact_transport_pin,
+            capacity_pin=self._capacity_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._expected_capacity_pin_digest,
+            expected_lineage_transport_pin_digest=(self._expected_lineage_transport_pin_digest),
+            expected_runtime_pin_digest=self._expected_compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._expected_compact_transport_pin_digest,
+            live_request=self._live_request,
             external_network=binding.resources.network_name,
             claim_digest=binding.claim_digest,
             execution_id=execution_id,
@@ -1240,22 +1299,18 @@ class DockerCompactSkillBoundWebAnalysisDispatchAdapter:
         execution_id: str,
         lease_ids: tuple[str, ...],
     ) -> dict[str, object]:
-        expected = expected_web_analysis_transport_job_metadata(
+        return expected_compact_web_analysis_transport_job_metadata(
             request,
             registration=registration,
-            runtime=self._runtime,
-            transport_pin=self._transport_pin,
-            expected_transport_pin_digest=self._expected_transport_pin_digest,
-            execution_id=execution_id,
-            lease_ids=list(lease_ids),
-        )
-        return verify_web_analysis_transport_job_metadata(
-            expected,
-            request,
-            registration=registration,
-            runtime=self._runtime,
-            transport_pin=self._transport_pin,
-            expected_transport_pin_digest=self._expected_transport_pin_digest,
+            capacity_pin=self._capacity_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._expected_capacity_pin_digest,
+            expected_lineage_transport_pin_digest=(self._expected_lineage_transport_pin_digest),
+            live_request=self._live_request,
+            runtime_pin=self._compact_runtime_pin,
+            transport_pin=self._compact_transport_pin,
+            expected_runtime_pin_digest=self._expected_compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._expected_compact_transport_pin_digest,
             execution_id=execution_id,
             lease_ids=list(lease_ids),
         )
@@ -1384,21 +1439,33 @@ class DockerCompactSkillBoundWebAnalysisDispatchAdapter:
         self,
         prepared: CompactSkillBoundWebAnalysisPreparedDispatch,
     ) -> WebAnalysisTransportCleanupProof:
-        proof = cleanup_web_analysis_transport_resources(
+        proof = cleanup_compact_web_analysis_transport_resources(
             execution_id=prepared.execution_id,
             external_network=prepared.external_network,
-            runtime=self._runtime,
-            transport_pin=self._transport_pin,
-            expected_transport_pin_digest=self._expected_transport_pin_digest,
+            capacity_pin=self._capacity_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._expected_capacity_pin_digest,
+            expected_lineage_transport_pin_digest=(self._expected_lineage_transport_pin_digest),
+            live_request=self._live_request,
+            runtime_pin=self._compact_runtime_pin,
+            transport_pin=self._compact_transport_pin,
+            expected_runtime_pin_digest=self._expected_compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._expected_compact_transport_pin_digest,
             docker_executable=self._docker,
         )
-        return verify_web_analysis_transport_cleanup_proof(
+        return verify_compact_web_analysis_transport_cleanup_proof(
             proof,
             execution_id=prepared.execution_id,
             external_network=prepared.external_network,
-            runtime=self._runtime,
-            transport_pin=self._transport_pin,
-            expected_transport_pin_digest=self._expected_transport_pin_digest,
+            capacity_pin=self._capacity_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._expected_capacity_pin_digest,
+            expected_lineage_transport_pin_digest=(self._expected_lineage_transport_pin_digest),
+            live_request=self._live_request,
+            runtime_pin=self._compact_runtime_pin,
+            transport_pin=self._compact_transport_pin,
+            expected_runtime_pin_digest=self._expected_compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._expected_compact_transport_pin_digest,
         )
 
     def _transport_binding(
@@ -1419,11 +1486,15 @@ class DockerCompactSkillBoundWebAnalysisDispatchAdapter:
             )
         return CompactSkillBoundWebAnalysisTransportBinding(
             bindingDigest="",
-            runtimePin=self._runtime,
+            liveRequest=self._live_request,
+            capacityPin=self._capacity_pin,
+            lineageTransportPin=self._lineage_transport_pin,
+            compactRuntimePin=self._compact_runtime_pin,
+            compactRuntimePinDigest=self._compact_runtime_pin.pin_digest,
             toolRequest=state.public.request,
             providerRegistration=state.registration,
-            transportPin=self._transport_pin,
-            transportPinDigest=self._transport_pin.pin_digest,
+            compactTransportPin=self._compact_transport_pin,
+            compactTransportPinDigest=self._compact_transport_pin.pin_digest,
             liveClaimDigest=state.binding.claim_digest,
             transportExecutionId=state.public.execution_id,
             externalNetwork=state.public.external_network,
@@ -1594,11 +1665,12 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
         capacity_run: VerifiedWebAnalysisCapacityV2Run,
         preparation_run: VerifiedCompactSkillBoundWebAnalysisPreparationRun,
         admission: PreparedCompactSkillBoundWebAnalysisAdmissionEnvelope,
-        runtime: RuntimePin,
-        transport_pin: WebAnalysisTransportRuntimePin,
-        signed_authorization: SignedWebAnalysisOneCallAuthorization,
+        lineage_transport_pin: WebAnalysisTransportRuntimePin,
+        compact_runtime_pin: CompactWebAnalysisRuntimePin,
+        compact_transport_pin: CompactWebAnalysisTransportPin,
+        signed_authorization: SignedWebAnalysisOneCallAuthorizationV2,
         trust_anchor: WebAnalysisOneCallAuthorizationTrustAnchor,
-        authorization_verifier: WebAnalysisOneCallAuthorizationVerifier,
+        authorization_verifier: WebAnalysisOneCallAuthorizationVerifierV2,
         journal: WebAnalysisLiveClaimJournal,
         materializer_factory: Callable[[str], CompactSkillBoundWebAnalysisLiveMaterializer],
         dispatch_adapter: CompactSkillBoundWebAnalysisDispatchAdapter,
@@ -1610,9 +1682,14 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
         self._capacity_run = capacity_run
         self._preparation_run = preparation_run
         self._admission = admission
-        self._runtime = RuntimePin.model_validate_json(runtime.model_dump_json())
-        self._transport_pin = WebAnalysisTransportRuntimePin.model_validate(
-            transport_pin.model_dump(mode="json", by_alias=True)
+        self._lineage_transport_pin = WebAnalysisTransportRuntimePin.model_validate(
+            lineage_transport_pin.model_dump(mode="json", by_alias=True)
+        )
+        self._compact_runtime_pin = CompactWebAnalysisRuntimePin.model_validate(
+            compact_runtime_pin.model_dump(mode="json", by_alias=True)
+        )
+        self._compact_transport_pin = CompactWebAnalysisTransportPin.model_validate(
+            compact_transport_pin.model_dump(mode="json", by_alias=True)
         )
         self._signed_authorization = signed_authorization
         self._trust_anchor = trust_anchor
@@ -1645,6 +1722,7 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
 
             # Steps 1-2: no durable or live authority exists yet.
             planned = self._strict_admission_reload()
+            self._verify_compact_live_binding()
             initial_authorization = self._verify_authorization(planned)
             binding = build_web_analysis_live_claim_binding(
                 admission=planned.admission,
@@ -1918,11 +1996,12 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
 
             # Step 5: every fallible call-authority check, credential staging,
             # request reconstruction, and Worker-context check precedes the marker.
-            pre_dispatch_authorization: VerifiedWebAnalysisOneCallAuthorization | None = None
+            pre_dispatch_authorization: VerifiedWebAnalysisOneCallAuthorizationV2 | None = None
             try:
                 current = self._strict_admission_reload()
                 if current != planned:
                     raise ValueError("compact live admission changed before dispatch")
+                self._verify_compact_live_binding()
                 pre_dispatch_authorization = self._verify_authorization(current)
                 durable = self._journal.inspect(binding.claim_id)
                 if durable is None or durable != started.entry:
@@ -2411,7 +2490,7 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
                 pending_claim=exact,
             )
 
-        pre_dispatch_authorization: VerifiedWebAnalysisOneCallAuthorization | None = None
+        pre_dispatch_authorization: VerifiedWebAnalysisOneCallAuthorizationV2 | None = None
         if context.pre_dispatch_authorization_evaluated_at is not None:
             pre_dispatch_authorization = self._verify_authorization_at(
                 planned,
@@ -2539,7 +2618,7 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             expected_capacity_model_materialization_attestation_digest=(
                 anchors.capacity_materialization_attestation_digest
             ),
-            expected_transport_pin_digest=anchors.transport_pin_digest,
+            expected_transport_pin_digest=anchors.lineage_transport_pin_digest,
             expected_preparation_run_id=anchors.preparation_run_id,
             expected_preparation_root_digest=anchors.preparation_root_digest,
             expected_preparation_digest=anchors.preparation_digest,
@@ -2565,7 +2644,7 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             expected_capacity_model_materialization_attestation_digest=(
                 anchors.capacity_materialization_attestation_digest
             ),
-            expected_transport_pin_digest=anchors.transport_pin_digest,
+            expected_transport_pin_digest=anchors.lineage_transport_pin_digest,
             expected_preparation_run_id=anchors.preparation_run_id,
             expected_preparation_root_digest=anchors.preparation_root_digest,
             expected_preparation_digest=anchors.preparation_digest,
@@ -2578,24 +2657,45 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             )
         return planned
 
+    def _verify_compact_live_binding(self) -> None:
+        runtime_pin, transport_pin = verify_compact_web_analysis_live_pin_binding(
+            self._compact_runtime_pin,
+            self._compact_transport_pin,
+            capacity=self._capacity_run.pin,
+            live_request=self._preparation_run.live_request,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_runtime_pin_digest=self._anchors.compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._anchors.compact_transport_pin_digest,
+        )
+        if (
+            runtime_pin != self._compact_runtime_pin
+            or transport_pin != self._compact_transport_pin
+            or self._lineage_transport_pin.pin_digest != self._anchors.lineage_transport_pin_digest
+        ):
+            raise CompactSkillBoundWebAnalysisLiveRuntimeError(
+                "compact live runtime, transport, or lineage binding differs"
+            )
+
     def _verify_authorization(
         self,
         planned: PlannedPreparedCompactSkillBoundWebAnalysisAdmission,
-    ) -> VerifiedWebAnalysisOneCallAuthorization:
+    ) -> VerifiedWebAnalysisOneCallAuthorizationV2:
         return self._authorization_verifier.verify(
             self._signed_authorization,
             admission=planned.admission,
             live_request=self._preparation_run.live_request,
             capacity_pin=self._capacity_run.pin,
-            transport_pin=self._transport_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            compact_runtime_pin=self._compact_runtime_pin,
+            compact_transport_pin=self._compact_transport_pin,
         )
 
     def _verify_authorization_at(
         self,
         planned: PlannedPreparedCompactSkillBoundWebAnalysisAdmission,
         evaluated_at: datetime,
-    ) -> VerifiedWebAnalysisOneCallAuthorization:
-        verifier = WebAnalysisOneCallAuthorizationVerifier(
+    ) -> VerifiedWebAnalysisOneCallAuthorizationV2:
+        verifier = WebAnalysisOneCallAuthorizationVerifierV2(
             trust_anchor=self._trust_anchor,
             expected_trust_anchor_digest=self._anchors.trust_anchor_digest,
             clock=lambda: evaluated_at,
@@ -2605,7 +2705,9 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             admission=planned.admission,
             live_request=self._preparation_run.live_request,
             capacity_pin=self._capacity_run.pin,
-            transport_pin=self._transport_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            compact_runtime_pin=self._compact_runtime_pin,
+            compact_transport_pin=self._compact_transport_pin,
         )
 
     def _prepare_dispatch(
@@ -2661,8 +2763,8 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
         process_control: BaseException,
         planned: PlannedPreparedCompactSkillBoundWebAnalysisAdmission,
         binding: WebAnalysisLiveClaimBinding,
-        initial_authorization: VerifiedWebAnalysisOneCallAuthorization,
-        pre_dispatch_authorization: VerifiedWebAnalysisOneCallAuthorization | None,
+        initial_authorization: VerifiedWebAnalysisOneCallAuthorizationV2,
+        pre_dispatch_authorization: VerifiedWebAnalysisOneCallAuthorizationV2 | None,
         materializer: CompactSkillBoundWebAnalysisLiveMaterializer,
         prepared: CompactSkillBoundWebAnalysisPreparedDispatch | None,
         pending: WebAnalysisLiveClaimJournalEntry,
@@ -2779,16 +2881,30 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             method="POST",
             arguments=planned.chat.model_dump(mode="python", by_alias=True),
         )
-        expected_job = prepare_web_analysis_transport_job(
+        expected_job = prepare_compact_web_analysis_transport_job(
             expected_request,
             registration=planned.registration,
-            runtime=self._runtime,
-            transport_pin=self._transport_pin,
-            expected_transport_pin_digest=self._anchors.transport_pin_digest,
+            capacity_pin=self._capacity_run.pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._anchors.capacity_pin_digest,
+            expected_lineage_transport_pin_digest=(self._anchors.lineage_transport_pin_digest),
+            live_request=self._preparation_run.live_request,
+            runtime_pin=self._compact_runtime_pin,
+            transport_pin=self._compact_transport_pin,
+            expected_runtime_pin_digest=self._anchors.compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._anchors.compact_transport_pin_digest,
             execution_id=execution_id,
         )
-        expected_worker_context = expected_web_analysis_provider_worker_context(
-            self._transport_pin,
+        expected_worker_context = expected_compact_web_analysis_provider_worker_context(
+            self._compact_runtime_pin,
+            self._compact_transport_pin,
+            capacity_pin=self._capacity_run.pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._anchors.capacity_pin_digest,
+            expected_lineage_transport_pin_digest=(self._anchors.lineage_transport_pin_digest),
+            expected_runtime_pin_digest=self._anchors.compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._anchors.compact_transport_pin_digest,
+            live_request=self._preparation_run.live_request,
             external_network=binding.resources.network_name,
             claim_digest=binding.claim_digest,
             execution_id=execution_id,
@@ -2801,12 +2917,18 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             secret_ref=secret_request.secret_ref,
             binding=secret_request.binding,
         )
-        expected_job_metadata = expected_web_analysis_transport_job_metadata(
+        expected_job_metadata = expected_compact_web_analysis_transport_job_metadata(
             expected_request,
             registration=planned.registration,
-            runtime=self._runtime,
-            transport_pin=self._transport_pin,
-            expected_transport_pin_digest=self._anchors.transport_pin_digest,
+            capacity_pin=self._capacity_run.pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._anchors.capacity_pin_digest,
+            expected_lineage_transport_pin_digest=(self._anchors.lineage_transport_pin_digest),
+            live_request=self._preparation_run.live_request,
+            runtime_pin=self._compact_runtime_pin,
+            transport_pin=self._compact_transport_pin,
+            expected_runtime_pin_digest=self._anchors.compact_runtime_pin_digest,
+            expected_transport_pin_digest=self._anchors.compact_transport_pin_digest,
             execution_id=execution_id,
             lease_ids=[expected_lease_id],
         )
@@ -2821,9 +2943,13 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             != planned.admission.provider_registration_digest
             or binding.provider_chat_request_digest
             != planned.admission.provider_chat_request_digest
-            or transport.runtime_pin != self._runtime
-            or transport.transport_pin != self._transport_pin
-            or transport.transport_pin_digest != self._anchors.transport_pin_digest
+            or transport.live_request != self._preparation_run.live_request
+            or transport.capacity_pin != self._capacity_run.pin
+            or transport.lineage_transport_pin != self._lineage_transport_pin
+            or transport.compact_runtime_pin != self._compact_runtime_pin
+            or transport.compact_runtime_pin_digest != self._anchors.compact_runtime_pin_digest
+            or transport.compact_transport_pin != self._compact_transport_pin
+            or transport.compact_transport_pin_digest != self._anchors.compact_transport_pin_digest
             or transport.live_claim_digest != binding.claim_digest
             or transport.transport_execution_id != execution_id
             or transport.external_network != binding.resources.network_name
@@ -2874,13 +3000,21 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
                     "compact live Worker execution identity differs",
                 )
             try:
-                provider = interpret_web_analysis_transport_result(
+                provider = interpret_compact_web_analysis_transport_result(
                     request,
                     result,
                     registration=planned.registration,
-                    runtime=self._runtime,
-                    transport_pin=self._transport_pin,
-                    expected_transport_pin_digest=self._anchors.transport_pin_digest,
+                    capacity_pin=self._capacity_run.pin,
+                    lineage_transport_pin=self._lineage_transport_pin,
+                    expected_capacity_pin_digest=self._anchors.capacity_pin_digest,
+                    expected_lineage_transport_pin_digest=(
+                        self._anchors.lineage_transport_pin_digest
+                    ),
+                    live_request=self._preparation_run.live_request,
+                    runtime_pin=self._compact_runtime_pin,
+                    transport_pin=self._compact_transport_pin,
+                    expected_runtime_pin_digest=self._anchors.compact_runtime_pin_digest,
+                    expected_transport_pin_digest=self._anchors.compact_transport_pin_digest,
                     expected_execution_id=execution_id,
                 )
                 raw = _require_proposal_only_result(provider)
@@ -2905,28 +3039,28 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
                     source=self._source,
                     skill_run=self._skill_run,
                     draft=draft,
-                    transport_pin=self._transport_pin,
+                    transport_pin=self._lineage_transport_pin,
                     expected_source_run_id=self._anchors.source_run_id,
                     expected_source_root_digest=self._anchors.source_root_digest,
                     expected_skill_run_id=self._anchors.skill_run_id,
                     expected_skill_root_digest=self._anchors.skill_root_digest,
                     expected_registry_ref=self._anchors.registry_ref,
                     expected_policy_digest=self._anchors.policy_digest,
-                    expected_transport_pin_digest=self._anchors.transport_pin_digest,
+                    expected_transport_pin_digest=self._anchors.lineage_transport_pin_digest,
                 )
                 proposal = verify_compiled_skill_bound_web_analysis_proposal(
                     proposal,
                     source=self._source,
                     skill_run=self._skill_run,
                     draft=draft,
-                    transport_pin=self._transport_pin,
+                    transport_pin=self._lineage_transport_pin,
                     expected_source_run_id=self._anchors.source_run_id,
                     expected_source_root_digest=self._anchors.source_root_digest,
                     expected_skill_run_id=self._anchors.skill_run_id,
                     expected_skill_root_digest=self._anchors.skill_root_digest,
                     expected_registry_ref=self._anchors.registry_ref,
                     expected_policy_digest=self._anchors.policy_digest,
-                    expected_transport_pin_digest=self._anchors.transport_pin_digest,
+                    expected_transport_pin_digest=self._anchors.lineage_transport_pin_digest,
                 )
             except (
                 DockerPreCleanupBarrierDeadlineExceeded,
@@ -2958,8 +3092,8 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
         *,
         planned: PlannedPreparedCompactSkillBoundWebAnalysisAdmission,
         binding: WebAnalysisLiveClaimBinding,
-        initial_authorization: VerifiedWebAnalysisOneCallAuthorization,
-        pre_dispatch_authorization: VerifiedWebAnalysisOneCallAuthorization | None,
+        initial_authorization: VerifiedWebAnalysisOneCallAuthorizationV2,
+        pre_dispatch_authorization: VerifiedWebAnalysisOneCallAuthorizationV2 | None,
         materializer: CompactSkillBoundWebAnalysisLiveMaterializer,
         prepared: CompactSkillBoundWebAnalysisPreparedDispatch | None,
         pending: WebAnalysisLiveClaimJournalEntry,
@@ -3069,8 +3203,8 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
         self,
         *,
         planned: PlannedPreparedCompactSkillBoundWebAnalysisAdmission,
-        initial_authorization: VerifiedWebAnalysisOneCallAuthorization,
-        pre_dispatch_authorization: VerifiedWebAnalysisOneCallAuthorization | None,
+        initial_authorization: VerifiedWebAnalysisOneCallAuthorizationV2,
+        pre_dispatch_authorization: VerifiedWebAnalysisOneCallAuthorizationV2 | None,
         materializer: CompactSkillBoundWebAnalysisLiveMaterializer,
         settlement: CompactSkillBoundWebAnalysisDispatchSettlement,
         live_attestation: WebAnalysisLiveModelMaterializationAttestation | None,
@@ -3147,7 +3281,8 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             terminalRunId=terminal_run_id,
             admission=planned.admission,
             capacityPin=self._capacity_run.pin,
-            transportPin=self._transport_pin,
+            compactRuntimePin=self._compact_runtime_pin,
+            compactTransportPin=self._compact_transport_pin,
             signedAuthorization=self._signed_authorization,
             initialAuthorizationVerification=initial_authorization,
             preDispatchAuthorizationVerification=pre_dispatch_authorization,
@@ -3532,7 +3667,9 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             capacity_run=self._capacity_run,
             preparation_run=self._preparation_run,
             admission=planned.admission,
-            transport_pin=self._transport_pin,
+            transport_pin=self._lineage_transport_pin,
+            compact_runtime_pin=self._compact_runtime_pin,
+            compact_transport_pin=self._compact_transport_pin,
             trust_anchor=self._trust_anchor,
             expected_trust_anchor_digest=independent.trust_anchor_digest,
             journal=self._journal,
@@ -3550,7 +3687,9 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             expected_capacity_model_materialization_attestation_digest=(
                 independent.capacity_materialization_attestation_digest
             ),
-            expected_transport_pin_digest=independent.transport_pin_digest,
+            expected_transport_pin_digest=independent.lineage_transport_pin_digest,
+            expected_compact_runtime_pin_digest=independent.compact_runtime_pin_digest,
+            expected_compact_transport_pin_digest=independent.compact_transport_pin_digest,
             expected_preparation_run_id=independent.preparation_run_id,
             expected_preparation_root_digest=independent.preparation_root_digest,
             expected_preparation_digest=independent.preparation_digest,
@@ -3611,7 +3750,9 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             capacity_run=self._capacity_run,
             preparation_run=self._preparation_run,
             admission=planned.admission,
-            transport_pin=self._transport_pin,
+            transport_pin=self._lineage_transport_pin,
+            compact_runtime_pin=self._compact_runtime_pin,
+            compact_transport_pin=self._compact_transport_pin,
             trust_anchor=self._trust_anchor,
             expected_trust_anchor_digest=independent.trust_anchor_digest,
             journal=self._journal,
@@ -3629,7 +3770,9 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             expected_capacity_model_materialization_attestation_digest=(
                 independent.capacity_materialization_attestation_digest
             ),
-            expected_transport_pin_digest=independent.transport_pin_digest,
+            expected_transport_pin_digest=independent.lineage_transport_pin_digest,
+            expected_compact_runtime_pin_digest=independent.compact_runtime_pin_digest,
+            expected_compact_transport_pin_digest=independent.compact_transport_pin_digest,
             expected_preparation_run_id=independent.preparation_run_id,
             expected_preparation_root_digest=independent.preparation_root_digest,
             expected_preparation_digest=independent.preparation_digest,
@@ -3674,7 +3817,9 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             capacity_run=self._capacity_run,
             preparation_run=self._preparation_run,
             admission=planned.admission,
-            transport_pin=self._transport_pin,
+            transport_pin=self._lineage_transport_pin,
+            compact_runtime_pin=self._compact_runtime_pin,
+            compact_transport_pin=self._compact_transport_pin,
             trust_anchor=self._trust_anchor,
             expected_trust_anchor_digest=independent.trust_anchor_digest,
             journal=self._journal,
@@ -3692,7 +3837,9 @@ class CompactSkillBoundWebAnalysisLiveRuntime:
             expected_capacity_model_materialization_attestation_digest=(
                 independent.capacity_materialization_attestation_digest
             ),
-            expected_transport_pin_digest=independent.transport_pin_digest,
+            expected_transport_pin_digest=independent.lineage_transport_pin_digest,
+            expected_compact_runtime_pin_digest=independent.compact_runtime_pin_digest,
+            expected_compact_transport_pin_digest=independent.compact_transport_pin_digest,
             expected_preparation_run_id=independent.preparation_run_id,
             expected_preparation_root_digest=independent.preparation_root_digest,
             expected_preparation_digest=independent.preparation_digest,

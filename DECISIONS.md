@@ -5,6 +5,13 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0323](docs/adr/0323-bind-compact-live-operation-to-effective-pins-and-separated-issuance.md):
+  WEB-007의 역사적 `RuntimePin` 128-token 의미를 보존하면서 Capacity·exact 4096/1024 request·
+  resource/model/image·lineage transport를 묶는 effective compact runtime Pin과 그 runtime에
+  결박된 transport successor를 추가한다. compact Pin identity와 기존 Worker wire protocol을 구분해
+  함께 결박하고, authorization v2는 두 Pin을 모두 결박한다. private key는 main `pajin` 의존성이 없는
+  물리적으로 분리된 offline issuer만 읽는다. executor는 signer 없이 기존 durable store만 열어
+  zero-side-effect preflight 뒤 정확히 한 번만 invoke하며, 첫 실제 completion은 별도 승인을 요구한다.
 - [ADR-0322](docs/adr/0322-enforce-cleanup-bound-compact-web-analysis-live-runtime.md):
   WEB-007 Gate D를 legacy wire·receipt·runtime과 분리된 compact-only live 경로로 구성하고,
   exact Provider-route attestation, synchronous Worker v6 pending-cleanup barrier, credential·model·

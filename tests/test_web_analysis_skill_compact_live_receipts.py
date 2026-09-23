@@ -14,7 +14,6 @@ from typing import Any, cast
 import pytest
 from pydantic import JsonValue, ValidationError
 
-from pajin.benchmark.effectiveness.suite import PLATFORM_MANIFESTS, RuntimePin
 from pajin.discovery.canonicalization import canonical_json_bytes
 from pajin.domain.models import CampaignManifest, ToolRequest
 from pajin.runtime.store import RunStore, load_verified_run_snapshot
@@ -23,6 +22,11 @@ from pajin.web_assessment.analysis_capacity_v2 import (
     WebAnalysisLiveModelMaterializationAttestation,
     WebAnalysisLiveModelProviderRouteAttestation,
     WebAnalysisLiveModelResourceAbsenceProof,
+)
+from pajin.web_assessment.analysis_compact_live_transport import (
+    expected_compact_web_analysis_provider_worker_context,
+    expected_compact_web_analysis_transport_job_metadata,
+    prepare_compact_web_analysis_transport_job,
 )
 from pajin.web_assessment.analysis_live_claim_journal import (
     VerifiedWebAnalysisLiveClaimTerminalPublicationCandidate,
@@ -35,6 +39,7 @@ from pajin.web_assessment.analysis_live_claim_journal import (
 from pajin.web_assessment.analysis_skill_compact_live_receipts import (
     CompactSkillBoundWebAnalysisCleanupResult,
     CompactSkillBoundWebAnalysisDispatchObservation,
+    CompactSkillBoundWebAnalysisTerminalIndex,
     CompactSkillBoundWebAnalysisTerminalReceipt,
     CompactSkillBoundWebAnalysisTerminalReceiptError,
     CompactSkillBoundWebAnalysisTransportBinding,
@@ -58,17 +63,12 @@ from pajin.web_assessment.analysis_skill_runtime import (
 )
 from pajin.web_assessment.analysis_transport import (
     WebAnalysisTransportCleanupProof,
-    expected_web_analysis_provider_worker_context,
-    expected_web_analysis_transport_job_metadata,
-    prepare_web_analysis_transport_job,
 )
-from tests.test_web_analysis_live_authorization import (
+from tests.test_web_analysis_live_authorization_v2 import (
     _signed,
     _statement,
-    _trust_anchor,
-    _verifier,
 )
-from tests.test_web_analysis_live_authorization import (
+from tests.test_web_analysis_live_authorization_v2 import (
     _verify as verify_authorization,
 )
 from tests.test_web_analysis_skill_invocation import _successor_draft
@@ -90,7 +90,7 @@ from tests.test_web_analysis_skill_runtime import (
 )
 
 PROJECT_ROOT = Path(__file__).parents[1]
-pytest_plugins = ("tests.test_web_analysis_live_authorization",)
+pytest_plugins = ("tests.test_web_analysis_live_authorization_v2",)
 
 
 class _MutableClock:
@@ -105,13 +105,9 @@ def _sha(label: str) -> str:
     return sha256(label.encode("utf-8")).hexdigest()
 
 
-def _runtime_pin() -> RuntimePin:
-    return RuntimePin(
-        platform="linux/arm64",
-        platform_manifest=PLATFORM_MANIFESTS["linux/arm64"],
-        worker_image="sha256:" + "1" * 64,
-        proxy_image="sha256:" + "2" * 64,
-    )
+@pytest.fixture(scope="module")  # type: ignore[untyped-decorator]
+def authorization_context(authorization_v2_context: SimpleNamespace) -> SimpleNamespace:
+    return authorization_v2_context
 
 
 def _cleanup(
@@ -189,7 +185,7 @@ def _make_failure_receipt(
     *,
     lease_ids: tuple[str, ...] | None = (),
 ) -> SimpleNamespace:
-    bundle = _signed(_statement(context))
+    bundle = _signed(context, _statement(context))
     initial_auth = verify_authorization(context, bundle)
     binding = build_web_analysis_live_claim_binding(
         admission=context.admission,
@@ -212,7 +208,6 @@ def _make_failure_receipt(
     )
     resources = binding.resources
     execution_id = f"exec_{resources.resource_owner}"
-    runtime_pin = _runtime_pin()
     registration = context.live_request.provider_registration
     chat = context.live_request.chat_request
     tool_request = ToolRequest(
@@ -224,12 +219,18 @@ def _make_failure_receipt(
         arguments=chat.model_dump(mode="python", by_alias=True),
     )
     if lease_ids is None:
-        job = prepare_web_analysis_transport_job(
+        job = prepare_compact_web_analysis_transport_job(
             tool_request,
+            capacity_pin=context.capacity_pin,
             registration=registration,
-            runtime=runtime_pin,
-            transport_pin=context.transport_pin,
-            expected_transport_pin_digest=context.transport_pin.pin_digest,
+            live_request=context.live_request,
+            lineage_transport_pin=context.transport_pin,
+            runtime_pin=context.compact_runtime,
+            transport_pin=context.compact_transport,
+            expected_capacity_pin_digest=context.capacity_pin.pin_digest,
+            expected_lineage_transport_pin_digest=context.transport_pin.pin_digest,
+            expected_runtime_pin_digest=context.compact_runtime.pin_digest,
+            expected_transport_pin_digest=context.compact_transport.pin_digest,
             execution_id=execution_id,
         )
         assert len(job.secret_requests) == 1
@@ -241,27 +242,45 @@ def _make_failure_receipt(
                 binding=request.binding,
             ),
         )
-    worker_context = expected_web_analysis_provider_worker_context(
-        context.transport_pin,
+    worker_context = expected_compact_web_analysis_provider_worker_context(
+        context.compact_runtime,
+        context.compact_transport,
+        capacity_pin=context.capacity_pin,
+        lineage_transport_pin=context.transport_pin,
+        expected_capacity_pin_digest=context.capacity_pin.pin_digest,
+        expected_lineage_transport_pin_digest=context.transport_pin.pin_digest,
+        expected_runtime_pin_digest=context.compact_runtime.pin_digest,
+        expected_transport_pin_digest=context.compact_transport.pin_digest,
+        live_request=context.live_request,
         external_network=resources.network_name,
         claim_digest=binding.claim_digest,
         execution_id=execution_id,
     )
-    job_metadata = expected_web_analysis_transport_job_metadata(
+    job_metadata = expected_compact_web_analysis_transport_job_metadata(
         tool_request,
+        capacity_pin=context.capacity_pin,
         registration=registration,
-        runtime=runtime_pin,
-        transport_pin=context.transport_pin,
-        expected_transport_pin_digest=context.transport_pin.pin_digest,
+        live_request=context.live_request,
+        lineage_transport_pin=context.transport_pin,
+        runtime_pin=context.compact_runtime,
+        transport_pin=context.compact_transport,
+        expected_capacity_pin_digest=context.capacity_pin.pin_digest,
+        expected_lineage_transport_pin_digest=context.transport_pin.pin_digest,
+        expected_runtime_pin_digest=context.compact_runtime.pin_digest,
+        expected_transport_pin_digest=context.compact_transport.pin_digest,
         execution_id=execution_id,
         lease_ids=list(lease_ids),
     )
     transport_binding = CompactSkillBoundWebAnalysisTransportBinding(
-        runtimePin=runtime_pin,
+        liveRequest=context.live_request,
+        capacityPin=context.capacity_pin,
+        lineageTransportPin=context.transport_pin,
+        compactRuntimePin=context.compact_runtime,
+        compactRuntimePinDigest=context.compact_runtime.pin_digest,
         toolRequest=tool_request,
         providerRegistration=registration,
-        transportPin=context.transport_pin,
-        transportPinDigest=context.transport_pin.pin_digest,
+        compactTransportPin=context.compact_transport,
+        compactTransportPinDigest=context.compact_transport.pin_digest,
         liveClaimDigest=binding.claim_digest,
         transportExecutionId=execution_id,
         externalNetwork=resources.network_name,
@@ -299,7 +318,7 @@ def _make_failure_receipt(
         volume_name=resources.volume_name,
         network_name=resources.network_name,
         execution_id=execution_id,
-        transport_pin_digest=context.transport_pin.pin_digest,
+        transport_pin_digest=context.compact_transport.pin_digest,
         revoked_lease_ids=lease_ids,
     )
     gate_d_context = journal.inspect_gate_d_context(binding.claim_id)
@@ -309,7 +328,8 @@ def _make_failure_receipt(
         terminalRunId=run_id,
         admission=context.admission,
         capacityPin=context.capacity_pin,
-        transportPin=context.transport_pin,
+        compactRuntimePin=context.compact_runtime,
+        compactTransportPin=context.compact_transport,
         signedAuthorization=bundle,
         initialAuthorizationVerification=initial_auth,
         preDispatchAuthorizationVerification=None,
@@ -491,7 +511,7 @@ def _make_success_receipt(
     pre_dispatch_auth = verify_authorization(
         context,
         base.bundle,
-        verifier=_verifier(clock=clock.value),
+        clock=clock.value,
     )
     started = journal.record_gate_d_pre_dispatch_context(
         started,
@@ -541,7 +561,7 @@ def _make_success_receipt(
         volume_name=resources.volume_name,
         network_name=resources.network_name,
         execution_id=transport_binding.transport_execution_id,
-        transport_pin_digest=context.transport_pin.pin_digest,
+        transport_pin_digest=context.compact_transport.pin_digest,
         revoked_lease_ids=transport_binding.lease_ids,
     )
     gate_d_context = journal.inspect_gate_d_context(binding.claim_id)
@@ -550,7 +570,8 @@ def _make_success_receipt(
         terminalRunId=compact_skill_bound_web_analysis_terminal_run_id(pending),
         admission=context.admission,
         capacityPin=context.capacity_pin,
-        transportPin=context.transport_pin,
+        compactRuntimePin=context.compact_runtime,
+        compactTransportPin=context.compact_transport,
         signedAuthorization=base.bundle,
         initialAuthorizationVerification=initial_auth,
         preDispatchAuthorizationVerification=pre_dispatch_auth,
@@ -669,7 +690,7 @@ def _make_dispatched_non_success_receipt(
         volume_name=resources.volume_name,
         network_name=resources.network_name,
         execution_id=transport.transport_execution_id,
-        transport_pin_digest=context.transport_pin.pin_digest,
+        transport_pin_digest=context.compact_transport.pin_digest,
         revoked_lease_ids=transport.lease_ids,
     )
     gate_d_context = journal.inspect_gate_d_context(binding.claim_id)
@@ -720,7 +741,7 @@ def _load(
     run_path: Path | None = None,
     overrides: dict[str, object] | None = None,
 ) -> Any:
-    trust_anchor = _trust_anchor()
+    trust_anchor = context.trust_anchor
     values: dict[str, object] = {
         "expected_output_root": publication.run_path.parents[1],
         "expected_run_id": publication.run_id,
@@ -736,10 +757,14 @@ def _load(
         "preparation_run": context.preparation,
         "admission": context.admission,
         "transport_pin": context.transport_pin,
+        "compact_runtime_pin": context.compact_runtime,
+        "compact_transport_pin": context.compact_transport,
         "trust_anchor": trust_anchor,
         "expected_trust_anchor_digest": trust_anchor.digest,
         "journal": built.journal,
         "expected_claim_store_id": built.journal.store_id,
+        "expected_compact_runtime_pin_digest": context.compact_runtime.pin_digest,
+        "expected_compact_transport_pin_digest": context.compact_transport.pin_digest,
     }
     values.update(
         _admission_anchors(
@@ -1175,7 +1200,7 @@ def test_quiescent_recovery_abandons_observed_success_without_fabricating_propos
         volume_name=resources.volume_name,
         network_name=resources.network_name,
         execution_id=successful.receipt.transport_execution_id,
-        transport_pin_digest=successful.receipt.transport_pin.pin_digest,
+        transport_pin_digest=successful.receipt.compact_transport_pin.pin_digest,
         revoked_lease_ids=successful.receipt.transport_binding.lease_ids,
     )
     receipt_wire = successful.receipt.model_dump(mode="python", by_alias=True)
@@ -1557,6 +1582,8 @@ def test_loader_rejects_independent_anchor_substitution(
         ("expected_capacity_root_digest", "0" * 64),
         ("expected_preparation_root_digest", "0" * 64),
         ("expected_transport_pin_digest", "0" * 64),
+        ("expected_compact_runtime_pin_digest", "0" * 64),
+        ("expected_compact_transport_pin_digest", "0" * 64),
         ("expected_trust_anchor_digest", "0" * 64),
     )
 
@@ -1571,6 +1598,117 @@ def test_loader_rejects_independent_anchor_substitution(
                 publication,
                 overrides={key: value},
             )
+
+
+def test_receipt_keeps_lineage_and_compact_transport_identities_distinct(
+    authorization_context: SimpleNamespace,
+    tmp_path: Path,
+) -> None:
+    built = _make_failure_receipt(authorization_context, tmp_path)
+    receipt = built.receipt
+    lineage_digest = authorization_context.transport_pin.pin_digest
+    compact_digest = authorization_context.compact_transport.pin_digest
+
+    assert lineage_digest != compact_digest
+    assert receipt.pending_claim.binding.transport_pin_digest == lineage_digest
+    assert receipt.admission.transport_pin_digest == lineage_digest
+    assert receipt.transport_binding.lineage_transport_pin.pin_digest == lineage_digest
+    assert receipt.initial_authorization_verification.lineage_transport_pin_digest == (
+        lineage_digest
+    )
+    assert receipt.initial_authorization_verification.compact_transport_pin_digest == (
+        compact_digest
+    )
+    assert receipt.cleanup_result.transport_cleanup.transport_pin_digest == compact_digest
+
+
+def test_receipt_rejects_compact_runtime_and_transport_cross_recombination(
+    authorization_context: SimpleNamespace,
+    tmp_path: Path,
+) -> None:
+    built = _make_failure_receipt(authorization_context, tmp_path)
+
+    runtime_wire = authorization_context.compact_runtime.model_dump(mode="python", by_alias=True)
+    runtime_wire.update(
+        {
+            "pinDigest": "",
+            "modelRepository": "foreign.invalid/recombined-model",
+        }
+    )
+    foreign_runtime = type(authorization_context.compact_runtime).model_validate(runtime_wire)
+    runtime_receipt = built.receipt.model_dump(mode="python", by_alias=True)
+    runtime_receipt.update(
+        {
+            "receiptId": "",
+            "receiptDigest": "",
+            "compactRuntimePin": foreign_runtime.model_dump(mode="python", by_alias=True),
+        }
+    )
+    with pytest.raises(ValidationError, match="materialization lineage differs"):
+        CompactSkillBoundWebAnalysisTerminalReceipt.model_validate(runtime_receipt)
+
+    transport_wire = authorization_context.compact_transport.model_dump(
+        mode="python", by_alias=True
+    )
+    transport_wire.update(
+        {
+            "pinDigest": "",
+            "workerImage": "sha256:" + "f" * 64,
+        }
+    )
+    foreign_transport = type(authorization_context.compact_transport).model_validate(transport_wire)
+    transport_receipt = built.receipt.model_dump(mode="python", by_alias=True)
+    transport_receipt.update(
+        {
+            "receiptId": "",
+            "receiptDigest": "",
+            "compactTransportPin": foreign_transport.model_dump(mode="python", by_alias=True),
+        }
+    )
+    with pytest.raises(ValidationError, match="request, dispatch, or cleanup differs"):
+        CompactSkillBoundWebAnalysisTerminalReceipt.model_validate(transport_receipt)
+
+
+def test_v1alpha1_receipt_binding_index_and_authorization_are_not_live_authoritative(
+    authorization_context: SimpleNamespace,
+    tmp_path: Path,
+) -> None:
+    built = _make_failure_receipt(authorization_context, tmp_path / "claim")
+
+    binding_wire = built.receipt.transport_binding.model_dump(mode="python", by_alias=True)
+    binding_wire["apiVersion"] = (
+        "pajin.dev/compact-skill-bound-web-analysis-transport-binding/v1alpha1"
+    )
+    with pytest.raises(ValidationError):
+        CompactSkillBoundWebAnalysisTransportBinding.model_validate(binding_wire)
+
+    receipt_wire = built.receipt.model_dump(mode="python", by_alias=True)
+    receipt_wire["apiVersion"] = (
+        "pajin.dev/compact-skill-bound-web-analysis-terminal-receipt/v1alpha1"
+    )
+    with pytest.raises(ValidationError):
+        CompactSkillBoundWebAnalysisTerminalReceipt.model_validate(receipt_wire)
+
+    legacy_authorization_receipt = built.receipt.model_dump(mode="python", by_alias=True)
+    signed = cast(dict[str, object], legacy_authorization_receipt["signedAuthorization"])
+    signed["apiVersion"] = "pajin.dev/web-analysis-one-call-authorization-bundle/v1alpha1"
+    signed["kind"] = "SignedWebAnalysisOneCallAuthorization"
+    with pytest.raises(ValidationError):
+        CompactSkillBoundWebAnalysisTerminalReceipt.model_validate(legacy_authorization_receipt)
+
+    publication = publish_compact_skill_bound_web_analysis_terminal_run(
+        tmp_path / "terminal",
+        receipt=built.receipt,
+        signed_authorization=built.bundle,
+        draft=None,
+        proposal=None,
+    )
+    index_wire = json.loads(
+        (publication.run_path / "compact-live-terminal-index.json").read_text(encoding="utf-8")
+    )
+    index_wire["apiVersion"] = "pajin.dev/compact-skill-bound-web-analysis-terminal-index/v1alpha1"
+    with pytest.raises(ValidationError):
+        CompactSkillBoundWebAnalysisTerminalIndex.model_validate(index_wire)
 
 
 def test_cleanup_binding_rejects_stale_foreign_and_substituted_evidence(
@@ -1677,12 +1815,20 @@ def test_candidate_loader_rejects_self_sealed_dispatched_lease_tamper(
         {
             "bindingDigest": "",
             "leaseIds": tampered_lease_ids,
-            "jobMetadata": expected_web_analysis_transport_job_metadata(
+            "jobMetadata": expected_compact_web_analysis_transport_job_metadata(
                 built.receipt.transport_binding.tool_request,
+                capacity_pin=built.receipt.capacity_pin,
                 registration=built.receipt.provider_registration,
-                runtime=built.receipt.transport_binding.runtime_pin,
-                transport_pin=built.receipt.transport_pin,
-                expected_transport_pin_digest=built.receipt.transport_pin.pin_digest,
+                live_request=built.receipt.transport_binding.live_request,
+                lineage_transport_pin=(built.receipt.transport_binding.lineage_transport_pin),
+                runtime_pin=built.receipt.compact_runtime_pin,
+                transport_pin=built.receipt.compact_transport_pin,
+                expected_capacity_pin_digest=built.receipt.capacity_pin.pin_digest,
+                expected_lineage_transport_pin_digest=(
+                    built.receipt.transport_binding.lineage_transport_pin.pin_digest
+                ),
+                expected_runtime_pin_digest=built.receipt.compact_runtime_pin.pin_digest,
+                expected_transport_pin_digest=built.receipt.compact_transport_pin.pin_digest,
                 execution_id=built.receipt.transport_execution_id,
                 lease_ids=list(tampered_lease_ids),
             ),
@@ -1863,7 +2009,7 @@ def test_receipt_rejects_copied_initial_authorization_and_wrong_failure_stage(
         volume_name=resources.volume_name,
         network_name=resources.network_name,
         execution_id=failed.receipt.transport_execution_id,
-        transport_pin_digest=failed.receipt.transport_pin.pin_digest,
+        transport_pin_digest=failed.receipt.compact_transport_pin.pin_digest,
         revoked_lease_ids=failed.receipt.transport_binding.lease_ids,
     )
     wire.update(
@@ -2143,5 +2289,23 @@ def test_receipt_module_has_no_forbidden_legacy_runtime_imports() -> None:
         "pajin.web_assessment.analysis_runtime",
         "pajin.web_assessment.analysis_local",
         "pajin.benchmark.effectiveness.docker",
+        "pajin.benchmark.effectiveness.suite",
     }
     assert imports.isdisjoint(forbidden)
+    imported_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    assert imported_names.isdisjoint(
+        {
+            "RuntimePin",
+            "SignedWebAnalysisOneCallAuthorization",
+            "VerifiedWebAnalysisOneCallAuthorization",
+            "WebAnalysisOneCallAuthorizationVerifier",
+            "expected_web_analysis_provider_worker_context",
+            "expected_web_analysis_transport_job_metadata",
+            "prepare_web_analysis_transport_job",
+        }
+    )

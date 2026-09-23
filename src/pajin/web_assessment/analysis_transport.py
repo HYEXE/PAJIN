@@ -864,19 +864,59 @@ def expected_web_analysis_provider_worker_context(
         canonical_pin = WebAnalysisTransportRuntimePin.model_validate(
             transport_pin.model_dump(mode="json", by_alias=True)
         )
+        return expected_web_analysis_bound_provider_worker_context(
+            worker_image=canonical_pin.worker_image,
+            proxy_image=canonical_pin.proxy_image,
+            worker_action=canonical_pin.worker_action,
+            external_network=external_network,
+            claim_digest=claim_digest,
+            execution_id=execution_id,
+        )
+    except WebAnalysisTransportError:
+        raise
+    except Exception as exc:
+        raise WebAnalysisTransportError(
+            "Web analysis successor Worker context construction failed closed"
+        ) from exc
+
+
+def expected_web_analysis_bound_provider_worker_context(
+    *,
+    worker_image: str,
+    proxy_image: str,
+    worker_action: str,
+    external_network: str,
+    claim_digest: str | None = None,
+    execution_id: str | None = None,
+) -> dict[str, JsonValue]:
+    """Build one exact Docker context from an already verified transport binding.
+
+    This narrow primitive is shared by the historical successor transport and
+    the additive compact-live transport.  It grants no authority and does not
+    accept a base model runtime.
+    """
+
+    try:
         if (
-            type(external_network) is not str
+            type(worker_image) is not str
+            or re.fullmatch(r"sha256:[a-f0-9]{64}", worker_image) is None
+            or type(proxy_image) is not str
+            or re.fullmatch(r"sha256:[a-f0-9]{64}", proxy_image) is None
+            or worker_image == proxy_image
+            or type(worker_action) is not str
+            or worker_action != WEB_ANALYSIS_PINNED_PROVIDER_ACTION
+            or type(external_network) is not str
             or _SAFE_RUNTIME_IDENTIFIER_PATTERN.fullmatch(external_network) is None
         ):
             raise ValueError("Web analysis successor Docker network is not a safe identifier")
         context: dict[str, JsonValue] = {
             "implementationVersion": "pajin.docker-worker/v2",
-            "allowedImages": [canonical_pin.worker_image],
+            "allowedImages": [worker_image],
             "dockerExecutable": "docker",
-            "egressProxyImage": canonical_pin.proxy_image,
+            "egressProxyImage": proxy_image,
             "externalNetwork": external_network,
             "externalNetworkRoutes": {
-                canonical_pin.worker_action: external_network,
+                worker_action: external_network,
             },
         }
         if (claim_digest is None) != (execution_id is None):
@@ -918,6 +958,40 @@ def verify_web_analysis_provider_worker_context(
     """Strictly verify the actual Docker backend context bound to a successor Tool."""
 
     try:
+        canonical_skill_contract(transport_pin, WebAnalysisTransportRuntimePin)
+        canonical_pin = WebAnalysisTransportRuntimePin.model_validate(
+            transport_pin.model_dump(mode="json", by_alias=True)
+        )
+        return verify_web_analysis_bound_provider_worker_context(
+            worker_context,
+            worker_image=canonical_pin.worker_image,
+            proxy_image=canonical_pin.proxy_image,
+            worker_action=canonical_pin.worker_action,
+            expected_external_network=expected_external_network,
+            expected_claim_digest=expected_claim_digest,
+            expected_execution_id=expected_execution_id,
+        )
+    except WebAnalysisTransportError:
+        raise
+    except Exception as exc:
+        raise WebAnalysisTransportError(
+            "Web analysis successor Worker context verification failed closed"
+        ) from exc
+
+
+def verify_web_analysis_bound_provider_worker_context(
+    worker_context: object,
+    *,
+    worker_image: str,
+    proxy_image: str,
+    worker_action: str,
+    expected_external_network: str | None = None,
+    expected_claim_digest: str | None = None,
+    expected_execution_id: str | None = None,
+) -> dict[str, JsonValue]:
+    """Verify a Docker context against an already verified transport binding."""
+
+    try:
         if type(worker_context) is not dict:
             raise TypeError("Web analysis successor Worker context must be a JSON object")
         raw = cast(dict[object, object], worker_context)
@@ -951,8 +1025,10 @@ def verify_web_analysis_provider_worker_context(
             )
         ):
             raise ValueError("Web analysis successor Worker network differs")
-        expected = expected_web_analysis_provider_worker_context(
-            transport_pin,
+        expected = expected_web_analysis_bound_provider_worker_context(
+            worker_image=worker_image,
+            proxy_image=proxy_image,
+            worker_action=worker_action,
             external_network=external_network,
             claim_digest=expected_claim_digest,
             execution_id=expected_execution_id,
@@ -996,9 +1072,47 @@ def cleanup_web_analysis_transport_resources(
     """
 
     try:
+        canonical_pin = verify_web_analysis_transport_runtime_pin(
+            transport_pin,
+            runtime=runtime,
+            expected_pin_digest=expected_transport_pin_digest,
+        )
+        return cleanup_web_analysis_bound_transport_resources(
+            execution_id=execution_id,
+            external_network=external_network,
+            transport_pin_digest=canonical_pin.pin_digest,
+            worker_image=canonical_pin.worker_image,
+            proxy_image=canonical_pin.proxy_image,
+            docker_executable=docker_executable,
+        )
+    except WebAnalysisTransportError:
+        raise
+    except Exception as exc:
+        raise WebAnalysisTransportError("Web analysis transport cleanup failed closed") from exc
+
+
+def cleanup_web_analysis_bound_transport_resources(
+    *,
+    execution_id: str,
+    external_network: str,
+    transport_pin_digest: str,
+    worker_image: str,
+    proxy_image: str,
+    docker_executable: str = "docker",
+) -> WebAnalysisTransportCleanupProof:
+    """Clean one verified transport without accepting a historical base runtime."""
+
+    try:
         if (
             type(execution_id) is not str
             or type(external_network) is not str
+            or type(transport_pin_digest) is not str
+            or re.fullmatch(r"[a-f0-9]{64}", transport_pin_digest) is None
+            or type(worker_image) is not str
+            or re.fullmatch(r"sha256:[a-f0-9]{64}", worker_image) is None
+            or type(proxy_image) is not str
+            or re.fullmatch(r"sha256:[a-f0-9]{64}", proxy_image) is None
+            or worker_image == proxy_image
             or type(docker_executable) is not str
             or not docker_executable
             or "\x00" in docker_executable
@@ -1007,11 +1121,6 @@ def cleanup_web_analysis_transport_resources(
         _require_claim_transport_coordinate(
             execution_id=execution_id,
             external_network=external_network,
-        )
-        canonical_pin = verify_web_analysis_transport_runtime_pin(
-            transport_pin,
-            runtime=runtime,
-            expected_pin_digest=expected_transport_pin_digest,
         )
         container_ids = _listed_cleanup_resource_ids(
             docker_executable,
@@ -1031,7 +1140,8 @@ def cleanup_web_analysis_transport_resources(
                     container_id=container_id,
                     execution_id=execution_id,
                     external_network=external_network,
-                    transport_pin=canonical_pin,
+                    worker_image=worker_image,
+                    proxy_image=proxy_image,
                 )
             )
         networks: list[tuple[WebAnalysisTransportOwnedResource, frozenset[str]]] = []
@@ -1064,7 +1174,8 @@ def cleanup_web_analysis_transport_resources(
                 container_id=resource.resource_id,
                 execution_id=execution_id,
                 external_network=external_network,
-                transport_pin=canonical_pin,
+                worker_image=worker_image,
+                proxy_image=proxy_image,
             )
             if current != (resource, attached_networks):
                 raise ValueError("Web analysis transport container changed before cleanup")
@@ -1093,7 +1204,7 @@ def cleanup_web_analysis_transport_resources(
         )
         return WebAnalysisTransportCleanupProof(
             executionId=execution_id,
-            transportPinDigest=canonical_pin.pin_digest,
+            transportPinDigest=transport_pin_digest,
             externalNetwork=external_network,
             observedResources=resources,
         )
@@ -1120,6 +1231,35 @@ def verify_web_analysis_transport_cleanup_proof(
             runtime=runtime,
             expected_pin_digest=expected_transport_pin_digest,
         )
+        return verify_web_analysis_bound_transport_cleanup_proof(
+            proof,
+            execution_id=execution_id,
+            external_network=external_network,
+            expected_transport_pin_digest=canonical_pin.pin_digest,
+        )
+    except WebAnalysisTransportError:
+        raise
+    except Exception as exc:
+        raise WebAnalysisTransportError(
+            "Web analysis transport cleanup proof verification failed closed"
+        ) from exc
+
+
+def verify_web_analysis_bound_transport_cleanup_proof(
+    proof: WebAnalysisTransportCleanupProof,
+    *,
+    execution_id: str,
+    external_network: str,
+    expected_transport_pin_digest: str,
+) -> WebAnalysisTransportCleanupProof:
+    """Verify cleanup evidence against an independently retained transport digest."""
+
+    try:
+        if (
+            type(expected_transport_pin_digest) is not str
+            or re.fullmatch(r"[a-f0-9]{64}", expected_transport_pin_digest) is None
+        ):
+            raise ValueError("Expected Web analysis transport Pin digest is invalid")
         if type(proof) is not WebAnalysisTransportCleanupProof:
             raise TypeError("Web analysis transport cleanup proof type differs")
         canonical = WebAnalysisTransportCleanupProof.model_validate(
@@ -1129,7 +1269,7 @@ def verify_web_analysis_transport_cleanup_proof(
             canonical != proof
             or canonical.execution_id != execution_id
             or canonical.external_network != external_network
-            or canonical.transport_pin_digest != canonical_pin.pin_digest
+            or canonical.transport_pin_digest != expected_transport_pin_digest
         ):
             raise ValueError("Web analysis transport cleanup proof differs")
         return canonical
@@ -1182,7 +1322,8 @@ def _inspect_owned_transport_container(
     container_id: str,
     execution_id: str,
     external_network: str,
-    transport_pin: WebAnalysisTransportRuntimePin,
+    worker_image: str,
+    proxy_image: str,
 ) -> tuple[WebAnalysisTransportOwnedResource, frozenset[str]]:
     inspection = _inspect_transport_resource(
         docker_executable,
@@ -1213,7 +1354,7 @@ def _inspect_owned_transport_container(
     worker_prefix = f"pajin-{execution_id}-"
     if name.startswith(worker_prefix):
         resource_kind: Literal["worker-container", "proxy-container"] = "worker-container"
-        expected_image = transport_pin.worker_image
+        expected_image = worker_image
         if (
             _WORKER_CONTAINER_PATTERN.fullmatch(name) is None
             or len(attached_networks) != 1
@@ -1222,7 +1363,7 @@ def _inspect_owned_transport_container(
             raise ValueError("Web analysis transport Worker ownership differs")
     elif _PROXY_CONTAINER_PATTERN.fullmatch(name) is not None:
         resource_kind = "proxy-container"
-        expected_image = transport_pin.proxy_image
+        expected_image = proxy_image
         if (
             external_network not in attached_networks
             or len(attached_networks) not in {1, 2}
@@ -1519,13 +1660,17 @@ __all__ = [
     "WebAnalysisTransportPreCleanupBarrierContext",
     "WebAnalysisTransportRuntimePin",
     "bind_web_analysis_transport_job",
+    "cleanup_web_analysis_bound_transport_resources",
     "cleanup_web_analysis_transport_resources",
+    "expected_web_analysis_bound_provider_worker_context",
     "expected_web_analysis_legacy_job_metadata",
     "expected_web_analysis_provider_worker_context",
     "expected_web_analysis_transport_job_metadata",
     "interpret_web_analysis_transport_result",
     "load_verified_web_analysis_transport_runtime_pin",
     "prepare_web_analysis_transport_job",
+    "verify_web_analysis_bound_provider_worker_context",
+    "verify_web_analysis_bound_transport_cleanup_proof",
     "verify_web_analysis_legacy_job_metadata",
     "verify_web_analysis_provider_worker_context",
     "verify_web_analysis_transport_cleanup_proof",

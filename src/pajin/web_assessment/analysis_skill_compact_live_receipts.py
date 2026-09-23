@@ -1,6 +1,6 @@
 """Cleanup-bound terminal receipts for the compact WEB-007 live runtime.
 
-This is an additive v1alpha1 wire.  It deliberately does not import or accept
+This is an additive v1alpha2 wire.  It deliberately does not import or accept
 the historical ``[developer, user]`` invocation runtime, its request envelope,
 or its receipts.  A receipt is written while the durable claim is still in
 ``pending-cleanup`` and is made authoritative for audit only when the claim
@@ -23,7 +23,6 @@ from weakref import WeakKeyDictionary, WeakSet
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
-from pajin.benchmark.effectiveness.suite import RuntimePin
 from pajin.discovery.canonicalization import canonical_json_bytes
 from pajin.domain.models import StrictModel, ToolRequest
 from pajin.providers.models import ProviderChatRequest, ProviderRegistration
@@ -45,11 +44,24 @@ from pajin.web_assessment.analysis_capacity_v2 import (
     WebAnalysisLiveModelProviderRouteAttestation,
     WebAnalysisLiveModelResourceAbsenceProof,
 )
+from pajin.web_assessment.analysis_compact_live_pins import (
+    CompactWebAnalysisRuntimePin,
+    CompactWebAnalysisTransportPin,
+    verify_compact_web_analysis_live_pin_binding,
+)
+from pajin.web_assessment.analysis_compact_live_transport import (
+    expected_compact_web_analysis_provider_worker_context,
+    expected_compact_web_analysis_transport_job_metadata,
+    prepare_compact_web_analysis_transport_job,
+    verify_compact_web_analysis_transport_cleanup_proof,
+)
 from pajin.web_assessment.analysis_live_authorization import (
-    SignedWebAnalysisOneCallAuthorization,
-    VerifiedWebAnalysisOneCallAuthorization,
     WebAnalysisOneCallAuthorizationTrustAnchor,
-    WebAnalysisOneCallAuthorizationVerifier,
+)
+from pajin.web_assessment.analysis_live_authorization_v2 import (
+    SignedWebAnalysisOneCallAuthorizationV2,
+    VerifiedWebAnalysisOneCallAuthorizationV2,
+    WebAnalysisOneCallAuthorizationVerifierV2,
 )
 from pajin.web_assessment.analysis_live_claim_journal import (
     VerifiedWebAnalysisLiveClaimTerminalPublicationCandidate,
@@ -74,6 +86,7 @@ from pajin.web_assessment.analysis_skill_live_invocation import (
     verify_planned_prepared_compact_skill_bound_web_analysis_admission,
 )
 from pajin.web_assessment.analysis_skill_live_preparation import (
+    CompactSkillBoundWebAnalysisLiveRequest,
     VerifiedCompactSkillBoundWebAnalysisPreparationRun,
 )
 from pajin.web_assessment.analysis_skill_projection import (
@@ -83,17 +96,14 @@ from pajin.web_assessment.analysis_skill_projection import (
 from pajin.web_assessment.analysis_transport import (
     WebAnalysisTransportCleanupProof,
     WebAnalysisTransportRuntimePin,
-    expected_web_analysis_provider_worker_context,
-    expected_web_analysis_transport_job_metadata,
-    prepare_web_analysis_transport_job,
 )
 from pajin.web_assessment.discovery_artifact import VerifiedAuthenticatedDiscoveryRun
 
 COMPACT_LIVE_TERMINAL_RECEIPT_API_VERSION: Final = (
-    "pajin.dev/compact-skill-bound-web-analysis-terminal-receipt/v1alpha1"
+    "pajin.dev/compact-skill-bound-web-analysis-terminal-receipt/v1alpha2"
 )
 COMPACT_LIVE_TERMINAL_INDEX_API_VERSION: Final = (
-    "pajin.dev/compact-skill-bound-web-analysis-terminal-index/v1alpha1"
+    "pajin.dev/compact-skill-bound-web-analysis-terminal-index/v1alpha2"
 )
 
 _CAMPAIGN_PREFIX = "web-analysis-compact-live-terminal"
@@ -110,7 +120,7 @@ _ARTIFACT_PATHS = frozenset(
 )
 _MAX_RECEIPT_BYTES = 16 * 1024 * 1024
 _MAX_INDEX_BYTES = 2 * 1024 * 1024
-_MAX_AUTHORIZATION_BYTES = 512 * 1024
+_MAX_AUTHORIZATION_BYTES = 768 * 1024
 _MAX_DRAFT_BYTES = 512 * 1024
 _MAX_PROPOSAL_BYTES = 8 * 1024 * 1024
 _MAX_CANONICAL_BYTES = 32 * 1024 * 1024
@@ -453,20 +463,24 @@ class CompactSkillBoundWebAnalysisTransportBinding(_FrozenReceiptModel):
     """Exact reconstructable Worker context and job metadata for the selected transport."""
 
     api_version: Literal[
-        "pajin.dev/compact-skill-bound-web-analysis-transport-binding/v1alpha1"
+        "pajin.dev/compact-skill-bound-web-analysis-transport-binding/v1alpha2"
     ] = Field(
-        default="pajin.dev/compact-skill-bound-web-analysis-transport-binding/v1alpha1",
+        default="pajin.dev/compact-skill-bound-web-analysis-transport-binding/v1alpha2",
         alias="apiVersion",
     )
     kind: Literal["CompactSkillBoundWebAnalysisTransportBinding"] = (
         "CompactSkillBoundWebAnalysisTransportBinding"
     )
     binding_digest: str = Field(default="", alias="bindingDigest", max_length=64)
-    runtime_pin: RuntimePin = Field(alias="runtimePin")
+    live_request: CompactSkillBoundWebAnalysisLiveRequest = Field(alias="liveRequest")
+    capacity_pin: WebAnalysisCapacityV2Pin = Field(alias="capacityPin")
+    lineage_transport_pin: WebAnalysisTransportRuntimePin = Field(alias="lineageTransportPin")
+    compact_runtime_pin: CompactWebAnalysisRuntimePin = Field(alias="compactRuntimePin")
+    compact_runtime_pin_digest: _Sha256 = Field(alias="compactRuntimePinDigest")
     tool_request: ToolRequest = Field(alias="toolRequest")
     provider_registration: ProviderRegistration = Field(alias="providerRegistration")
-    transport_pin: WebAnalysisTransportRuntimePin = Field(alias="transportPin")
-    transport_pin_digest: _Sha256 = Field(alias="transportPinDigest")
+    compact_transport_pin: CompactWebAnalysisTransportPin = Field(alias="compactTransportPin")
+    compact_transport_pin_digest: _Sha256 = Field(alias="compactTransportPinDigest")
     live_claim_digest: _Sha256 = Field(alias="liveClaimDigest")
     transport_execution_id: str = Field(alias="transportExecutionId", pattern=_EXECUTION_ID_PATTERN)
     external_network: str = Field(
@@ -493,7 +507,16 @@ class CompactSkillBoundWebAnalysisTransportBinding(_FrozenReceiptModel):
     @model_validator(mode="after")
     def bind_transport(self) -> Self:
         if (
-            self.transport_pin.pin_digest != self.transport_pin_digest
+            self.compact_runtime_pin.pin_digest != self.compact_runtime_pin_digest
+            or self.compact_transport_pin.pin_digest != self.compact_transport_pin_digest
+            or self.compact_transport_pin.runtime_pin_digest != self.compact_runtime_pin.pin_digest
+            or self.compact_runtime_pin.capacity_pin_digest != self.capacity_pin.pin_digest
+            or self.compact_runtime_pin.lineage_transport_pin_digest
+            != self.lineage_transport_pin.pin_digest
+            or self.compact_transport_pin.lineage_transport_pin_digest
+            != self.lineage_transport_pin.pin_digest
+            or self.live_request.chat_request.max_completion_tokens != 1024
+            or self.capacity_pin.completion_tokens != 1024
             or self.tool_request.agent_id != _LIVE_AGENT_ID
             or self.tool_request.method != "POST"
             or self.tool_request.target != str(self.provider_registration.endpoint)
@@ -501,19 +524,36 @@ class CompactSkillBoundWebAnalysisTransportBinding(_FrozenReceiptModel):
             != f"provider.{self.provider_registration.provider_id}.chat"
         ):
             raise ValueError("compact live transport binding Pin digest differs")
-        ProviderChatRequest.model_validate(self.tool_request.arguments)
-        expected_context = expected_web_analysis_provider_worker_context(
-            self.transport_pin,
+        if ProviderChatRequest.model_validate(self.tool_request.arguments) != (
+            self.live_request.chat_request
+        ):
+            raise ValueError("compact live transport request differs")
+        expected_context = expected_compact_web_analysis_provider_worker_context(
+            self.compact_runtime_pin,
+            self.compact_transport_pin,
+            capacity_pin=self.capacity_pin,
+            lineage_transport_pin=self.lineage_transport_pin,
+            expected_capacity_pin_digest=self.capacity_pin.pin_digest,
+            expected_lineage_transport_pin_digest=self.lineage_transport_pin.pin_digest,
+            expected_runtime_pin_digest=self.compact_runtime_pin_digest,
+            expected_transport_pin_digest=self.compact_transport_pin_digest,
+            live_request=self.live_request,
             external_network=self.external_network,
             claim_digest=self.live_claim_digest,
             execution_id=self.transport_execution_id,
         )
-        expected_metadata = expected_web_analysis_transport_job_metadata(
+        expected_metadata = expected_compact_web_analysis_transport_job_metadata(
             self.tool_request,
+            capacity_pin=self.capacity_pin,
             registration=self.provider_registration,
-            runtime=self.runtime_pin,
-            transport_pin=self.transport_pin,
-            expected_transport_pin_digest=self.transport_pin.pin_digest,
+            live_request=self.live_request,
+            lineage_transport_pin=self.lineage_transport_pin,
+            runtime_pin=self.compact_runtime_pin,
+            transport_pin=self.compact_transport_pin,
+            expected_capacity_pin_digest=self.capacity_pin.pin_digest,
+            expected_lineage_transport_pin_digest=self.lineage_transport_pin.pin_digest,
+            expected_runtime_pin_digest=self.compact_runtime_pin_digest,
+            expected_transport_pin_digest=self.compact_transport_pin_digest,
             execution_id=self.transport_execution_id,
             lease_ids=list(self.lease_ids),
         )
@@ -548,7 +588,7 @@ class CompactSkillBoundWebAnalysisTransportBinding(_FrozenReceiptModel):
         object.__setattr__(self, "worker_context_digest", context_digest)
         object.__setattr__(self, "job_metadata_digest", metadata_digest)
         material = self.model_dump(mode="json", by_alias=True, exclude={"binding_digest"})
-        binding_digest = _digest("pajin.web-analysis.compact-live-transport-binding/v1", material)
+        binding_digest = _digest("pajin.web-analysis.compact-live-transport-binding/v2", material)
         if self.binding_digest and self.binding_digest != binding_digest:
             raise ValueError("compact live transport binding digest differs")
         object.__setattr__(self, "binding_digest", binding_digest)
@@ -558,12 +598,18 @@ class CompactSkillBoundWebAnalysisTransportBinding(_FrozenReceiptModel):
 def _expected_transport_binding_lease_id(
     transport: CompactSkillBoundWebAnalysisTransportBinding,
 ) -> str:
-    job = prepare_web_analysis_transport_job(
+    job = prepare_compact_web_analysis_transport_job(
         transport.tool_request,
+        capacity_pin=transport.capacity_pin,
         registration=transport.provider_registration,
-        runtime=transport.runtime_pin,
-        transport_pin=transport.transport_pin,
-        expected_transport_pin_digest=transport.transport_pin_digest,
+        live_request=transport.live_request,
+        lineage_transport_pin=transport.lineage_transport_pin,
+        runtime_pin=transport.compact_runtime_pin,
+        transport_pin=transport.compact_transport_pin,
+        expected_capacity_pin_digest=transport.capacity_pin.pin_digest,
+        expected_lineage_transport_pin_digest=transport.lineage_transport_pin.pin_digest,
+        expected_runtime_pin_digest=transport.compact_runtime_pin_digest,
+        expected_transport_pin_digest=transport.compact_transport_pin_digest,
         execution_id=transport.transport_execution_id,
     )
     if len(job.secret_requests) != 1:
@@ -673,7 +719,7 @@ class CompactSkillBoundWebAnalysisCleanupResult(_FrozenReceiptModel):
 class CompactSkillBoundWebAnalysisTerminalReceipt(_FrozenReceiptModel):
     """Pending-state receipt sealed before the journal terminal cross-link."""
 
-    api_version: Literal["pajin.dev/compact-skill-bound-web-analysis-terminal-receipt/v1alpha1"] = (
+    api_version: Literal["pajin.dev/compact-skill-bound-web-analysis-terminal-receipt/v1alpha2"] = (
         Field(default=COMPACT_LIVE_TERMINAL_RECEIPT_API_VERSION, alias="apiVersion")
     )
     kind: Literal["CompactSkillBoundWebAnalysisTerminalReceipt"] = (
@@ -684,13 +730,16 @@ class CompactSkillBoundWebAnalysisTerminalReceipt(_FrozenReceiptModel):
     terminal_run_id: str = Field(alias="terminalRunId", pattern=_RUN_ID_PATTERN)
     admission: PreparedCompactSkillBoundWebAnalysisAdmissionEnvelope
     capacity_pin: WebAnalysisCapacityV2Pin = Field(alias="capacityPin")
-    transport_pin: WebAnalysisTransportRuntimePin = Field(alias="transportPin")
-    signed_authorization: SignedWebAnalysisOneCallAuthorization = Field(alias="signedAuthorization")
-    initial_authorization_verification: VerifiedWebAnalysisOneCallAuthorization = Field(
+    compact_runtime_pin: CompactWebAnalysisRuntimePin = Field(alias="compactRuntimePin")
+    compact_transport_pin: CompactWebAnalysisTransportPin = Field(alias="compactTransportPin")
+    signed_authorization: SignedWebAnalysisOneCallAuthorizationV2 = Field(
+        alias="signedAuthorization"
+    )
+    initial_authorization_verification: VerifiedWebAnalysisOneCallAuthorizationV2 = Field(
         alias="initialAuthorizationVerification"
     )
-    pre_dispatch_authorization_verification: VerifiedWebAnalysisOneCallAuthorization | None = Field(
-        default=None, alias="preDispatchAuthorizationVerification"
+    pre_dispatch_authorization_verification: VerifiedWebAnalysisOneCallAuthorizationV2 | None = (
+        Field(default=None, alias="preDispatchAuthorizationVerification")
     )
     claim_store_id: _Sha256 = Field(alias="claimStoreId")
     gate_d_context_digest: _Sha256 = Field(alias="gateDContextDigest")
@@ -778,7 +827,7 @@ class CompactSkillBoundWebAnalysisTerminalReceipt(_FrozenReceiptModel):
         self,
         *,
         claim: WebAnalysisLiveClaimJournalEntry,
-        before_dispatch: VerifiedWebAnalysisOneCallAuthorization | None,
+        before_dispatch: VerifiedWebAnalysisOneCallAuthorizationV2 | None,
         attestation: WebAnalysisLiveModelMaterializationAttestation | None,
         provider_route_attestation: WebAnalysisLiveModelProviderRouteAttestation | None,
         observation: CompactSkillBoundWebAnalysisDispatchObservation,
@@ -881,6 +930,25 @@ class CompactSkillBoundWebAnalysisTerminalReceipt(_FrozenReceiptModel):
         cleanup = self.cleanup_result
         transport_binding = self.transport_binding
         registration = self.provider_registration
+        live_request = transport_binding.live_request
+        compact_runtime = self.compact_runtime_pin
+        compact_transport = self.compact_transport_pin
+        verified_transport_cleanup = verify_compact_web_analysis_transport_cleanup_proof(
+            cleanup.transport_cleanup,
+            execution_id=self.transport_execution_id,
+            external_network=claim.binding.resources.network_name,
+            capacity_pin=transport_binding.capacity_pin,
+            live_request=transport_binding.live_request,
+            lineage_transport_pin=transport_binding.lineage_transport_pin,
+            runtime_pin=transport_binding.compact_runtime_pin,
+            transport_pin=transport_binding.compact_transport_pin,
+            expected_capacity_pin_digest=transport_binding.capacity_pin.pin_digest,
+            expected_lineage_transport_pin_digest=(
+                transport_binding.lineage_transport_pin.pin_digest
+            ),
+            expected_runtime_pin_digest=transport_binding.compact_runtime_pin_digest,
+            expected_transport_pin_digest=transport_binding.compact_transport_pin_digest,
+        )
         if (
             claim.phase is not WebAnalysisLiveClaimPhase.PENDING_CLEANUP
             or claim.pending_outcome is None
@@ -944,7 +1012,17 @@ class CompactSkillBoundWebAnalysisTerminalReceipt(_FrozenReceiptModel):
         resources = binding.resources
         if (
             self.capacity_pin.pin_digest != admission.capacity_pin_digest
-            or self.transport_pin.pin_digest != admission.transport_pin_digest
+            or compact_runtime.capacity_pin_digest != self.capacity_pin.pin_digest
+            or compact_runtime.lineage_transport_pin_digest != admission.transport_pin_digest
+            or compact_transport.lineage_transport_pin_digest != admission.transport_pin_digest
+            or compact_transport.runtime_pin_digest != compact_runtime.pin_digest
+            or compact_runtime.live_request_digest != live_request.request_digest
+            or live_request.request_digest != admission.live_request_digest
+            or live_request.chat_request_digest != admission.provider_chat_request_digest
+            or live_request.provider_registration_digest != admission.provider_registration_digest
+            or live_request.chat_request.max_completion_tokens != 1024
+            or self.capacity_pin.completion_tokens != 1024
+            or compact_runtime.completion_tokens != 1024
         ):
             raise ValueError("compact live receipt materialization lineage differs")
         if attestation is not None and (
@@ -984,8 +1062,22 @@ class CompactSkillBoundWebAnalysisTerminalReceipt(_FrozenReceiptModel):
             ):
                 raise ValueError("compact live receipt credential lease identity differs")
         if (
-            registration.provider_id != signed.statement.provider_id
-            or registration.model != signed.statement.model_id
+            registration.provider_id != signed.statement.request.provider_id
+            or registration.model != signed.statement.request.model_id
+            or initial.capacity_pin_digest != self.capacity_pin.pin_digest
+            or initial.lineage_transport_pin_digest != admission.transport_pin_digest
+            or initial.compact_runtime_pin_digest != compact_runtime.pin_digest
+            or initial.compact_transport_pin_digest != compact_transport.pin_digest
+            or initial.transport_pin_digest != compact_transport.pin_digest
+            or (
+                before_dispatch is not None
+                and (
+                    before_dispatch.lineage_transport_pin_digest != admission.transport_pin_digest
+                    or before_dispatch.compact_runtime_pin_digest != compact_runtime.pin_digest
+                    or before_dispatch.compact_transport_pin_digest != compact_transport.pin_digest
+                    or before_dispatch.transport_pin_digest != compact_transport.pin_digest
+                )
+            )
             or observation.provider_id != registration.provider_id
             or observation.model_id != registration.model
             or observation.provider_registration_digest != admission.provider_registration_digest
@@ -997,8 +1089,13 @@ class CompactSkillBoundWebAnalysisTerminalReceipt(_FrozenReceiptModel):
             != transport_binding.worker_context_digest
             or observation.transport_job_metadata_digest != transport_binding.job_metadata_digest
             or transport_binding.provider_registration != registration
-            or transport_binding.transport_pin != self.transport_pin
-            or transport_binding.transport_pin_digest != self.transport_pin.pin_digest
+            or transport_binding.live_request != live_request
+            or transport_binding.capacity_pin != self.capacity_pin
+            or transport_binding.lineage_transport_pin.pin_digest != admission.transport_pin_digest
+            or transport_binding.compact_runtime_pin != compact_runtime
+            or transport_binding.compact_runtime_pin_digest != compact_runtime.pin_digest
+            or transport_binding.compact_transport_pin != compact_transport
+            or transport_binding.compact_transport_pin_digest != compact_transport.pin_digest
             or transport_binding.live_claim_digest != binding.claim_digest
             or transport_binding.transport_execution_id != self.transport_execution_id
             or transport_binding.external_network != resources.network_name
@@ -1010,7 +1107,8 @@ class CompactSkillBoundWebAnalysisTerminalReceipt(_FrozenReceiptModel):
             or transport_binding.tool_request.target != str(registration.endpoint)
             or transport_binding.tool_request.tool_id != f"provider.{registration.provider_id}.chat"
             or cleanup.transport_cleanup.execution_id != self.transport_execution_id
-            or cleanup.transport_cleanup.transport_pin_digest != self.transport_pin.pin_digest
+            or cleanup.transport_cleanup.transport_pin_digest != compact_transport.pin_digest
+            or verified_transport_cleanup != cleanup.transport_cleanup
             or cleanup.transport_cleanup.external_network != resources.network_name
             or cleanup.revoked_lease_ids != transport_binding.lease_ids
             or cleanup.model_cleanup.resource_owner != resources.resource_owner
@@ -1039,7 +1137,7 @@ class CompactSkillBoundWebAnalysisTerminalReceipt(_FrozenReceiptModel):
         material = self.model_dump(
             mode="json", by_alias=True, exclude={"receipt_id", "receipt_digest"}
         )
-        digest = _digest("pajin.web-analysis.compact-live-terminal-receipt/v1", material)
+        digest = _digest("pajin.web-analysis.compact-live-terminal-receipt/v2", material)
         receipt_id = f"compact-live-web-analysis-terminal:{digest}"
         if self.receipt_digest and self.receipt_digest != digest:
             raise ValueError("compact live terminal receipt digest differs")
@@ -1053,7 +1151,7 @@ class CompactSkillBoundWebAnalysisTerminalReceipt(_FrozenReceiptModel):
 class CompactSkillBoundWebAnalysisTerminalIndex(_FrozenReceiptModel):
     """Content-addressed inventory for one fixed terminal Run layout."""
 
-    api_version: Literal["pajin.dev/compact-skill-bound-web-analysis-terminal-index/v1alpha1"] = (
+    api_version: Literal["pajin.dev/compact-skill-bound-web-analysis-terminal-index/v1alpha2"] = (
         Field(default=COMPACT_LIVE_TERMINAL_INDEX_API_VERSION, alias="apiVersion")
     )
     kind: Literal["CompactSkillBoundWebAnalysisTerminalIndex"] = (
@@ -1069,6 +1167,13 @@ class CompactSkillBoundWebAnalysisTerminalIndex(_FrozenReceiptModel):
     )
     authorization_envelope_digest: _Sha256 = Field(alias="authorizationEnvelopeDigest")
     authorization_artifact_sha256: _Sha256 = Field(alias="authorizationArtifactSha256")
+    capacity_pin_digest: _Sha256 = Field(alias="capacityPinDigest")
+    lineage_transport_pin_digest: _Sha256 = Field(alias="lineageTransportPinDigest")
+    compact_runtime_pin_digest: _Sha256 = Field(alias="compactRuntimePinDigest")
+    compact_transport_pin_digest: _Sha256 = Field(alias="compactTransportPinDigest")
+    live_request_digest: _Sha256 = Field(alias="liveRequestDigest")
+    provider_chat_request_digest: _Sha256 = Field(alias="providerChatRequestDigest")
+    maximum_completion_tokens: Literal[1024] = Field(alias="maximumCompletionTokens")
     draft_path: Literal["proposal-draft.json"] = Field(alias="draftPath")
     draft_artifact_sha256: _Sha256 = Field(alias="draftArtifactSha256")
     proposal_path: Literal["compiled-proposal.json"] = Field(alias="proposalPath")
@@ -1090,7 +1195,7 @@ class CompactSkillBoundWebAnalysisTerminalIndex(_FrozenReceiptModel):
     @model_validator(mode="after")
     def bind_index(self) -> Self:
         material = self.model_dump(mode="json", by_alias=True, exclude={"index_digest"})
-        digest = _digest("pajin.web-analysis.compact-live-terminal-index/v1", material)
+        digest = _digest("pajin.web-analysis.compact-live-terminal-index/v2", material)
         if self.index_digest and self.index_digest != digest:
             raise ValueError("compact live terminal Index digest differs")
         object.__setattr__(self, "index_digest", digest)
@@ -1114,7 +1219,7 @@ class VerifiedCompactSkillBoundWebAnalysisTerminalRun:
     verification: RunIntegrityVerification
     index: CompactSkillBoundWebAnalysisTerminalIndex
     receipt: CompactSkillBoundWebAnalysisTerminalReceipt
-    signed_authorization: SignedWebAnalysisOneCallAuthorization
+    signed_authorization: SignedWebAnalysisOneCallAuthorizationV2
     gate_d_context: WebAnalysisLiveClaimGateDContext
     draft: SkillBoundWebAnalysisProposalDraft | None
     proposal: CompiledSkillBoundWebAnalysisProposal | None
@@ -1212,7 +1317,7 @@ def _take_verified_terminal_publication_candidate(
 
 def _index_for(
     receipt: CompactSkillBoundWebAnalysisTerminalReceipt,
-    signed_authorization: SignedWebAnalysisOneCallAuthorization,
+    signed_authorization: SignedWebAnalysisOneCallAuthorizationV2,
     draft: SkillBoundWebAnalysisProposalDraft | None,
     proposal: CompiledSkillBoundWebAnalysisProposal | None,
 ) -> CompactSkillBoundWebAnalysisTerminalIndex:
@@ -1229,6 +1334,13 @@ def _index_for(
         authorizationPath="signed-one-call-authorization.json",
         authorizationEnvelopeDigest=signed_authorization.digest,
         authorizationArtifactSha256=_artifact_sha256(authorization_wire),
+        capacityPinDigest=receipt.capacity_pin.pin_digest,
+        lineageTransportPinDigest=receipt.admission.transport_pin_digest,
+        compactRuntimePinDigest=receipt.compact_runtime_pin.pin_digest,
+        compactTransportPinDigest=receipt.compact_transport_pin.pin_digest,
+        liveRequestDigest=receipt.transport_binding.live_request.request_digest,
+        providerChatRequestDigest=receipt.transport_binding.live_request.chat_request_digest,
+        maximumCompletionTokens=1024,
         draftPath="proposal-draft.json",
         draftArtifactSha256=_artifact_sha256(draft_wire),
         proposalPath="compiled-proposal.json",
@@ -1290,7 +1402,7 @@ def publish_compact_skill_bound_web_analysis_terminal_run(
     output_root: Path,
     *,
     receipt: CompactSkillBoundWebAnalysisTerminalReceipt,
-    signed_authorization: SignedWebAnalysisOneCallAuthorization,
+    signed_authorization: SignedWebAnalysisOneCallAuthorizationV2,
     draft: SkillBoundWebAnalysisProposalDraft | None,
     proposal: CompiledSkillBoundWebAnalysisProposal | None,
 ) -> CompactSkillBoundWebAnalysisTerminalPublication:
@@ -1299,7 +1411,7 @@ def publish_compact_skill_bound_web_analysis_terminal_run(
     try:
         if type(receipt) is not CompactSkillBoundWebAnalysisTerminalReceipt:
             raise TypeError("terminal publication requires the exact receipt type")
-        if type(signed_authorization) is not SignedWebAnalysisOneCallAuthorization:
+        if type(signed_authorization) is not SignedWebAnalysisOneCallAuthorizationV2:
             raise TypeError("terminal publication requires the exact signed authorization type")
         if draft is not None and type(draft) is not SkillBoundWebAnalysisProposalDraft:
             raise TypeError("terminal publication draft type differs")
@@ -1308,7 +1420,7 @@ def publish_compact_skill_bound_web_analysis_terminal_run(
         canonical_receipt = CompactSkillBoundWebAnalysisTerminalReceipt.model_validate_json(
             receipt.model_dump_json(by_alias=True)
         )
-        canonical_authorization = SignedWebAnalysisOneCallAuthorization.model_validate_json(
+        canonical_authorization = SignedWebAnalysisOneCallAuthorizationV2.model_validate_json(
             signed_authorization.model_dump_json(by_alias=True)
         )
         canonical_draft = (
@@ -1569,7 +1681,7 @@ def _load_gate_d_context(
     return context
 
 
-def _authorization_timestamp(value: VerifiedWebAnalysisOneCallAuthorization) -> str:
+def _authorization_timestamp(value: VerifiedWebAnalysisOneCallAuthorizationV2) -> str:
     return value.evaluated_at.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
@@ -1677,16 +1789,18 @@ def _require_provider_route_binding(
 
 def _verify_historical_authorizations(
     receipt: CompactSkillBoundWebAnalysisTerminalReceipt,
-    signed: SignedWebAnalysisOneCallAuthorization,
+    signed: SignedWebAnalysisOneCallAuthorizationV2,
     *,
     admission: PreparedCompactSkillBoundWebAnalysisAdmissionEnvelope,
     preparation_run: VerifiedCompactSkillBoundWebAnalysisPreparationRun,
     capacity_run: VerifiedWebAnalysisCapacityV2Run,
-    transport_pin: WebAnalysisTransportRuntimePin,
+    lineage_transport_pin: WebAnalysisTransportRuntimePin,
+    compact_runtime_pin: CompactWebAnalysisRuntimePin,
+    compact_transport_pin: CompactWebAnalysisTransportPin,
     trust_anchor: WebAnalysisOneCallAuthorizationTrustAnchor,
     expected_trust_anchor_digest: str,
 ) -> None:
-    initial_auth = WebAnalysisOneCallAuthorizationVerifier(
+    initial_auth = WebAnalysisOneCallAuthorizationVerifierV2(
         trust_anchor=trust_anchor,
         expected_trust_anchor_digest=expected_trust_anchor_digest,
         clock=lambda: receipt.initial_authorization_verification.evaluated_at,
@@ -1695,13 +1809,15 @@ def _verify_historical_authorizations(
         admission=admission,
         live_request=preparation_run.live_request,
         capacity_pin=capacity_run.pin,
-        transport_pin=transport_pin,
+        lineage_transport_pin=lineage_transport_pin,
+        compact_runtime_pin=compact_runtime_pin,
+        compact_transport_pin=compact_transport_pin,
     )
     recorded_pre_dispatch = receipt.pre_dispatch_authorization_verification
     pre_dispatch_auth = (
         None
         if recorded_pre_dispatch is None
-        else WebAnalysisOneCallAuthorizationVerifier(
+        else WebAnalysisOneCallAuthorizationVerifierV2(
             trust_anchor=trust_anchor,
             expected_trust_anchor_digest=expected_trust_anchor_digest,
             clock=lambda: recorded_pre_dispatch.evaluated_at,
@@ -1710,7 +1826,9 @@ def _verify_historical_authorizations(
             admission=admission,
             live_request=preparation_run.live_request,
             capacity_pin=capacity_run.pin,
-            transport_pin=transport_pin,
+            lineage_transport_pin=lineage_transport_pin,
+            compact_runtime_pin=compact_runtime_pin,
+            compact_transport_pin=compact_transport_pin,
         )
     )
     if (
@@ -1785,6 +1903,8 @@ def _require_terminal_publication_load_anchors(
     expected_claim_digest: str,
     expected_claim_store_id: str,
     expected_trust_anchor_digest: str,
+    expected_compact_runtime_pin_digest: str,
+    expected_compact_transport_pin_digest: str,
 ) -> bool:
     if mode not in {"candidate", "anchored-pending", "terminal"}:
         raise ValueError("terminal publication load mode is invalid")
@@ -1794,6 +1914,8 @@ def _require_terminal_publication_load_anchors(
         ("live claim", expected_claim_digest, False),
         ("claim store", expected_claim_store_id, False),
         ("authorization trust anchor", expected_trust_anchor_digest, False),
+        ("compact runtime Pin", expected_compact_runtime_pin_digest, False),
+        ("compact transport Pin", expected_compact_transport_pin_digest, False),
     )
     if expected_root_digest is not None:
         anchors = (*anchors, ("terminal Run root", expected_root_digest, False))
@@ -1820,6 +1942,8 @@ def _load_verified_compact_skill_bound_web_analysis_terminal_publication(
     preparation_run: VerifiedCompactSkillBoundWebAnalysisPreparationRun,
     admission: PreparedCompactSkillBoundWebAnalysisAdmissionEnvelope,
     transport_pin: WebAnalysisTransportRuntimePin,
+    compact_runtime_pin: CompactWebAnalysisRuntimePin,
+    compact_transport_pin: CompactWebAnalysisTransportPin,
     trust_anchor: WebAnalysisOneCallAuthorizationTrustAnchor,
     expected_trust_anchor_digest: str,
     journal: WebAnalysisLiveClaimJournal,
@@ -1836,6 +1960,8 @@ def _load_verified_compact_skill_bound_web_analysis_terminal_publication(
     expected_capacity_proof_digest: str,
     expected_capacity_model_materialization_attestation_digest: str,
     expected_transport_pin_digest: str,
+    expected_compact_runtime_pin_digest: str,
+    expected_compact_transport_pin_digest: str,
     expected_preparation_run_id: str,
     expected_preparation_root_digest: str,
     expected_preparation_digest: str,
@@ -1856,6 +1982,8 @@ def _load_verified_compact_skill_bound_web_analysis_terminal_publication(
             expected_claim_digest=expected_claim_digest,
             expected_claim_store_id=expected_claim_store_id,
             expected_trust_anchor_digest=expected_trust_anchor_digest,
+            expected_compact_runtime_pin_digest=expected_compact_runtime_pin_digest,
+            expected_compact_transport_pin_digest=expected_compact_transport_pin_digest,
         )
         _require_trusted_terminal_run_path(
             run_path,
@@ -1947,7 +2075,16 @@ def _load_verified_compact_skill_bound_web_analysis_terminal_publication(
             type(transport_pin) is not WebAnalysisTransportRuntimePin
             or transport_pin.pin_digest != expected_transport_pin_digest
         ):
-            raise ValueError("compact live transport Pin differs from independent anchor")
+            raise ValueError("compact live lineage transport Pin differs from independent anchor")
+        verify_compact_web_analysis_live_pin_binding(
+            compact_runtime_pin,
+            compact_transport_pin,
+            capacity=capacity_run.pin,
+            live_request=preparation_run.live_request,
+            lineage_transport_pin=transport_pin,
+            expected_runtime_pin_digest=expected_compact_runtime_pin_digest,
+            expected_transport_pin_digest=expected_compact_transport_pin_digest,
+        )
 
         initial = load_verified_run_snapshot(run_path, expected_run_id=expected_run_id)
         records = {artifact.path for seal in initial.seals for artifact in seal.artifacts}
@@ -1999,11 +2136,11 @@ def _load_verified_compact_skill_bound_web_analysis_terminal_publication(
             ),
         )
         signed = cast(
-            SignedWebAnalysisOneCallAuthorization,
+            SignedWebAnalysisOneCallAuthorizationV2,
             _strict_artifact(
                 loaded,
                 _AUTHORIZATION_PATH,
-                SignedWebAnalysisOneCallAuthorization,
+                SignedWebAnalysisOneCallAuthorizationV2,
                 max_bytes=_MAX_AUTHORIZATION_BYTES,
             ),
         )
@@ -2053,7 +2190,11 @@ def _load_verified_compact_skill_bound_web_analysis_terminal_publication(
             != expected_live_attestation_digest
             or receipt.admission != admission
             or receipt.capacity_pin != capacity_run.pin
-            or receipt.transport_pin != transport_pin
+            or receipt.compact_runtime_pin != compact_runtime_pin
+            or receipt.compact_transport_pin != compact_transport_pin
+            or receipt.transport_binding.live_request != preparation_run.live_request
+            or receipt.transport_binding.capacity_pin != capacity_run.pin
+            or receipt.transport_binding.lineage_transport_pin != transport_pin
             or receipt.provider_registration != planned.registration
             or receipt.provider_chat_request != planned.chat
             or receipt.claim_store_id != expected_claim_store_id
@@ -2068,7 +2209,7 @@ def _load_verified_compact_skill_bound_web_analysis_terminal_publication(
             or receipt.cleanup_result.transport_cleanup.external_network
             != receipt.pending_claim.binding.resources.network_name
             or receipt.cleanup_result.transport_cleanup.transport_pin_digest
-            != expected_transport_pin_digest
+            != expected_compact_transport_pin_digest
             or receipt.cleanup_result.revoked_lease_ids != receipt.transport_binding.lease_ids
             or receipt.cleanup_result.claim_store_id != expected_claim_store_id
             or receipt.cleanup_result.claim_digest != expected_claim_digest
@@ -2111,7 +2252,9 @@ def _load_verified_compact_skill_bound_web_analysis_terminal_publication(
             admission=admission,
             preparation_run=preparation_run,
             capacity_run=capacity_run,
-            transport_pin=transport_pin,
+            lineage_transport_pin=transport_pin,
+            compact_runtime_pin=compact_runtime_pin,
+            compact_transport_pin=compact_transport_pin,
             trust_anchor=trust_anchor,
             expected_trust_anchor_digest=expected_trust_anchor_digest,
         )
@@ -2223,6 +2366,8 @@ def load_verified_compact_skill_bound_web_analysis_terminal_run(
     preparation_run: VerifiedCompactSkillBoundWebAnalysisPreparationRun,
     admission: PreparedCompactSkillBoundWebAnalysisAdmissionEnvelope,
     transport_pin: WebAnalysisTransportRuntimePin,
+    compact_runtime_pin: CompactWebAnalysisRuntimePin,
+    compact_transport_pin: CompactWebAnalysisTransportPin,
     trust_anchor: WebAnalysisOneCallAuthorizationTrustAnchor,
     expected_trust_anchor_digest: str,
     journal: WebAnalysisLiveClaimJournal,
@@ -2239,6 +2384,8 @@ def load_verified_compact_skill_bound_web_analysis_terminal_run(
     expected_capacity_proof_digest: str,
     expected_capacity_model_materialization_attestation_digest: str,
     expected_transport_pin_digest: str,
+    expected_compact_runtime_pin_digest: str,
+    expected_compact_transport_pin_digest: str,
     expected_preparation_run_id: str,
     expected_preparation_root_digest: str,
     expected_preparation_digest: str,
@@ -2262,6 +2409,8 @@ def load_verified_compact_skill_bound_web_analysis_terminal_run(
         preparation_run=preparation_run,
         admission=admission,
         transport_pin=transport_pin,
+        compact_runtime_pin=compact_runtime_pin,
+        compact_transport_pin=compact_transport_pin,
         trust_anchor=trust_anchor,
         expected_trust_anchor_digest=expected_trust_anchor_digest,
         journal=journal,
@@ -2280,6 +2429,8 @@ def load_verified_compact_skill_bound_web_analysis_terminal_run(
             expected_capacity_model_materialization_attestation_digest
         ),
         expected_transport_pin_digest=expected_transport_pin_digest,
+        expected_compact_runtime_pin_digest=expected_compact_runtime_pin_digest,
+        expected_compact_transport_pin_digest=expected_compact_transport_pin_digest,
         expected_preparation_run_id=expected_preparation_run_id,
         expected_preparation_root_digest=expected_preparation_root_digest,
         expected_preparation_digest=expected_preparation_digest,
@@ -2308,6 +2459,8 @@ def load_verified_compact_skill_bound_web_analysis_pending_terminal_publication(
     preparation_run: VerifiedCompactSkillBoundWebAnalysisPreparationRun,
     admission: PreparedCompactSkillBoundWebAnalysisAdmissionEnvelope,
     transport_pin: WebAnalysisTransportRuntimePin,
+    compact_runtime_pin: CompactWebAnalysisRuntimePin,
+    compact_transport_pin: CompactWebAnalysisTransportPin,
     trust_anchor: WebAnalysisOneCallAuthorizationTrustAnchor,
     expected_trust_anchor_digest: str,
     journal: WebAnalysisLiveClaimJournal,
@@ -2324,6 +2477,8 @@ def load_verified_compact_skill_bound_web_analysis_pending_terminal_publication(
     expected_capacity_proof_digest: str,
     expected_capacity_model_materialization_attestation_digest: str,
     expected_transport_pin_digest: str,
+    expected_compact_runtime_pin_digest: str,
+    expected_compact_transport_pin_digest: str,
     expected_preparation_run_id: str,
     expected_preparation_root_digest: str,
     expected_preparation_digest: str,
@@ -2347,6 +2502,8 @@ def load_verified_compact_skill_bound_web_analysis_pending_terminal_publication(
         preparation_run=preparation_run,
         admission=admission,
         transport_pin=transport_pin,
+        compact_runtime_pin=compact_runtime_pin,
+        compact_transport_pin=compact_transport_pin,
         trust_anchor=trust_anchor,
         expected_trust_anchor_digest=expected_trust_anchor_digest,
         journal=journal,
@@ -2365,6 +2522,8 @@ def load_verified_compact_skill_bound_web_analysis_pending_terminal_publication(
             expected_capacity_model_materialization_attestation_digest
         ),
         expected_transport_pin_digest=expected_transport_pin_digest,
+        expected_compact_runtime_pin_digest=expected_compact_runtime_pin_digest,
+        expected_compact_transport_pin_digest=expected_compact_transport_pin_digest,
         expected_preparation_run_id=expected_preparation_run_id,
         expected_preparation_root_digest=expected_preparation_root_digest,
         expected_preparation_digest=expected_preparation_digest,
@@ -2392,6 +2551,8 @@ def load_verified_compact_skill_bound_web_analysis_terminal_publication_candidat
     preparation_run: VerifiedCompactSkillBoundWebAnalysisPreparationRun,
     admission: PreparedCompactSkillBoundWebAnalysisAdmissionEnvelope,
     transport_pin: WebAnalysisTransportRuntimePin,
+    compact_runtime_pin: CompactWebAnalysisRuntimePin,
+    compact_transport_pin: CompactWebAnalysisTransportPin,
     trust_anchor: WebAnalysisOneCallAuthorizationTrustAnchor,
     expected_trust_anchor_digest: str,
     journal: WebAnalysisLiveClaimJournal,
@@ -2408,6 +2569,8 @@ def load_verified_compact_skill_bound_web_analysis_terminal_publication_candidat
     expected_capacity_proof_digest: str,
     expected_capacity_model_materialization_attestation_digest: str,
     expected_transport_pin_digest: str,
+    expected_compact_runtime_pin_digest: str,
+    expected_compact_transport_pin_digest: str,
     expected_preparation_run_id: str,
     expected_preparation_root_digest: str,
     expected_preparation_digest: str,
@@ -2436,6 +2599,8 @@ def load_verified_compact_skill_bound_web_analysis_terminal_publication_candidat
         preparation_run=preparation_run,
         admission=admission,
         transport_pin=transport_pin,
+        compact_runtime_pin=compact_runtime_pin,
+        compact_transport_pin=compact_transport_pin,
         trust_anchor=trust_anchor,
         expected_trust_anchor_digest=expected_trust_anchor_digest,
         journal=journal,
@@ -2454,6 +2619,8 @@ def load_verified_compact_skill_bound_web_analysis_terminal_publication_candidat
             expected_capacity_model_materialization_attestation_digest
         ),
         expected_transport_pin_digest=expected_transport_pin_digest,
+        expected_compact_runtime_pin_digest=expected_compact_runtime_pin_digest,
+        expected_compact_transport_pin_digest=expected_compact_transport_pin_digest,
         expected_preparation_run_id=expected_preparation_run_id,
         expected_preparation_root_digest=expected_preparation_root_digest,
         expected_preparation_digest=expected_preparation_digest,

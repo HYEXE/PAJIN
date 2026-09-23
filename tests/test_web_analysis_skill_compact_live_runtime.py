@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -13,7 +14,6 @@ import pytest
 from pydantic import JsonValue
 
 import pajin.web_assessment.analysis_skill_compact_live_runtime as runtime_module
-from pajin.benchmark.effectiveness.suite import PLATFORM_MANIFESTS, RuntimePin
 from pajin.discovery.canonicalization import canonical_json_bytes
 from pajin.domain.models import ToolRequest
 from pajin.providers.models import ProviderChatRequest, ProviderChatResult, ProviderRegistration
@@ -34,9 +34,14 @@ from pajin.web_assessment.analysis_capacity_v2 import (
     WebAnalysisLiveModelProviderRouteAttestation,
     WebAnalysisLiveModelResourceAbsenceProof,
 )
-from pajin.web_assessment.analysis_live_authorization import (
-    SignedWebAnalysisOneCallAuthorization,
-    WebAnalysisOneCallAuthorizationVerifier,
+from pajin.web_assessment.analysis_compact_live_transport import (
+    expected_compact_web_analysis_provider_worker_context,
+    expected_compact_web_analysis_transport_job_metadata,
+    prepare_compact_web_analysis_transport_job,
+)
+from pajin.web_assessment.analysis_live_authorization_v2 import (
+    SignedWebAnalysisOneCallAuthorizationV2,
+    WebAnalysisOneCallAuthorizationVerifierV2,
 )
 from pajin.web_assessment.analysis_live_claim_journal import (
     DispatchStartedWebAnalysisLiveClaim,
@@ -70,21 +75,17 @@ from pajin.web_assessment.analysis_skill_compact_live_runtime import (
 )
 from pajin.web_assessment.analysis_transport import (
     WebAnalysisTransportCleanupProof,
-    expected_web_analysis_provider_worker_context,
-    expected_web_analysis_transport_job_metadata,
-    prepare_web_analysis_transport_job,
     web_analysis_transport_pre_cleanup_barrier_context,
 )
-from tests.test_web_analysis_live_authorization import (
+from tests.test_web_analysis_live_authorization_v2 import (
     _NOW,
     _signed,
     _statement,
-    _trust_anchor,
 )
 from tests.test_web_analysis_skill_invocation import _successor_draft_payload
 from tests.test_web_analysis_skill_live_invocation import _admission_anchors
 
-pytest_plugins = ("tests.test_web_analysis_live_authorization",)
+pytest_plugins = ("tests.test_web_analysis_live_authorization_v2",)
 
 
 class _AdvancingClock:
@@ -100,13 +101,9 @@ class _AdvancingClock:
         return self._last
 
 
-def _runtime_pin() -> RuntimePin:
-    return RuntimePin(
-        platform="linux/arm64",
-        platform_manifest=PLATFORM_MANIFESTS["linux/arm64"],
-        worker_image="sha256:" + "1" * 64,
-        proxy_image="sha256:" + "2" * 64,
-    )
+@pytest.fixture(scope="module")  # type: ignore[untyped-decorator]
+def authorization_context(authorization_v2_context: SimpleNamespace) -> SimpleNamespace:
+    return authorization_v2_context
 
 
 def _anchors(
@@ -136,7 +133,9 @@ def _anchors(
             str,
             values["expected_capacity_model_materialization_attestation_digest"],
         ),
-        transport_pin_digest=cast(str, values["expected_transport_pin_digest"]),
+        lineage_transport_pin_digest=cast(str, values["expected_transport_pin_digest"]),
+        compact_runtime_pin_digest=context.compact_runtime.pin_digest,
+        compact_transport_pin_digest=context.compact_transport.pin_digest,
         preparation_run_id=cast(str, values["expected_preparation_run_id"]),
         preparation_root_digest=cast(str, values["expected_preparation_root_digest"]),
         preparation_digest=cast(str, values["expected_preparation_digest"]),
@@ -338,7 +337,9 @@ class _FakeDispatchAdapter:
         self._cleanup_blocks = cleanup_blocks
         self._dispatch_mode = dispatch_mode
         self._binding_mode = binding_mode
-        self._runtime = _runtime_pin()
+        self._lineage_transport_pin = context.transport_pin
+        self._compact_runtime_pin = context.compact_runtime
+        self._compact_transport_pin = context.compact_transport
         self._journal: WebAnalysisLiveClaimJournal | None = None
         self._binding: WebAnalysisLiveClaimBinding | None = None
         self._registration: ProviderRegistration | None = None
@@ -375,16 +376,30 @@ class _FakeDispatchAdapter:
             method="POST",
             arguments=chat.model_dump(mode="python", by_alias=True),
         )
-        job = prepare_web_analysis_transport_job(
+        job = prepare_compact_web_analysis_transport_job(
             request,
             registration=registration,
-            runtime=self._runtime,
-            transport_pin=self._context.transport_pin,
-            expected_transport_pin_digest=self._context.transport_pin.pin_digest,
+            capacity_pin=self._context.capacity_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._context.capacity_pin.pin_digest,
+            expected_lineage_transport_pin_digest=self._lineage_transport_pin.pin_digest,
+            live_request=self._context.live_request,
+            runtime_pin=self._compact_runtime_pin,
+            transport_pin=self._compact_transport_pin,
+            expected_runtime_pin_digest=self._compact_runtime_pin.pin_digest,
+            expected_transport_pin_digest=self._compact_transport_pin.pin_digest,
             execution_id=execution_id,
         )
-        worker_context = expected_web_analysis_provider_worker_context(
-            self._context.transport_pin,
+        worker_context = expected_compact_web_analysis_provider_worker_context(
+            self._compact_runtime_pin,
+            self._compact_transport_pin,
+            capacity_pin=self._context.capacity_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._context.capacity_pin.pin_digest,
+            expected_lineage_transport_pin_digest=self._lineage_transport_pin.pin_digest,
+            expected_runtime_pin_digest=self._compact_runtime_pin.pin_digest,
+            expected_transport_pin_digest=self._compact_transport_pin.pin_digest,
+            live_request=self._context.live_request,
             external_network=binding.resources.network_name,
             claim_digest=binding.claim_digest,
             execution_id=execution_id,
@@ -395,21 +410,31 @@ class _FakeDispatchAdapter:
             secret_ref=job.secret_requests[0].secret_ref,
             binding=job.secret_requests[0].binding,
         )
-        metadata = expected_web_analysis_transport_job_metadata(
+        metadata = expected_compact_web_analysis_transport_job_metadata(
             request,
             registration=registration,
-            runtime=self._runtime,
-            transport_pin=self._context.transport_pin,
-            expected_transport_pin_digest=self._context.transport_pin.pin_digest,
+            capacity_pin=self._context.capacity_pin,
+            lineage_transport_pin=self._lineage_transport_pin,
+            expected_capacity_pin_digest=self._context.capacity_pin.pin_digest,
+            expected_lineage_transport_pin_digest=self._lineage_transport_pin.pin_digest,
+            live_request=self._context.live_request,
+            runtime_pin=self._compact_runtime_pin,
+            transport_pin=self._compact_transport_pin,
+            expected_runtime_pin_digest=self._compact_runtime_pin.pin_digest,
+            expected_transport_pin_digest=self._compact_transport_pin.pin_digest,
             execution_id=execution_id,
             lease_ids=[exact_lease_id],
         )
         self._transport_binding = CompactSkillBoundWebAnalysisTransportBinding(
-            runtimePin=self._runtime,
+            liveRequest=self._context.live_request,
+            capacityPin=self._context.capacity_pin,
+            lineageTransportPin=self._lineage_transport_pin,
+            compactRuntimePin=self._compact_runtime_pin,
+            compactRuntimePinDigest=self._compact_runtime_pin.pin_digest,
             toolRequest=request,
             providerRegistration=registration,
-            transportPin=self._context.transport_pin,
-            transportPinDigest=self._context.transport_pin.pin_digest,
+            compactTransportPin=self._compact_transport_pin,
+            compactTransportPinDigest=self._compact_transport_pin.pin_digest,
             liveClaimDigest=binding.claim_digest,
             transportExecutionId=execution_id,
             externalNetwork=binding.resources.network_name,
@@ -449,19 +474,33 @@ class _FakeDispatchAdapter:
         if self._binding_mode == "foreign-self-consistent":
             foreign_claim = sha256(b"foreign compact live claim").hexdigest()
             foreign_network = f"pajin-web-analysis-live-network-{'f' * 32}"
-            foreign_worker_context = expected_web_analysis_provider_worker_context(
-                self._context.transport_pin,
+            foreign_worker_context = expected_compact_web_analysis_provider_worker_context(
+                self._compact_runtime_pin,
+                self._compact_transport_pin,
+                capacity_pin=self._context.capacity_pin,
+                lineage_transport_pin=self._lineage_transport_pin,
+                expected_capacity_pin_digest=self._context.capacity_pin.pin_digest,
+                expected_lineage_transport_pin_digest=self._lineage_transport_pin.pin_digest,
+                expected_runtime_pin_digest=self._compact_runtime_pin.pin_digest,
+                expected_transport_pin_digest=self._compact_transport_pin.pin_digest,
+                live_request=self._context.live_request,
                 external_network=foreign_network,
                 claim_digest=foreign_claim,
                 execution_id=self._transport_binding.transport_execution_id,
             )
             return CompactSkillBoundWebAnalysisPreparedContext(
                 transport_binding=CompactSkillBoundWebAnalysisTransportBinding(
-                    runtimePin=self._transport_binding.runtime_pin,
+                    liveRequest=self._transport_binding.live_request,
+                    capacityPin=self._transport_binding.capacity_pin,
+                    lineageTransportPin=self._transport_binding.lineage_transport_pin,
+                    compactRuntimePin=self._transport_binding.compact_runtime_pin,
+                    compactRuntimePinDigest=(self._transport_binding.compact_runtime_pin_digest),
                     toolRequest=self._transport_binding.tool_request,
                     providerRegistration=self._transport_binding.provider_registration,
-                    transportPin=self._transport_binding.transport_pin,
-                    transportPinDigest=self._transport_binding.transport_pin_digest,
+                    compactTransportPin=self._transport_binding.compact_transport_pin,
+                    compactTransportPinDigest=(
+                        self._transport_binding.compact_transport_pin_digest
+                    ),
                     liveClaimDigest=foreign_claim,
                     transportExecutionId=self._transport_binding.transport_execution_id,
                     externalNetwork=foreign_network,
@@ -477,22 +516,34 @@ class _FakeDispatchAdapter:
         if self._binding_mode in {"zero-lease", "foreign-lease"}:
             lease_ids = () if self._binding_mode == "zero-lease" else (f"lease_{'e' * 32}",)
             assert self._registration is not None
-            metadata = expected_web_analysis_transport_job_metadata(
+            metadata = expected_compact_web_analysis_transport_job_metadata(
                 self._transport_binding.tool_request,
                 registration=self._registration,
-                runtime=self._runtime,
-                transport_pin=self._context.transport_pin,
-                expected_transport_pin_digest=self._context.transport_pin.pin_digest,
+                capacity_pin=self._context.capacity_pin,
+                lineage_transport_pin=self._lineage_transport_pin,
+                expected_capacity_pin_digest=self._context.capacity_pin.pin_digest,
+                expected_lineage_transport_pin_digest=self._lineage_transport_pin.pin_digest,
+                live_request=self._context.live_request,
+                runtime_pin=self._compact_runtime_pin,
+                transport_pin=self._compact_transport_pin,
+                expected_runtime_pin_digest=self._compact_runtime_pin.pin_digest,
+                expected_transport_pin_digest=self._compact_transport_pin.pin_digest,
                 execution_id=self._transport_binding.transport_execution_id,
                 lease_ids=list(lease_ids),
             )
             return CompactSkillBoundWebAnalysisPreparedContext(
                 transport_binding=CompactSkillBoundWebAnalysisTransportBinding(
-                    runtimePin=self._transport_binding.runtime_pin,
+                    liveRequest=self._transport_binding.live_request,
+                    capacityPin=self._transport_binding.capacity_pin,
+                    lineageTransportPin=self._transport_binding.lineage_transport_pin,
+                    compactRuntimePin=self._transport_binding.compact_runtime_pin,
+                    compactRuntimePinDigest=(self._transport_binding.compact_runtime_pin_digest),
                     toolRequest=self._transport_binding.tool_request,
                     providerRegistration=self._transport_binding.provider_registration,
-                    transportPin=self._transport_binding.transport_pin,
-                    transportPinDigest=self._transport_binding.transport_pin_digest,
+                    compactTransportPin=self._transport_binding.compact_transport_pin,
+                    compactTransportPinDigest=(
+                        self._transport_binding.compact_transport_pin_digest
+                    ),
                     liveClaimDigest=self._transport_binding.live_claim_digest,
                     transportExecutionId=self._transport_binding.transport_execution_id,
                     externalNetwork=self._transport_binding.external_network,
@@ -659,7 +710,7 @@ class _FakeDispatchAdapter:
     ) -> WebAnalysisTransportCleanupProof:
         return WebAnalysisTransportCleanupProof(
             executionId=prepared.execution_id,
-            transportPinDigest=self._context.transport_pin.pin_digest,
+            transportPinDigest=self._context.compact_transport.pin_digest,
             externalNetwork=prepared.external_network,
             observedResources=(),
         )
@@ -719,7 +770,7 @@ def _build_runtime(
     route_mode: str = "exact",
     binding_mode: str = "exact",
     materializer_factory_fails: bool = False,
-    signed_authorization: SignedWebAnalysisOneCallAuthorization | None = None,
+    signed_authorization: SignedWebAnalysisOneCallAuthorizationV2 | None = None,
     admission_override: Any | None = None,
     terminal_output_root: Path | None = None,
 ) -> tuple[
@@ -741,8 +792,8 @@ def _build_runtime(
             base + timedelta(seconds=7),
         ),
     )
-    trust_anchor = _trust_anchor()
-    verifier = WebAnalysisOneCallAuthorizationVerifier(
+    trust_anchor = context.trust_anchor
+    verifier = WebAnalysisOneCallAuthorizationVerifierV2(
         trust_anchor=trust_anchor,
         expected_trust_anchor_digest=trust_anchor.digest,
         clock=_AdvancingClock(base, base + timedelta(seconds=4)),
@@ -774,10 +825,13 @@ def _build_runtime(
         capacity_run=context.capacity,
         preparation_run=context.preparation,
         admission=(context.admission if admission_override is None else admission_override),
-        runtime=_runtime_pin(),
-        transport_pin=context.transport_pin,
+        lineage_transport_pin=context.transport_pin,
+        compact_runtime_pin=context.compact_runtime,
+        compact_transport_pin=context.compact_transport,
         signed_authorization=(
-            _signed(_statement(context)) if signed_authorization is None else signed_authorization
+            _signed(context, _statement(context))
+            if signed_authorization is None
+            else signed_authorization
         ),
         trust_anchor=trust_anchor,
         authorization_verifier=verifier,
@@ -955,10 +1009,11 @@ async def test_preclaim_failure_has_zero_live_authority(
         )
     else:
         authorization = _signed(
+            authorization_context,
             _statement(
                 authorization_context,
-                expiresAt=_NOW + timedelta(seconds=10),
-            )
+                expires_at=_NOW + timedelta(seconds=10),
+            ),
         )
     live, journal, adapter, materializers = _build_runtime(
         authorization_context,
@@ -979,16 +1034,86 @@ async def test_preclaim_failure_has_zero_live_authority(
 
 
 @pytest.mark.asyncio
+async def test_compact_runtime_anchor_mismatch_fails_before_any_live_side_effect(
+    authorization_context: SimpleNamespace,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    live, journal, adapter, materializers = _build_runtime(
+        authorization_context,
+        tmp_path,
+        events=events,
+    )
+    live._anchors = replace(live._anchors, compact_runtime_pin_digest="f" * 64)
+
+    with pytest.raises(ValueError, match="Pin verification failed closed"):
+        await live.invoke()
+
+    assert journal.recover_pending_cleanup() == ()
+    assert adapter.dispatch_calls == 0
+    assert materializers == []
+    assert events == []
+    assert not (tmp_path / "terminal").exists()
+
+
+@pytest.mark.asyncio
+async def test_pre_dispatch_compact_binding_drift_precedes_credentials_and_dispatch(
+    authorization_context: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    live, _journal, adapter, materializers = _build_runtime(
+        authorization_context,
+        tmp_path,
+        events=events,
+    )
+    original = runtime_module.verify_compact_web_analysis_live_pin_binding
+    calls = 0
+
+    def verify_then_drift(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("injected compact binding drift")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runtime_module,
+        "verify_compact_web_analysis_live_pin_binding",
+        verify_then_drift,
+    )
+
+    with pytest.raises(
+        CompactSkillBoundWebAnalysisLiveRuntimeError,
+        match="immediate pre-dispatch revalidation failed",
+    ) as raised:
+        await live.invoke()
+
+    assert calls == 2
+    assert len(materializers) == 1
+    assert "materialize" in events
+    assert "attest" in events
+    assert "stage" not in events
+    assert "revalidate" not in events
+    assert "dispatch" not in events
+    assert adapter.dispatch_calls == 0
+    assert raised.value.terminal_run is not None
+    assert raised.value.terminal_run.terminal_claim.dispatch_count == 0
+
+
+@pytest.mark.asyncio
 async def test_authorization_expiring_at_dispatch_marker_never_calls_backend(
     authorization_context: SimpleNamespace,
     tmp_path: Path,
 ) -> None:
     events: list[str] = []
     authorization = _signed(
+        authorization_context,
         _statement(
             authorization_context,
-            expiresAt=_NOW + timedelta(seconds=35),
-        )
+            expires_at=_NOW + timedelta(seconds=35),
+        ),
     )
     live, journal, adapter, _ = _build_runtime(
         authorization_context,
@@ -1103,17 +1228,19 @@ async def test_claim_stage_process_control_is_cleanup_bound_and_rethrown_exactly
     assert raised.value is interruption
     assert adapter.dispatch_calls == 0
     assert "dispatch" not in events
-    trust_anchor = _trust_anchor()
-    authorization = WebAnalysisOneCallAuthorizationVerifier(
+    trust_anchor = authorization_context.trust_anchor
+    authorization = WebAnalysisOneCallAuthorizationVerifierV2(
         trust_anchor=trust_anchor,
         expected_trust_anchor_digest=trust_anchor.digest,
         clock=lambda: _NOW + timedelta(seconds=30),
     ).verify(
-        _signed(_statement(authorization_context)),
+        _signed(authorization_context, _statement(authorization_context)),
         admission=authorization_context.admission,
         live_request=authorization_context.live_request,
         capacity_pin=authorization_context.capacity_pin,
-        transport_pin=authorization_context.transport_pin,
+        lineage_transport_pin=authorization_context.transport_pin,
+        compact_runtime_pin=authorization_context.compact_runtime,
+        compact_transport_pin=authorization_context.compact_transport,
     )
     binding = build_web_analysis_live_claim_binding(
         admission=authorization_context.admission,
@@ -1686,28 +1813,32 @@ def _make_pending_success(
     journal: WebAnalysisLiveClaimJournal,
     adapter: _FakeDispatchAdapter,
 ) -> WebAnalysisLiveClaimJournalEntry:
-    trust_anchor = _trust_anchor()
-    initial = WebAnalysisOneCallAuthorizationVerifier(
+    trust_anchor = context.trust_anchor
+    initial = WebAnalysisOneCallAuthorizationVerifierV2(
         trust_anchor=trust_anchor,
         expected_trust_anchor_digest=trust_anchor.digest,
         clock=lambda: _NOW + timedelta(seconds=30),
     ).verify(
-        _signed(_statement(context)),
+        _signed(context, _statement(context)),
         admission=context.admission,
         live_request=context.live_request,
         capacity_pin=context.capacity_pin,
-        transport_pin=context.transport_pin,
+        lineage_transport_pin=context.transport_pin,
+        compact_runtime_pin=context.compact_runtime,
+        compact_transport_pin=context.compact_transport,
     )
-    before_dispatch = WebAnalysisOneCallAuthorizationVerifier(
+    before_dispatch = WebAnalysisOneCallAuthorizationVerifierV2(
         trust_anchor=trust_anchor,
         expected_trust_anchor_digest=trust_anchor.digest,
         clock=lambda: _NOW + timedelta(seconds=34),
     ).verify(
-        _signed(_statement(context)),
+        _signed(context, _statement(context)),
         admission=context.admission,
         live_request=context.live_request,
         capacity_pin=context.capacity_pin,
-        transport_pin=context.transport_pin,
+        lineage_transport_pin=context.transport_pin,
+        compact_runtime_pin=context.compact_runtime,
+        compact_transport_pin=context.compact_transport,
     )
     binding = build_web_analysis_live_claim_binding(
         admission=context.admission,
@@ -1770,9 +1901,9 @@ def _product_pending_with_issued_lease(
             base + timedelta(seconds=7),
         ),
     )
-    trust_anchor = _trust_anchor()
-    bundle = _signed(_statement(context))
-    initial = WebAnalysisOneCallAuthorizationVerifier(
+    trust_anchor = context.trust_anchor
+    bundle = _signed(context, _statement(context))
+    initial = WebAnalysisOneCallAuthorizationVerifierV2(
         trust_anchor=trust_anchor,
         expected_trust_anchor_digest=trust_anchor.digest,
         clock=lambda: base,
@@ -1781,9 +1912,11 @@ def _product_pending_with_issued_lease(
         admission=context.admission,
         live_request=context.live_request,
         capacity_pin=context.capacity_pin,
-        transport_pin=context.transport_pin,
+        lineage_transport_pin=context.transport_pin,
+        compact_runtime_pin=context.compact_runtime,
+        compact_transport_pin=context.compact_transport,
     )
-    before = WebAnalysisOneCallAuthorizationVerifier(
+    before = WebAnalysisOneCallAuthorizationVerifierV2(
         trust_anchor=trust_anchor,
         expected_trust_anchor_digest=trust_anchor.digest,
         clock=lambda: base + timedelta(seconds=4),
@@ -1792,7 +1925,9 @@ def _product_pending_with_issued_lease(
         admission=context.admission,
         live_request=context.live_request,
         capacity_pin=context.capacity_pin,
-        transport_pin=context.transport_pin,
+        lineage_transport_pin=context.transport_pin,
+        compact_runtime_pin=context.compact_runtime,
+        compact_transport_pin=context.compact_transport,
     )
     binding = build_web_analysis_live_claim_binding(
         admission=context.admission,
@@ -1809,9 +1944,15 @@ def _product_pending_with_issued_lease(
     registration = context.live_request.provider_registration
     broker.register(registration.secret_ref, "fake-local-provider-token-for-runtime-test")
     first = DockerCompactSkillBoundWebAnalysisDispatchAdapter(
-        runtime=_runtime_pin(),
-        transport_pin=context.transport_pin,
-        expected_transport_pin_digest=context.transport_pin.pin_digest,
+        capacity_pin=context.capacity_pin,
+        live_request=context.live_request,
+        lineage_transport_pin=context.transport_pin,
+        compact_runtime_pin=context.compact_runtime,
+        compact_transport_pin=context.compact_transport,
+        expected_capacity_pin_digest=context.capacity_pin.pin_digest,
+        expected_lineage_transport_pin_digest=context.transport_pin.pin_digest,
+        expected_compact_runtime_pin_digest=context.compact_runtime.pin_digest,
+        expected_compact_transport_pin_digest=context.compact_transport.pin_digest,
         secrets=broker,
         docker_executable="docker",
     )
@@ -1885,9 +2026,15 @@ def _production_recovery_adapter(
     CompactSkillBoundWebAnalysisPreparedDispatch,
 ]:
     adapter = DockerCompactSkillBoundWebAnalysisDispatchAdapter(
-        runtime=_runtime_pin(),
-        transport_pin=context.transport_pin,
-        expected_transport_pin_digest=context.transport_pin.pin_digest,
+        capacity_pin=context.capacity_pin,
+        live_request=context.live_request,
+        lineage_transport_pin=context.transport_pin,
+        compact_runtime_pin=context.compact_runtime,
+        compact_transport_pin=context.compact_transport,
+        expected_capacity_pin_digest=context.capacity_pin.pin_digest,
+        expected_lineage_transport_pin_digest=context.transport_pin.pin_digest,
+        expected_compact_runtime_pin_digest=context.compact_runtime.pin_digest,
+        expected_compact_transport_pin_digest=context.compact_transport.pin_digest,
         secrets=broker,
         docker_executable="docker",
     )
@@ -1910,14 +2057,14 @@ def _patch_transport_cleanup_success(
     def cleanup(**kwargs: Any) -> WebAnalysisTransportCleanupProof:
         return WebAnalysisTransportCleanupProof(
             executionId=cast(str, kwargs["execution_id"]),
-            transportPinDigest=context.transport_pin.pin_digest,
+            transportPinDigest=context.compact_transport.pin_digest,
             externalNetwork=cast(str, kwargs["external_network"]),
             observedResources=(),
         )
 
     monkeypatch.setattr(
         runtime_module,
-        "cleanup_web_analysis_transport_resources",
+        "cleanup_compact_web_analysis_transport_resources",
         cleanup,
     )
 
@@ -1966,9 +2113,15 @@ def _build_product_live_runtime(
     registration = context.live_request.provider_registration
     broker.register(registration.secret_ref, "fake-live-provider-token-for-runtime-test")
     adapter = DockerCompactSkillBoundWebAnalysisDispatchAdapter(
-        runtime=_runtime_pin(),
-        transport_pin=context.transport_pin,
-        expected_transport_pin_digest=context.transport_pin.pin_digest,
+        capacity_pin=context.capacity_pin,
+        live_request=context.live_request,
+        lineage_transport_pin=context.transport_pin,
+        compact_runtime_pin=context.compact_runtime,
+        compact_transport_pin=context.compact_transport,
+        expected_capacity_pin_digest=context.capacity_pin.pin_digest,
+        expected_lineage_transport_pin_digest=context.transport_pin.pin_digest,
+        expected_compact_runtime_pin_digest=context.compact_runtime.pin_digest,
+        expected_compact_transport_pin_digest=context.compact_transport.pin_digest,
         secrets=broker,
         docker_executable="docker",
     )
@@ -2000,9 +2153,15 @@ async def test_issue_exact_post_store_interruption_revokes_recovery_lease_before
     registration = authorization_context.live_request.provider_registration
     broker.register(registration.secret_ref, "fake-live-provider-token-for-runtime-test")
     adapter = DockerCompactSkillBoundWebAnalysisDispatchAdapter(
-        runtime=_runtime_pin(),
-        transport_pin=authorization_context.transport_pin,
-        expected_transport_pin_digest=authorization_context.transport_pin.pin_digest,
+        capacity_pin=authorization_context.capacity_pin,
+        live_request=authorization_context.live_request,
+        lineage_transport_pin=authorization_context.transport_pin,
+        compact_runtime_pin=authorization_context.compact_runtime,
+        compact_transport_pin=authorization_context.compact_transport,
+        expected_capacity_pin_digest=authorization_context.capacity_pin.pin_digest,
+        expected_lineage_transport_pin_digest=authorization_context.transport_pin.pin_digest,
+        expected_compact_runtime_pin_digest=authorization_context.compact_runtime.pin_digest,
+        expected_compact_transport_pin_digest=authorization_context.compact_transport.pin_digest,
         secrets=broker,
         docker_executable="docker",
     )
@@ -2065,9 +2224,15 @@ async def test_product_adapter_processes_raw_result_before_pending_and_cleanup(
     registration = authorization_context.live_request.provider_registration
     broker.register(registration.secret_ref, "fake-live-provider-token-for-runtime-test")
     adapter = DockerCompactSkillBoundWebAnalysisDispatchAdapter(
-        runtime=_runtime_pin(),
-        transport_pin=authorization_context.transport_pin,
-        expected_transport_pin_digest=authorization_context.transport_pin.pin_digest,
+        capacity_pin=authorization_context.capacity_pin,
+        live_request=authorization_context.live_request,
+        lineage_transport_pin=authorization_context.transport_pin,
+        compact_runtime_pin=authorization_context.compact_runtime,
+        compact_transport_pin=authorization_context.compact_transport,
+        expected_capacity_pin_digest=authorization_context.capacity_pin.pin_digest,
+        expected_lineage_transport_pin_digest=authorization_context.transport_pin.pin_digest,
+        expected_compact_runtime_pin_digest=authorization_context.compact_runtime.pin_digest,
+        expected_compact_transport_pin_digest=authorization_context.compact_transport.pin_digest,
         secrets=broker,
         docker_executable="docker",
     )
@@ -2251,7 +2416,7 @@ async def test_worker_error_survives_initial_transport_cleanup_failure_and_retry
             raise RuntimeError("injected initial transport cleanup failure")
         return WebAnalysisTransportCleanupProof(
             executionId=cast(str, kwargs["execution_id"]),
-            transportPinDigest=authorization_context.transport_pin.pin_digest,
+            transportPinDigest=authorization_context.compact_transport.pin_digest,
             externalNetwork=cast(str, kwargs["external_network"]),
             observedResources=(),
         )
@@ -2273,7 +2438,7 @@ async def test_worker_error_survives_initial_transport_cleanup_failure_and_retry
 
     monkeypatch.setattr(
         runtime_module,
-        "cleanup_web_analysis_transport_resources",
+        "cleanup_compact_web_analysis_transport_resources",
         cleanup,
     )
     monkeypatch.setattr(DockerWorkerBackend, "run", fake_backend_run)
@@ -2327,7 +2492,7 @@ async def test_cleanup_process_control_during_worker_failure_recovery_wins_exact
 
     monkeypatch.setattr(
         runtime_module,
-        "cleanup_web_analysis_transport_resources",
+        "cleanup_compact_web_analysis_transport_resources",
         cleanup,
     )
     monkeypatch.setattr(DockerWorkerBackend, "run", fake_backend_run)
@@ -2456,7 +2621,7 @@ async def test_result_processing_deadline_is_not_reclassified_as_failure_observe
     monkeypatch.setattr(
         runtime_module,
         (
-            "interpret_web_analysis_transport_result"
+            "interpret_compact_web_analysis_transport_result"
             if stage == "interpret"
             else "compile_skill_bound_web_analysis_proposal"
         ),
@@ -2658,7 +2823,7 @@ def test_product_cleanup_failure_records_pending_and_never_returns_settlement(
     else:
         monkeypatch.setattr(
             runtime_module,
-            "cleanup_web_analysis_transport_resources",
+            "cleanup_compact_web_analysis_transport_resources",
             lambda **_kwargs: (_ for _ in ()).throw(
                 RuntimeError("injected transport cleanup failure")
             ),
@@ -2723,7 +2888,7 @@ def test_product_cleanup_process_control_identity_is_preserved_and_claim_stays_p
     else:
         monkeypatch.setattr(
             runtime_module,
-            "cleanup_web_analysis_transport_resources",
+            "cleanup_compact_web_analysis_transport_resources",
             interrupt,
         )
 
@@ -3198,4 +3363,7 @@ def test_runtime_imports_no_legacy_execution_or_receipt_path() -> None:
     }
     assert imported.isdisjoint(forbidden_modules)
     assert "LocalModelRuntime" not in referenced_names
+    assert "RuntimePin" not in referenced_names
+    assert "SignedWebAnalysisOneCallAuthorization" not in referenced_names
+    assert "WebAnalysisOneCallAuthorizationVerifier" not in referenced_names
     assert "SkillBoundWebAnalysisInvocationRuntime" not in referenced_names
