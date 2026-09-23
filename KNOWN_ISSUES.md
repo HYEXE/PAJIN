@@ -108,8 +108,8 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   cleanup-only crash recovery, ADR-0321 Gate C external one-call authorization verifier는 검증됐다.
   ADR-0322 Gate D compact runtime·receipt·strict loader, Worker pre-cleanup durability barrier와
   model·transport cleanup/absence 결합은 최종 검증해 로컬 커밋으로 보존했다.
-  production external trust anchor와 실제 signed authorization은 아직 provision되지 않았고 성공 model
-  proposal, Skill→Recipe/Capability binding,
+  호출 없는 운영 준비에서 public trust anchor와 별도 보존 digest는 생성했지만 실제 signed authorization은
+  발급하지 않았다. 성공 model proposal, Skill→Recipe/Capability binding,
   target 실행과 독립 성능 검증은 없다. 별도 사용자 승인 없이는 새 model completion을 진행하지 않는다.
   금지 field와 알려진 target
   canary 검사는 의미적으로 위장된 모든
@@ -186,8 +186,9 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   provisioned public-key anchor의 independent digest와 최대 180초 signed authorization을 요구하고
   exact request·model·transport mismatch, expiry, Campaign approval 재해석과 nonce replay를 fail closed한다.
   main `pajin` 의존성이 없는 별도 offline issuer/provisioner와 main verifier cross-conformance는
-  구현됐지만 operational private seed, public trust anchor, retained digest, signed v2 authorization,
-  live durable store는 아직 provision하지 않았다. 테스트 key는 production issuer가 아니다. Gate D는
+  구현됐다. 호출 없는 운영 준비에서 operational private seed, public trust anchor, retained digest와
+  live durable store를 owner-only 비추적 파일로 생성·재검증했지만 signed v2 authorization은 발급하지
+  않았다. 테스트 key는 production issuer가 아니다. Gate D는
   exact Provider route를 attest하고 synchronous Worker v6 barrier에서 claim을 cleanup 전에 pending으로
   전환한다. Gate A+transport cleanup 뒤 durable publication intent, full strict unanchored candidate,
   one-use root CAS, terminal CAS/reload를 요구하도록 통합·검증됐다. intent 없는 Run, self-sealed wrong root,

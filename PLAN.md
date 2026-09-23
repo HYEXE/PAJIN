@@ -86,9 +86,11 @@ wire protocol을 각각 결박해 기존 `openai-chat-completion-v3` validator�
 다루는 issuer/provisioner는 main `pajin` 의존성과 runtime import가 없는 별도 offline package로
 분리했으며, main verifier와의 wire/signature cross-conformance로 drift를 차단한다. main operator는
 상태 provisioning, 무부작용 strict preflight, 기존 store-only one-shot execution을 분리하고 caller
-clock·signing·retry·legacy fallback 권위를 노출하지 않는다. 이 구현·테스트는 operational private key,
-trust anchor, signed authorization, durable live store를 만들지 않았고 model·Provider·target 호출도
-0회다. 첫 fresh completion은 전체 검증과 별도 사용자 승인 뒤에만 가능하다.
+clock·signing·retry·legacy fallback 권위를 노출하지 않는다. 구현·테스트 체크포인트에는 operational
+private key, trust anchor, signed authorization, durable live store가 없었다. 2026-09-23 호출 없는 운영
+준비에서 key·공개 anchor·별도 보존 digest·새 store와 store ID·signer-neutral request를 owner-only
+비추적 파일로 만들고 재검증했다. signed authorization은 없고 이 준비의 model·Provider·target 호출은
+0회다. 첫 fresh completion은 새 SHA의 CI 확인과 별도 사용자 승인 뒤에만 가능하다.
 
 2026-09-17 AGENTIC-001에서 Codex형 논리 agent lifecycle, Canonical Graph root에 결박된
 LLM 가설 확장, Hypothesis Frontier, 결정론적 Path Scorer, bounded Dynamic Supervisor와
@@ -211,8 +213,9 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
    UNIQUE로 소비한다. Gate D의 additive compact runtime·receipt·strict loader와 Docker pre-cleanup
    durability barrier는 구현·최종 검증해 로컬 커밋으로 보존했다. exact Provider route와 publication intent→strict
    unanchored candidate→one-use root CAS→terminal row가 상호 결박되고 strict reload되기 전에는 성공
-   proposal을 반환할 수 없다. Gate D 전체
-   별도 사용자 승인 뒤 한 번의 fresh model completion으로 성공 WEB-007 proposal을 strict reload하고,
+   proposal을 반환할 수 없다. 호출 없는 운영 입력은 준비됐지만 signed authorization과 실제
+   completion은 없다. 새 SHA의 CI 확인과 별도 사용자 승인 뒤 한 번의 fresh model completion으로
+   성공 WEB-007 proposal을 strict reload하고,
    별도 code-owned Skill→Recipe binding과
    WEB-008~010의 승인·Permit·Worker·독립 replay·Finding·Graph·보고·재계획을 연결한다.
 4. [ ] **교차 target transfer 평가** — Juice Shop은 개발·결정론적 회귀 대상으로 유지하고, 별도

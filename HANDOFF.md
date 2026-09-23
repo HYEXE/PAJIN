@@ -1,6 +1,6 @@
 # PAJIN 현재 인수인계
 
-체크포인트: 2026-09-22. EFFECT-007·GRAPH-PERF-006·UX-014, WEB-003~007·SKILL-001~002와
+체크포인트: 2026-09-23. EFFECT-007·GRAPH-PERF-006·UX-014, WEB-003~007·SKILL-001~002와
 AGENTIC-001~004의 이전 구현·계약은 main에 보존돼 있다. WEB-006 discovery-only actual Run은 strict
 reload됐지만 full governed Run·PoC 재실행은 남아 있다. WEB-007의 legacy 성공 proposal도 transport
 timeout으로 미검증이며 legacy `[developer,user]` wire는 `5,232 > 4,096`이라 비실행 상태로 동결한다.
@@ -12,7 +12,11 @@ strict loader, Worker pre-cleanup durability barrier, model·transport cleanup �
 별도 로컬 커밋으로 보존했다. cleanup-bound publication intent→seal→strict candidate→root CAS→terminal
 CAS→strict reload 전에는 성공 proposal을 반환하지
 않으며 실제 completion·Provider·target 호출은 0이다. Gate D 전체 검증 뒤에도 별도 사용자 승인 없이는
-첫 Qwen3 4B Q8 completion을 실행하지 않는다. 탐지기 CPU 기준 미달과 Graph 최초 조회 지연 증가는
+첫 Qwen3 4B Q8 completion을 실행하지 않는다. WEB-007의 owner-only 비추적 운영 입력은
+서명 요청·durable store·별도 보존 store ID·offline private seed·공개 trust anchor·별도 보존 digest까지
+준비하고 재검증했다. signed authorization은 발급하지 않았고 이 준비에서 실제 completion·Provider·
+target 호출은 0이다. 원격 CI는 수정 전 SHA의 일부 test shard에서 실패했고 원인을 재현한 test-only
+수정은 로컬 커밋으로 보존했다. 탐지기 CPU 기준 미달과 Graph 최초 조회 지연 증가는
 아래의 기존 제한으로 유지한다.
 
 ## 2026-09-20 AGENTIC-002·003A/B/C1/C2/C3A/C3B1/C3B2·C3C 기반·004 체크포인트
@@ -363,15 +367,21 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 - 계약은 `docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md`, 결정은
   ADR-0300이다.
 
-## WEB-007 — four live gates and ADR-0323 correction locally committed; first completion awaiting approval
+## WEB-007 — 호출 없는 운영 입력 준비 완료, 첫 completion은 별도 승인 대기
 
 - ADR-0323 보정은 역사적 `RuntimePin`을 보존하고 exact 4096/1024 compact runtime·transport Pin,
   authorization v2, main `pajin` 의존성이 없는 offline issuer와 existing-store-only one-shot operator를
   추가한다. compact identity와 pinned Worker wire protocol을 별도 결박하고 실제 Worker validator와
   conformance를 확인했다. preflight는 real clock이며 signer·retry·legacy fallback이 없다.
 - fresh bypass review의 High 2건인 offline transitive runtime import와 Worker protocol 불일치를
-  보정했다. operational key·anchor·authorization·store·model/Provider/target 호출은 만들지 않았으며 첫
-  Qwen3 4B Q8 completion은 별도 사용자 승인 전까지 금지된다.
+  보정했다. 그 구현 체크포인트에서는 운영 key·anchor·store를 만들지 않았다. 이번 호출 없는 준비에서는
+  `.pajin/web007-first-live-20260923/`의 owner-only 비추적 파일에 exact manifest·effective Pins·
+  canonical authorization request v2, 새 schema v2 durable claim store와 별도 보존 store ID, 분리된
+  offline issuer의 private seed와 공개 trust anchor·별도 보존 digest를 만들었다. source·Skill·Capacity·
+  preparation·admission·effective Pins를 다시 strict reload했고 request 재구성, 공개 anchor digest,
+  기존 store ID, 파일 권한·단일 링크·symlink 부재를 재검증했다. signed bundle은 없으며 model·Provider·
+  target·Docker materialization은 실행하지 않았다. 첫 Qwen3 4B Q8 completion은 별도 사용자 승인 전까지
+  금지된다.
 
 - historical pre-diagnostic source, secret-free projection, frozen comparison plan과 legacy failure
   Runs의 exact IDs·roots·digests는 WEB-007 계약 문서가 권위다. 이 checkpoint에서는 해당 Runs를
@@ -474,6 +484,11 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   **186 passed**, 문서 정책은 **4 passed**다. 전체 Ruff, 변경 Python format, Linux strict mypy
   **7+5 source**, diff·로컬경로·비밀정보 검사도 통과했다. actual pinned-GGUF Docker/model/Provider/
   target 호출은 추가하지 않았다. 별도 승인 전에는 첫 completion이나 WEB-008 action을 실행하지 않는다.
+- `fddca38`의 원격 CI는 Quality Python 3.12만 통과하고 test shard 2·13·17·21이 실패했다. colored
+  CLI help의 ANSI 검사, Skill model import 허용 목록, 16 MiB payload가 pytest node ID에 들어가 duration
+  profile 한도를 넘는 문제가 원인이다. test-only 세 파일을 수정해 관련 **86 passed**, 4개 큰 payload
+  사례의 실제 duration profile **960 bytes**, Ruff check와 diff check를 확인했다. 원격 CI는 수정 전 SHA의
+  실패 결과이며 수정본의 원격 검증은 아직 없다.
 - 계약은 `docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md`, 결정은
   ADR-0301·0304·0317·0318·0319·0320·0321·0322·0323이다.
 
@@ -617,23 +632,6 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   `uv lock --check`, Python compile, sdist/wheel build, 문서 정책 15개와 `git diff --check`도 통과했다.
   전체 `ruff format --check`는 기존 저장소 전반의 261개 파일을 포맷 대상으로 보고해 통과하지
   않았으며 identity-bearing `specialist_backend_v2.py`를 포함한 대량 rewrite는 수행하지 않았다.
-- WEB-005까지의 최종 미커밋 통합 상태에서 `.venv/bin/pytest tests`가 **9,046개**를 수집해
-  **8,970 passed·76 skipped·실패 0**으로 끝났다. 76개 skip은 opt-in Docker, live Control Plane,
-  isolated PostgreSQL, live supervisor transport와 실제 Worker 환경 경로다. WEB-004 관련 파일과
-  인접 Campaign/Permit/Gateway/Graph admission 테스트도 이 실행에 포함됐다. 이 수치는 WEB-006
-  변경의 전체 회귀나 실제 browser 검증 결과가 아니다.
-- `.venv/bin/ruff check src tests containers scripts`와 CI에 선언된 세 Linux strict mypy 명령이
-  모두 통과했다(527·15·2 source). 전체 `ruff format --check`는 WEB-004 밖의 기존 영역을 포함한
-  234개 파일을 포맷 대상으로 보고해 통과하지 않았고, 관련 없는 대량 포맷은 수행하지 않았다.
-  WEB-004 관련 파일의 format check는 통과했다.
-- 최종 소스로 새 sdist와 wheel을 만들었고 두 산출물이 모두 성공적으로 생성됐다.
-  `git diff --check`도 오류 없이 통과했다.
-- WEB-007 관련 7개 파일의 focused pytest는 **214 passed**, 확장 `tests/test_web_*.py`는
-  **1,003 passed·1 skipped**, 문서 정책은 **4 passed**다. skip 1개는 opt-in real-Docker WEB-002D
-  controlled-validation conformance다. 관련 Ruff check/format check와 Linux strict mypy 6 source도
-  통과했다. 실제 terminal failure 두 Run은 strict reload와 cleanup/secret scan을 통과했다. 이 결과는
-  모델의 successful structured output이나 WEB-006 full governed 재검증을 증명하지 않으며,
-  WEB-007 추가 뒤 전체 9천여 개 suite는 아직 반복하지 않았다.
 - SKILL-001 focused pytest는 **38 passed**, 문서 정책은 **4 passed**, 인접 WEB-007 proposal/runtime/
   local 회귀는 **103 passed**다. `src/pajin/skills`와 해당 test의 Ruff·format, Linux 대상 mypy,
   package discovery, `git diff --check`도 통과했다. 전체 9천여 개 suite와 실제 모델·target 실행은
@@ -671,6 +669,11 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   변경 Python format, Linux strict mypy **588+15+2 source**, `git diff --check`와 untracked no-index check,
   local-path·secret 검사도 통과했다. 실제 model·Provider·target 호출은 0이며 Gate D는 로컬
   커밋으로만 보존하고 push하지 않았다.
+- 2026-09-23 운영 준비의 signer-neutral request·claim store·offline anchor는 전부 owner-only 비추적
+  상태이며 독립 검증됐다. CI test-only 수정은 `e94e8b5`, 운영 상태 문서는 별도 로컬 커밋으로 보존한다.
+  기준 원격 HEAD는 `fddca38`이고 push는 사용자가 수행한다. 새 SHA의 CI가 통과한
+  뒤에도 실제 호출은 별도 승인 전까지 진행하지 않는다. 호출 승인 창에서만 최대 180초 signed v2
+  bundle을 발급하고 무부작용 preflight를 거쳐 정확히 한 번 execute한다.
 
 Private controller와 logs의 기준은 `.pajin/four-followups-20260912/`다. 실제 자격증명과
 private 모델 원문은 출력하거나 tracked 문서에 복사하지 않는다. 전 단계 근거는
