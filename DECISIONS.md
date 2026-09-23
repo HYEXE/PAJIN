@@ -5,6 +5,22 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0327](docs/adr/0327-bind-hosted-recon-to-local-proposal-and-inert-topology.md):
+  봉인 discovery와 승인된 Luna terminal 영수증을 다시 대조해 WEB-007 local proposal로 컴파일한다.
+  WEB-008의 첫 topology는 그 bridge·설치 profile/catalog·고정 진단 순서를 두 비실행 슬롯에
+  결박하며, Permit·Worker·Finding 권위는 새 parent 계약 전까지 없다.
+- [ADR-0326](docs/adr/0326-preserve-web-assessment-budget-by-suppressing-decorative-images.md):
+  WEB-006의 기존 phase 격리·전체 100회 한도를 유지하면서 exact Juice Shop 상품·캐러셀 이미지
+  GET만 active browser phase에서 차단한다. route/form 정찰·진단·증거 권위는 유지하며 screenshot의
+  장식 사진 누락과 버전 이전 제한을 기록한다.
+- [ADR-0325](docs/adr/0325-track-reconnaissance-coverage-without-diagnostic-order.md):
+  진단 관심도 순위를 정찰 실행 순서와 분리한다. 봉인된 로컬 source의 OSINT·표면·진입점·흐름·
+  진단 coverage를 별도 비실행 artifact로 기록하고, 외부 자산은 exact Scope 계약 전까지 수집하지 않는다.
+- [ADR-0324](docs/adr/0324-route-hosted-codex-advisory-by-stage.md):
+  향후 Codex hosted advisory의 정찰은 Luna, 침투 계획·취약점 분석·보고 초안은 Sol로 배정한다.
+  기존 WEB-007 local Qwen 계약과 분리된 successor에서 정찰 단회 실행기·무도구 격리·관측 사용량
+  영수증과 Sol 비실행 입력 계약을 구현했다. exact 입력·목적지·모델을 별도 승인받은 Luna
+  정찰 전송 1회는 성공 영수증으로 닫혔고, 추가 전송은 새 승인 전까지 하지 않는다.
 - [ADR-0323](docs/adr/0323-bind-compact-live-operation-to-effective-pins-and-separated-issuance.md):
   WEB-007의 역사적 `RuntimePin` 128-token 의미를 보존하면서 Capacity·exact 4096/1024 request·
   resource/model/image·lineage transport를 묶는 effective compact runtime Pin과 그 runtime에

@@ -1,13 +1,16 @@
 # PAJIN 현재 인수인계
 
-체크포인트: 2026-09-23. 직전 코드·테스트 체크포인트 `b557276`의 CI는 통과했다.
-WEB-006 discovery-only Run은 strict reload됐지만 full governed Run·PoC 재실행은 남았다. WEB-007의
+체크포인트: 2026-09-23. 작업 시작 HEAD `2670e9a`; 새 WEB-006 full governed Run과 PoC 재실행은
+완료·strict reload됐다. 보존된 Luna 정찰 결과는 WEB-007 비실행 proposal과 WEB-008 비실행
+topology로 로컬 컴파일·검증됐다. WEB-005 historical completed parent도 strict reload된다. WEB-007의
 legacy `[developer,user]` wire는 `5,232 > 4,096`이라 동결돼 있다. Capacity v2·zero-dispatch
 preparation·non-executing admission과 Gate A~D는 구현·검증됐다. 첫 compact Qwen3 4B Q8 시도는
 서명 허가와 preflight 뒤 Provider dispatch 1회에 도달했지만 응답 증거 없이 `outcome-unknown`으로
 종료됐다. terminal `abandoned` Run은 독립 strict reload됐고 소유 Docker 자원은 모두 사라졌다.
-성공 proposal은 없으며 같은 시도는 재실행하지 않는다. 탐지기 CPU 기준 미달과 Graph 최초 조회
+local Provider 성공 proposal은 없으며 같은 시도는 재실행하지 않는다. 탐지기 CPU 기준 미달과 Graph 최초 조회
 지연 증가는 아래의 기존 제한으로 유지한다.
+후속 모델 경로는 [ADR-0324](docs/adr/0324-route-hosted-codex-advisory-by-stage.md)의 정찰
+Luna·분석/보고 Sol이며, 아래 Codex 체크포인트가 현재 상태다. 기존 WEB-007 Provider는 유지한다.
 
 ## 2026-09-20 AGENTIC-002·003A/B/C1/C2/C3A/C3B1/C3B2·C3C 기반·004 체크포인트
 
@@ -149,25 +152,22 @@ preparation·non-executing admission과 Gate A~D는 구현·검증됐다. 첫 co
 `PLAN.md`의 네 항목에 대한 코드·테스트·문서·격리 검증을 수행한다. 기존 완료분의
 commit/push·일반 CI와 Web·Network·AI·OPS·SYS 실행은 승인됐고 완료했다.
 WEB-007의 첫 compact live 시도와 이번 비실행 원인 검토는 위 별도 체크포인트가 권위이며,
-현재 로컬 문서 변경은 push하지 않았다. 운영 배포·merge·tag·외부 알림은 없다.
-별도 물리 Linux host가 아직 없다는 기존 선택을 유지한다. main에서 직접 작업하며
-branch/worktree는 만들지 않았다. WEB-003 최종 diff에는 read-only 독립 리뷰 agent를 사용했고,
-그 agent는 파일을 수정하지 않았다.
+이번 변경은 push·merge·deploy되지 않았고 별도 물리 Linux host는 없다. main에서 직접 작업했다.
 WEB-003~005는 사용자가 명시적으로 승인한 `127.0.0.1:3000`의 Juice Shop만 실행했다. WEB-005는
 그 exact 대상에 한해 Graph/Finding admission과 local SARIF/PoC까지 연결했지만, 임의 사이트,
 외부 보고 전달, 운영 배포 권한으로 확대하지 않았다. 평가 과정이 만든 local test account와
 실패/성공 Run은 삭제 승인이 없어 보존했다.
 WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory를 다른 target으로 늘리지
-않는다. WEB-007은 그 봉인 discovery를 읽어 local model projection만 처리했고 target에는 새 요청을
-보내지 않았다. 외부 전달 목적지와 권한은 제공되지 않았고
+않는다. WEB-007의 기존 local Provider는 봉인 discovery에서 비실행 projection만 처리했다.
+승인된 hosted Luna 초안은 별도 bridge에서 proposal로 컴파일됐고 target에는 새 요청을 보내지 않았다.
+외부 보고 전달 목적지와 권한은 제공되지 않았고
 `externalDeliveryPerformed=false`를 유지한다.
 
 ## Git과 원격 인수인계
 
-- 이번 비실행 검토의 기준은 `main`의 `807b7b3`이며 `origin/main`의 `b557276`보다 한 커밋 앞선다.
-  첫 시도의 상태 문서는 `807b7b3`에 보존됐고, 이번 검토의 문서 4파일은 로컬에만 있다.
-  새 문서 변경에 대한 원격 CI 결과는 없다. 실제 HEAD·ahead 수·working tree는
-  `git status --short --branch`와 `git log -1`로 다시 확인한다.
+- WEB-006 예산·historical reader·hosted advisory 비실행 산출물·운영 상태는 승인된 로컬
+  커밋 4개로 보존했다. push는 없고 이번 변경의 원격 CI 결과도 없다. 재개 시 실제 HEAD·ahead·
+  working tree를 `git status --short --branch`와 `git log -4 --oneline`으로 다시 확인한다.
 - `output/`·`.pajin/`의 private/raw 근거는 로컬에만 보존되며 Git으로 전달되지 않는다.
 
 ## WEB-003 — 실제 browser 평가 완료, 일반 Web 권위는 없음
@@ -320,38 +320,33 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   별도 OPS-005 witness, DB checkpoint event append와 dedicated seal 사이 crash recovery는 남는다.
 - 계약은 `docs/orchestration/WEB-005-governed-local-authenticated-browser-campaign.md`, 결정은 ADR-0299다.
 
-## WEB-006 — closed profile·진단 catalog 통합 중, 실제 재검증 대기
+## WEB-006 — exact local governed 실행과 PoC 재실행 완료
 
-- production `GovernedWebAdapterProfileRegistry`는 exact `juice-shop-local/v1`과
-  `http://127.0.0.1:3000`의 한 쌍만 해석한다. profile은 Campaign/target/product, adapter
-  implementation/plan과 registry·catalog digest를 결박한다. declarative login/navigation 필드는
-  code-owned 구현에서만 오며 CLI·target·discovery·artifact가 route/selector/payload/callable을
-  공급할 수 없다. Worker는 subprocess 경계 뒤 target 요청 전에 signed implementation을 다시
-  해석하고 plan을 비교한다.
-- production `DiagnosticBundleCatalog`는 exact implementation에 기존 SQL login·object access·DOM
-  XSS 순서와 두 attack path, executor/path-builder implementation digest를 결박한다. runner만
-  production network/policy·현재 Run/browser Evidence로 task-bound one-use authority를 만들 수 있다.
-  caller transport/session/callable 주입과 DOM trial/page/screenshot lineage drift는 거부한다.
-- 정상 UI login과 설치 route 탐색 뒤 같은 Playwright page/context에서 passive discovery를 수행한다.
-  이 phase는 exact-origin `GET`, query delimiter 없음, request body 0, redirect hop 0, 최대 20회를
-  요구하고 phase 전환으로 초기화되지 않는 전체 100회 counter·monotonic deadline 안에 머문다.
-  별도 로그인이나 session export는 없다.
-- passive response body를 읽거나 보존하지 않는다. browser transfer size·status·bounded Content-Type
-  essence로 generic Request Evidence와 content-addressed `PassiveDiscoveryBoundaryReceipt`를 함께
-  만들고, request sequence·path·zero retained bytes·empty-body digest를 상호 결박한다.
-  `AuthenticatedDiscoveryEvidence`는 `proposal-only`이며 Scope/Permit/form/payload/Graph/Finding/
-  execution/외부 전달 권위가 모두 false다.
-- 새 Run은 `discovery-evidence.json`을 Result reference/digest와 함께 봉인하고 strict loader가
-  plan/origin/passive request subset/receipt/sidecar/report를 다시 검증한다. 두 optional Result 필드가
-  없는 과거 Run은 기존 digest 의미를 유지한다. downstream `validation/v1alpha1`은 여전히 진단 3개·
-  path 2개 고정이라 가변 cardinality와 두 번째 production adapter는 `v1alpha2` 계약·별도 실증이
-  필요하다.
-- 이전 WEB-005 actual Run과 PoC replay는 이 새 경로의 증거가 아니다. focused 및 확장 Web 회귀를
-  정리한 뒤 새 governed Juice Shop run, 별도 process strict reload, redacted PoC replay, output
-  비밀정보 검사를 수행해야 WEB-006 runtime 완료로 바꿀 수 있다. 현재는 외부 전달·commit·push·
-  deploy를 수행하지 않았다.
-- 계약은 `docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md`, 결정은
-  ADR-0300이다.
+- production profile은 `juice-shop-local/v1`/`http://127.0.0.1:3000` 한 쌍만 해석한다. Worker는
+  signed code-owned plan을 독립 재해석한다. 진단 catalog는 SQL login·object access·DOM XSS 3개와
+  attack path 2개 고정이며, discovery route/form은 Scope·Permit·Graph·Finding 권위가 없다.
+- 동일 인증 Playwright context에서 phase 20·전체 100회 한도로 bodyless passive discovery와
+  per-request receipt를 봉인한다. 첫 full governed 시도는 100회 한도에 닿아 source gateway에서
+  terminal failure로 닫혔고 재사용하지 않는다. 원인은 53 navigation+19 passive+25 DOM source와
+  setup 2회 요청이었다. [ADR-0326](docs/adr/0326-preserve-web-assessment-budget-by-suppressing-decorative-images.md)은
+  code-owned 상품·캐러셀 image GET만 active phase에서 차단하며 phase 격리·예산은 유지한다.
+- 새 full Run root `output/web006-juice-shop-20260923-live2/`, parent
+  `run_20260923T073244Z_c5619171`/root
+  `6c48114ea472a6cde2a44dba9ed883f29e3deaa2652ec371dd8d298c4ba3d309`은 별도 process
+  strict reload됐다. source/validation 각각 95 requests, passive 19, 4 routes·1 form, 장식 이미지
+  block 16이다. Graph event 9·Finding 3·path 2, report·SARIF·redacted PoC가 있다.
+- redacted `reproduce.sh`의 새 root `output/web006-juice-shop-20260923-poc1/`, parent
+  `run_20260923T073404Z_c105ab49`/root
+  `dbadae9c915fb08fbf5d9b218e6e576356a709d3bc01bb51a16c43dfce89c3e1`도 같은 count와
+  별도 process strict reload를 통과했다. 두 출력 각 131파일의 PEM key/Bearer/Cookie/JSON secret
+  패턴 스캔은 0건이며 스크린샷의 장식 이미지는 빠지지만 진단 화면·표식은 남는다. account는 target에
+  보존되고 자격증명 저장·외부 전달은 없다.
+- 현재 변경 관련 회귀 **104 passed**, 전체 Ruff, Linux-target mypy **600 source**다. 넓은 Web
+  suite는 399 passed·1 skipped에서 중단했다. WEB-005 historical parent는 누락 기본 필드 5개의
+  원래 wire를 보존하는 reader 수정 뒤 strict reload된다. WEB-008~010 실행·재계획 연결은 남았다.
+  코드·상태 문서는 로컬 커밋으로 보존했고 push·배포하지 않았다.
+- 계약은 `docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md`,
+  결정은 ADR-0300·ADR-0326이다.
 
 ## WEB-007 — 첫 compact live 시도 terminal abandoned, 재시도 금지
 
@@ -655,12 +650,28 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   Gate A 검사다. 전체 Ruff, 변경 Python format, Linux strict mypy **586 source**, 문서 정책 **4 passed**,
   `git diff --check`, local-path·secret 검사가 통과했다. Gate A Docker 검증은 materialization·
   re-attestation·cleanup만 수행했고 Gate B·C model·Provider·target 호출은 0이다.
-- 2026-09-23 첫 compact live 시도는 위 terminal Run과 journal에만 보존됐다. 다음 단계는 기존
-  180초 Worker action/image와 effective transport Pin을 변경하지 않고, Worker-open보다 긴 job 한도와
-  관측 가능한 timeout 분류를 가진 별도 versioned successor 계약을 설계하는 것이다. 동일 4096/1024
-  요청을 유지할 경우 기존 Capacity v2 증거의 재사용 가능성을 검증하되 preparation·admission·claim
-  store·nonce는 새로 준비해야 한다. 기존 store는 감사용으로 보존하고 claim·authorization·Run의
-  redispatch는 금지한다. 새 completion은 별도 사용자 승인 전까지 실행하지 않는다.
+- 첫 compact Qwen live 시도는 terminal 봉인됐고 재실행하지 않는다. [ADR-0324](docs/adr/0324-route-hosted-codex-advisory-by-stage.md)의
+  successor는 Luna/Sol route, 승인 결박형 무도구 실행기, SQLite 영수증, Sol 비실행 입력을
+  구현했다. 승인된 Luna attempt `dde914119df843b3a6ebc4392e6ae666`은 terminal `succeeded`,
+  관측 10,470 tokens다. 같은 projection 재전송은 금지되고 Sol 호출은 없다.
+- 봉인 discovery와 Luna 영수증을 다시 열어 WEB-007 local compiled proposal
+  `f1f611be1e11178fa0c3c10fecec8a39e537419e02280dd4708415a53bce20f9`를 검증했다.
+  [ADR-0327](docs/adr/0327-bind-hosted-recon-to-local-proposal-and-inert-topology.md)의 bridge digest는
+  `93d9e9e751bddb7a7d1997e73f6eca4e3ca8d55ab4fac2dcf02d83036e265ca3`, WEB-008 후보
+  topology digest는 `034f8d2c802b9884baea00ae77edbaed7223249442c3b0daa611651f602cbfc9`다.
+  [WEB-008 계약](docs/orchestration/WEB-008-receipt-bound-advisory-topology.md)에 따라 두 미래 슬롯의
+  Permit·Gateway·Finding 권위는 false다. owner-only `.pajin/codex-advisory-20260923/`에 bridge,
+  Snapshot, draft, proposal, topology를 보존했다. 새 WEB-006 completed source에서는 Sol 취약점·
+  보고 입력을 각 Finding 3건으로 로컬 생성했다. Sol 보고 초안 strict 입장·비권위 미리보기는
+  합성 입력으로만 검증했고 정식 보고서 편입·Sol 전송은 없다.
+- [ADR-0325](docs/adr/0325-track-reconnaissance-coverage-without-diagnostic-order.md)의
+  로컬 coverage는 9개 정찰 항목을 모두 기록한다. 등록 origin만 scope-bound, 제한된 웹 표면·
+  진입점은 bounded 관측, 진단은 proposal-only다. public OSINT는 loopback에 해당 없고
+  수동 표면·workflow·fingerprint·active 표면은 수행되지 않았다. 비추적
+  `recon-coverage-dde914119df843b3a6ebc4392e6ae666.json`은 위
+  owner-only 디렉터리에 있다. 진단 순위는 실행 순서가 아니다. 외부 자산 정찰은 후속 기능으로
+  보류한다. 다음은 WEB-008의 새 parent·ActionPermit·Worker 계획 digest 결박, WEB-009의
+  가변 진단·재계획, WEB-010의 독립 결과 보고 연결이다. 새 hosted 전송·외부 조회는 없다.
 
 Private controller와 logs의 기준은 `.pajin/four-followups-20260912/`다. 실제 자격증명과
 private 모델 원문은 출력하거나 tracked 문서에 복사하지 않는다. 전 단계 근거는

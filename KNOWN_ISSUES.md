@@ -160,12 +160,15 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   browser 다양성은 미검증이다.
 - [WEB-006](docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md)은
   closed production profile·adapter/diagnostic catalog와 같은 authenticated Playwright context의
-  passive discovery Evidence를 연결하고 있다. production inventory는 여전히 exact
+  passive discovery Evidence를 연결했다. production inventory는 여전히 exact
   `juice-shop-local/v1`/`http://127.0.0.1:3000` 한 개뿐이고 private fixture는 지원 대상이 아니다.
   discovery는 GET/query-free/bodyless/no-redirect, phase 20·전체 100 request로 제한되며 per-request
   receipt와 `discovery-evidence.json`은 `proposal-only`다. 발견 route/form은 Scope·Permit·Graph·
-  Finding 권위가 아니다. 이전 WEB-005 actual Run과 PoC replay는 이 변경의 runtime 근거가 아니므로
-  새 actual run, strict reload, redacted PoC replay, 비밀정보 검사와 확장 Web 회귀가 남아 있다.
+  Finding 권위가 아니다. 새 full governed Run·redacted PoC replay와 각각의 strict reload가 통과했다.
+  source/validation은 각 95/100 requests를 사용했다. [ADR-0326](docs/adr/0326-preserve-web-assessment-budget-by-suppressing-decorative-images.md)의
+  exact Juice Shop 상품·캐러셀 이미지 차단으로 screenshot 사진은 빠지며 5회 요청 여유만 남는다.
+  첫 예산 초과 시도는 terminal로 보존돼 재사용할 수 없다. WEB-005 historical completed Run은
+  누락된 default 필드 5개의 원래 wire를 보존하는 reader 수정 뒤 strict reload된다.
   downstream `validation/v1alpha1`은 진단 3개·attack path 2개를 고정하므로 두 번째 production
   adapter와 가변 진단 cardinality는 별도 `v1alpha2` 계약·구현·실증 없이는 지원하지 않는다.
   SSO/MFA/CAPTCHA, user credential, anti-CSRF·multi-step form 제출, generic payload, 외부 target,
@@ -216,10 +219,33 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   필요하다. pre-dispatch authorization의 exact expiry bound는 Gate D context와 marker transaction에서
   Python guard와 SQLite transition trigger가 원자적으로 검사해야 하며, 사후 receipt rejection만으로 이미
   발생한 expired dispatch를 회수할 수 없다.
-  성공 structured output, model quality,
-  latency·peak memory·stability, full WEB-006 governed Run·PoC replay, WEB-008 action 연결은 미검증이다.
+  compact Provider의 성공 structured output·model quality·latency·peak memory·stability와 그
+  proposal을 사용한 governed 실행, WEB-008 action 연결은 미검증이다. WEB-006의 고정 경로
+  full governed Run·PoC replay는 별도로 완료됐다.
   현재 artifact는 target request, Permit, Finding, Graph, report, SARIF, PoC, 외부 전달 권위를
   만들지 않는다.
+- [ADR-0324](docs/adr/0324-route-hosted-codex-advisory-by-stage.md)의 Luna/Sol 경로는 고정
+  route·정찰 입력/strict draft parser·단회 Luna 실행기·합성 macOS 파일 읽기 차단 probe·terminal
+  receipt·관측 usage journal과 Sol 단계별 비실행 입력 계약까지 있다. 단일 agent turn의 token
+  ceiling은 사전 강제할 수 없고 현재 저널은 다음 호출만 제한하며 tamper-resistant allowance
+  ledger도 아니다. 현재 글로벌 CLI의 model catalog는 요청 모델을 지원하지 않아 임시 SHA-256-pinned
+  최신 CLI를 사용했다. 별도 승인된 실제 PAJIN Luna 1회는 무도구 초안·terminal receipt·관측
+  10,470 tokens를 확인했지만 초안의 유용성·target 또는 Finding 권위를 증명하지 않는다.
+  historical WEB-005 완료 Campaign과 새 WEB-006 completed Run은 현재 strict loader에서 다시
+  검증됐다. 새 WEB-006 source에서 Sol 취약점 분석·보고서 초안 입력을 각각 Finding 신호 3건으로
+  로컬 생성했다. Sol 보고 초안의 strict parser와 비권위 미리보기는 합성 입력으로 검증했지만
+  Sol dispatch·실제 출력·출처 입장은 없다. 승인된 Luna terminal 영수증은 로컬 bridge에서
+  WEB-007 proposal로 엄격히 컴파일됐고 WEB-008 후보 topology에 결박됐다. 두 미래 슬롯의
+  승인·Permit·Gateway·Finding 권위는 false이며 현 parent/Worker action과 연결되지 않았다.
+  Codex agent turn은 기존 WEB-007의 한 번의 local Provider
+  completion이나 sealed Capacity proof를 대체하지 않는다. 같은 projection 재전송은 금지하며
+  새로운 hosted 전송은 exact 입력·목적지·모델의 별도 사용자 승인 전까지 금지한다.
+- [ADR-0325](docs/adr/0325-track-reconnaissance-coverage-without-diagnostic-order.md)의 9항목
+  coverage는 로컬 봉인 source에 대한 비실행 검토다. 기존 Luna v1alpha1의 진단 `1..3` 순위는
+  실행 순서가 아니며 OSINT·자산 확장·전체 표면 관측을 증명하지 않는다. loopback public OSINT는
+  해당 없고 현재 웹 표면·진입점 관측은 depth 1·최대 4 routes로 제한된다. 수동 표면은 미수행이다.
+  외부 자산의 exact Scope, 제외 대상, OSINT source, 직접 요청 허용 범위는 아직 없으며 외부 조회·
+  target 요청도 없다.
 - 역사적 WEB-007 legacy Worker metadata reader는 나머지 metadata를 code-owned request/runtime에서
   재구성하지만, 비정규화된 v1 stdin 호환을 위해 `stdinSha256`은 64자리 소문자 hex 형식만 확인하고
   현재 재구성값과 같다고 요구하지 않는다. Skill-bound successor는 전체 metadata를 exact canonical

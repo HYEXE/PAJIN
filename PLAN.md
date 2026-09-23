@@ -12,9 +12,9 @@
 Gateway·독립 Worker 증거·Graph admission·Finding·공격 경로·보고서·SARIF·redacted PoC까지 연결하고,
 완료 산출물의 별도 process strict reload와 PoC 전체 재실행을 통과했다.
 같은 날 WEB-006에서 closed 설치 profile과 code-owned 진단 catalog, 동일 인증 browser context의
-bodyless passive discovery receipt와 봉인 sidecar를 연결했다. 새 discovery-only 경로의 실제 Juice
-Shop Run과 strict reload는 통과했지만, 이 결과는 WEB-006의 전체 governed 실행·PoC 재실행 완료
-근거가 아니다.
+bodyless passive discovery receipt와 봉인 sidecar를 연결했다. 2026-09-23에는 새 전체 governed
+Juice Shop 실행·별도 process strict reload·redacted PoC 재실행을 통과해 WEB-006의 exact local
+runtime 경로를 완료했다. source/validation은 각 95/100 request를 사용했다.
 같은 날 사용자는 원래 구상의 중심이 코드에 고정된 진단이 아니라 LLM의 분석·가설·
 우선순위·재계획 루프임을 다시 확인했다. WEB-006은 이 루프의 안전한 browser/evidence
 기반으로 보존하되, 이후 Web 로드맵은 봉인 discovery → 비밀 제거 projection → 정책에
@@ -93,6 +93,31 @@ private key, trust anchor, signed authorization, durable live store가 없었다
 signed authorization·preflight를 거쳐 Provider dispatch 1회에 도달했지만 응답 증거 없이
 `outcome-unknown`·terminal `abandoned`로 끝났다. Run은 strict reload됐고 cleanup/absence는 검증됐다.
 성공 proposal·target 요청은 없으며 같은 시도를 재실행하지 않는다.
+2026-09-23 사용자는 후속 model 경로를 Codex ChatGPT 로그인 기반으로 바꾸고 정찰 advisory는
+`gpt-6-luna`, 침투 계획 검토·취약점 분석·보고 초안은 `gpt-6-sol`로 배정하도록 결정했다.
+[ADR-0324](docs/adr/0324-route-hosted-codex-advisory-by-stage.md)는 이 경로를 기존 local WEB-007과
+분리한다. code-owned route plan, 봉인 source를 다시 여는 정찰 projection·strict draft parser,
+Codex JSONL usage parser, 고정 경로 SQLite 저널, 승인 결박형 단회 Luna CLI 실행기와 terminal
+receipt, Sol의 단계별 비실행 입력 계약을 구현했다. 합성 Luna 입력은 무도구 초안·영수증·cleanup,
+관측 9,696 tokens를 확인했다. 2,710-byte 실제 정찰 projection에서 만든 3,235-byte 프롬프트는
+exact 목적지·모델·해시를 별도 승인받아 Luna에 1회 전송했다. terminal `succeeded` 영수증은
+무도구 strict 초안, 관측 10,470 tokens, 로컬 stream 재검증과 cleanup을 기록한다. 봉인 discovery와
+terminal 영수증에서 WEB-007 local proposal을 엄격히 컴파일하고, 그 계보를 WEB-008 비실행 후보
+topology에 결박했다. 새 WEB-006 completed source에서 Sol 취약점·보고 비실행 입력도 생성했다.
+동일 task token ceiling은 호출 중 사전 강제가 아닌 관측 기반 다음 호출 제한이다. 새 외부 전송은
+다시 승인받아야 한다.
+Sol dispatch·실제 출력 출처 입장과 target/Finding 권위는 열리지 않았다. 보고 초안의 로컬
+strict parser·비권위 미리보기는 합성 입력으로만 검증했다.
+정찰 진단 순위는 주의할 항목을 표시할 뿐 실행 순서나 coverage 축소에 쓰지 않는다.
+[ADR-0325](docs/adr/0325-track-reconnaissance-coverage-without-diagnostic-order.md)는 봉인된
+로컬 source와 기존 Luna 초안에서 9개 정찰 항목의 적용·관측·미수행 상태를 별도 비실행
+artifact로 기록한다. 현재 loopback public OSINT는 해당 없음, 제한된 웹 표면·진입점은 bounded
+관측, 수동 표면·흐름·기술 fingerprint·active 표면은 미수행이다. 외부 자산 확장은 후속 기능으로
+보류한다. exact local Juice Shop의 WEB-006 통합 governed Run·PoC 재실행은 완료했고,
+WEB-007 hosted 초안의 로컬 compiler 입장과 WEB-008 비실행 topology 후보도 검증했다.
+다음은 WEB-008의 새 parent·계획 digest를 통한 승인/Permit/Worker 결박, WEB-009 가변 진단·
+재계획, WEB-010 결과 보고 연결이다. 외부 자산의 exact Scope·제외 대상·허용 조회/요청은 아직
+지정되지 않았고 새 외부 조회·hosted 전송은 없다.
 
 2026-09-17 AGENTIC-001에서 Codex형 논리 agent lifecycle, Canonical Graph root에 결박된
 LLM 가설 확장, Hypothesis Frontier, 결정론적 Path Scorer, bounded Dynamic Supervisor와
@@ -220,8 +245,9 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
    경로를 대조해 180초 job 한도 도달을 확인했다. 다음은 기존 v3 Worker/Pin/receipt reader를 보존하고
    별도 versioned action·image·effective transport Pin·authorization·terminal reader에 서로 구분되는
    timeout 한도와 비밀 없는 실패 분류를 결박하는 것이다. 새 preparation·admission·store·nonce를
-   사용하고 Capacity v2 재사용은 동일 요청·모델·token profile인지 검증한다. 별도 승인된 새 시도에서만
-   성공 WEB-007 proposal을 strict reload하고, 별도 code-owned Skill→Recipe binding과
+   사용하고 Capacity v2 재사용은 동일 요청·모델·token profile인지 검증한다. 기존 local Provider의
+   성공 WEB-007 proposal은 아직 없고 새 시도는 별도 승인이 필요하다. 승인된 Luna hosted 초안은 별도
+   bridge로 strict reload·local proposal 컴파일을 마쳤다. 별도 code-owned Skill→Recipe binding과
    WEB-008~010의 승인·Permit·Worker·독립 replay·Finding·Graph·보고·재계획을 연결한다.
 4. [ ] **교차 target transfer 평가** — Juice Shop은 개발·결정론적 회귀 대상으로 유지하고, 별도
    승인된 두 번째 target에서 adapter 가정과 취약점 종류별 전이를 측정한다.
@@ -238,15 +264,15 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
 
 ## LLM 웹 분석 루프 우선순위
 
-1. [ ] **WEB-006 안전 기반 완료** — closed profile/catalog와 동일 인증 context의 passive
-   discovery, bodyless request receipt, strict source loader의 실제 discovery-only Run은 통과했다.
-   전체 governed Run·redacted PoC replay·확장 회귀는 아직 남으며, 고정 진단은 후속 LLM 루프의
-   회귀 기준이지 최종 제품 구조가 아니다.
+1. [x] **WEB-006 안전 기반 완료** — closed profile/catalog와 동일 인증 context의 passive
+   discovery, bodyless request receipt를 전체 governed Run과 redacted PoC replay에 결박했다.
+   두 completed parent는 별도 process strict reload됐고 당시 Web 회귀 573개가 통과했다. 고정 진단은
+   후속 LLM 루프의 회귀 기준이지 최종 제품 구조가 아니다.
 2. [ ] **WEB-007 봉인 discovery와 LLM advisory proposal** — 진단·DOM probe 전의 별도
    discovery-only Run, target 원문·자격증명·직접 source anchor를 제외한 projection, local
    policy-bound Provider, strict parser와 현재 source/catalog를 다시 여는 비실행 compiler를
-   구현했다. 실제 단일 호출의 timeout failure/no-redispatch 경로는 봉인·strict reload했지만
-   raw draft와 compiled proposal의 실제 성공 근거가 없어 미완료다. SKILL-002의 exact Skill
+   구현했다. local Provider의 단일 호출 timeout failure/no-redispatch 경로는 봉인·strict reload했지만
+   그 Provider의 raw draft와 compiled proposal 성공 근거는 없어 미완료다. SKILL-002의 exact Skill
    selection과 split projection 준비 Run, versioned transport/runtime Pin, split-message
    request/draft/compiler/receipt와 success/failure Run grammar는 구현·테스트됐다. 새 immutable
    Worker/proxy image build/pin은 통과했다. 첫 successor attempt는 model-token 회계 예산에서
@@ -267,8 +293,11 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
    Gate D additive compact runtime·receipt·strict loader와 pre-cleanup durability barrier는 working
    tree에서 구현·최종 검증됐다. pending-cleanup 이후 exact model·transport cleanup/absence, intent-before-seal,
    strict candidate/root CAS, terminal CAS와 strict reload까지 검증된 뒤에도 별도 승인 전에는 새 Run을 시도하지
-   않는다. fallback 진단이나 Permit 발급은 없다.
-3. [ ] **WEB-008 governed Campaign topology 연결** — discovery Worker, model invocation Run,
+   않는다. fallback 진단이나 Permit 발급은 없다. 별도 hosted Luna terminal 초안은 봉인 source·영수증을
+   다시 열어 기존 local proposal compiler에 비실행으로 입장시켰다. local Provider 성공을 뜻하지 않는다.
+3. [ ] **WEB-008 governed Campaign topology 연결** — [비실행 후보 계약](docs/orchestration/WEB-008-receipt-bound-advisory-topology.md)은
+   영수증·bridge·proposal·설치 profile/catalog를 하나의 plan digest에 결박하고 source/validation
+   미래 슬롯을 분리했다. 현재 parent·Worker에는 아직 연결하지 않았다. discovery Worker, model invocation Run,
    compiled proposal을 source/validation 전의 정식 stage로 추가한다. 두 fresh-login 실행은
    같은 compiled-plan digest를 독립적으로 재해석하고 각각 별도 승인·single-use Permit·
    Gateway·Worker를 거친다. 현 v1alpha1 호환 단계에서는 세 진단을 모두 code-owned
@@ -280,7 +309,9 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
 5. [ ] **WEB-010 독립 증명·공격 경로·보고 완성** — 신선한 account/session/Permit의
    independent replay와 controls/oracle를 통과한 candidate만 Finding으로 승격한다. 공격 경로를
    Graph 관계로 입력하고, 모델 서술은 구조화된 결정론적 결과의 비권위 설명으로만
-   보고서·SARIF·redacted 독립 PoC에 투영한다.
+   보고서·SARIF·redacted 독립 PoC에 투영한다. [Sol 보고 초안](docs/orchestration/WEB-010-sol-report-draft-preview.md)의
+   로컬 strict 입장·비권위 Markdown 미리보기만 선행 구현했고, 실제 Sol 출처 검증이나 정식 보고서
+   편입은 하지 않았다.
 
 ## 신규 우선 구현 목표
 
@@ -311,12 +342,12 @@ fail closed한다. 이 slice는 backend conformance 호출만 수행했으며 br
    lifecycle activation과 Grant, fresh operator approval, durable T2 Permit 소비, host-loopback
    Gateway/Worker, SecretBroker, 독립 executor/target attestation, Graph single-writer admission,
    Finding·공격 경로·보고서·SARIF·redacted PoC를 exact Juice Shop adapter에서 구현·실증했다.
-9. [ ] **WEB-006 closed profile·진단 catalog·동일 context discovery 증거** — production registry가
+9. [x] **WEB-006 closed profile·진단 catalog·동일 context discovery 증거** — production registry가
    exact `juice-shop-local/v1`/`http://127.0.0.1:3000`만 선택하고 Worker가 구현을 독립 재해석하도록
    연결한다. 로그인한 같은 Playwright context에서 GET/query-free/bodyless/no-redirect discovery를
    phase 20·전체 100 request 한도 안에 수행하고 per-request receipt·proposal-only sidecar를
-   Result/seal/strict loader/report에 결박한다. discovery-only 실제 Run과 strict reload는 통과했지만,
-   새 full governed 실행과 PoC 재실행까지 통과해야 완료로 전환한다.
+   Result/seal/strict loader/report에 결박했다. 새 full governed 실행과 PoC 재실행·strict reload가
+   각각 Graph 9·Finding 3·path 2로 통과했다.
 10. [ ] **WEB-007 local LLM 비실행 proposal** — exact sealed discovery와 frozen comparison-plan
     Run을 독립 anchor로 다시 열고, model-visible projection만 단 한 번 local Provider에 전달한다.
     schema/parser/compiler와 terminal failure 증거는 구현·검증했지만 실제 호출은 30초 upstream
@@ -382,7 +413,7 @@ PAJIN은 9개 Security Domain을 하나의 Canonical Graph와 Capability authori
 | 공통 엔진·Capability·Graph | CAP-001~006, GRAPH-001~006, legacy Profile 호환과 명시적 실행 gate | 기본·분산 실행으로 자동 확대하지 않음. [Capability](docs/capability/), [Graph](docs/graph/) |
 | Hybrid·협업·Supervisor | 제한된 WALK/CHAIN, MEM/HANDOFF, 검증된 proposal·invocation·approval·Permit | model output·metadata 자체는 실행·Finding 권위가 아님. [오케스트레이션 계약](docs/orchestration/) |
 | Pentest·Red Team | 승인된 GET Recon/Replay/Controls, 기존 KISA LLM/RAG와 고정 Web/MCP lab | 임의 대상·일반 보안 진단 전체 지원 아님. [Pentest adapter](docs/orchestration/PENTEST-004C2B2-concrete-child-deployment-adapters.md) |
-| Web/API | typed discovery/admission, 고정 SQLi 측정·Replay·Controls·product read, [WEB-003](docs/orchestration/WEB-003-exact-loopback-browser-assessment.md)의 고정 browser 평가, [WEB-004](docs/orchestration/WEB-004-bounded-authenticated-browser-campaign.md)의 비실행 Campaign 준비·passive discovery, [WEB-005](docs/orchestration/WEB-005-governed-local-authenticated-browser-campaign.md)의 signed Campaign/activation/Grant·Permit·Gateway·독립 Worker·Graph admission·Finding 3건·attack path 2건·보고서·SARIF·local PoC, [WEB-006](docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md)의 closed profile·진단 catalog·동일 인증 context bodyless discovery 증거, [WEB-007](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md)의 봉인 discovery 기반 local LLM 비실행 proposal 경계·attested Capacity v2·zero-dispatch live preparation·non-executing compact admission·descriptor-bound live materialization Gate A·dual-identity durable CAS Gate B·external one-call authorization Gate C·검증된 cleanup-bound compact Gate D, [SKILL-001](docs/orchestration/SKILL-001-versioned-analysis-skill-registry.md)의 catalogued-only 분석 Skill 5개, [SKILL-002](docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md)의 exact proposal-only selection·split projection·zero-dispatch 준비 Run | production 실행 inventory는 exact `127.0.0.1:3000`의 `juice-shop-local/v1` 하나다. Gate A live model view/cleanup, Gate B durable claim/recovery, Gate C external one-call verification과 Gate D cleanup-bound runtime/receipt/strict loader는 검증됐다. 첫 compact Provider dispatch는 1회 발생했지만 응답 증거 없이 terminal abandoned로 닫혔다. Recipe·Capability·target Worker에도 연결되지 않았고 WEB-006 전체 governed 재검증과 WEB-007 실제 성공 proposal은 진행 중이다. 임의 사이트·SSO/MFA/CAPTCHA·가변 진단 cardinality·generic payload·container/remote target Worker·외부 전달은 아님 |
+| Web/API | typed discovery/admission, 고정 SQLi 측정·Replay·Controls·product read, [WEB-003](docs/orchestration/WEB-003-exact-loopback-browser-assessment.md)의 고정 browser 평가, [WEB-004](docs/orchestration/WEB-004-bounded-authenticated-browser-campaign.md)의 비실행 Campaign 준비·passive discovery, [WEB-005](docs/orchestration/WEB-005-governed-local-authenticated-browser-campaign.md)의 signed Campaign/activation/Grant·Permit·Gateway·독립 Worker·Graph admission·Finding 3건·attack path 2건·보고서·SARIF·local PoC, [WEB-006](docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md)의 closed profile·진단 catalog·동일 인증 context bodyless discovery 증거, [WEB-007](docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md)의 봉인 discovery 기반 local LLM 비실행 proposal 경계·attested Capacity v2·zero-dispatch live preparation·non-executing compact admission·descriptor-bound live materialization Gate A·dual-identity durable CAS Gate B·external one-call authorization Gate C·검증된 cleanup-bound compact Gate D, [SKILL-001](docs/orchestration/SKILL-001-versioned-analysis-skill-registry.md)의 catalogued-only 분석 Skill 5개, [SKILL-002](docs/orchestration/SKILL-002-proposal-only-selection-and-split-projection.md)의 exact proposal-only selection·split projection·zero-dispatch 준비 Run | production 실행 inventory는 exact `127.0.0.1:3000`의 `juice-shop-local/v1` 하나다. Gate A live model view/cleanup, Gate B durable claim/recovery, Gate C external one-call verification과 Gate D cleanup-bound runtime/receipt/strict loader는 검증됐다. 첫 compact Provider dispatch는 1회 발생했지만 응답 증거 없이 terminal abandoned로 닫혔다. Recipe·Capability·target Worker 연결은 남았고 WEB-006 전체 governed 재검증은 완료됐다. WEB-007 실제 성공 proposal은 진행 중이다. 임의 사이트·SSO/MFA/CAPTCHA·가변 진단 cardinality·generic payload·container/remote target Worker·외부 전달은 아님 |
 | Network | 서비스 Surface·준비·증거 admission와 합성 6-case 측정 | raw socket·일반 스캔·서비스 취약점 확정 아님. [NET-002D](docs/orchestration/NET-002D-bounded-network-measurement-product-read-and-conformance.md) |
 | AI | 고정 M03 source·독립 Replay 2개·Controls 3개·product read, 별도 실제 모델 효과 평가 | 임의 모델·agent 안전성이나 일반 Finding으로 확장하지 않음. [AI-002D](docs/orchestration/AI-002D-bounded-ai-measurement-product-read-and-conformance.md) |
 | Cloud | CLOUD-001A~D의 준비·서명 증거 admission·정책 비교·fixture 요구 | 실제 provider·credential 사용 runtime, 정책 translator·live benchmark 필요. [CLOUD-001D](docs/benchmark/CLOUD-001D-fresh-credential-policy-replay-disposable-fixtures.md) |
@@ -451,14 +482,15 @@ positive/adversarial test, audit/evidence lineage와 benchmark 영향을 명시�
   통과했다. redacted `reproduce.sh`도 새 root에서 전체 흐름을 다시 실행해 동일 count를 만들고
   parent Run `run_20260915T054048Z_8111d682`로 strict reload됐다. 두 실행 모두 자격증명·private key를
   저장하지 않았고 외부 전달을 수행하지 않았다. 생성 계정과 server-side session은 보존한다.
-- WEB-006 구현은 production profile/adapter/diagnostic catalog, Worker-side implementation
-  재해석, 같은 authenticated Playwright context의 passive discovery, phase 20·전체 100 request 한도,
-  bodyless per-request receipt와 `discovery-evidence.json` Result/seal/strict-loader/report binding을
-  연결하고 있다. production inventory는 여전히 exact Juice Shop 한 개이고 discovery는
-  `proposal-only`다. 실제 discovery-only Run `run_20260915T142836Z_95615cb9`와 root
-  `7a9de15039883dc483caad6d9a3f84f5e1d76745bc10285986fbe741b939bb50`는 strict reload됐지만
-  이전 WEB-005 Run은 새 full governed 경로의 실행 근거로 재사용하지 않는다. redacted PoC replay와
-  full governed actual, 비밀정보 검사 및 확장 Web 회귀는 아직 남았다.
+- WEB-006은 production profile/adapter/diagnostic catalog, Worker-side implementation 재해석,
+  같은 authenticated Playwright context의 passive discovery, phase 20·전체 100 request 한도,
+  bodyless per-request receipt와 `discovery-evidence.json`의 Result/seal/strict-loader/report binding을
+  전체 governed 경로에서 실증했다. 새 full Run `run_20260923T073244Z_c5619171`과 redacted PoC
+  replay `run_20260923T073404Z_c105ab49`는 각각 strict reload됐고 Graph 9·Finding 3·path 2를
+  기록했다. source/validation 각각 95 requests·4 routes·1 form이다. 두 출력의 제한된 비밀정보
+  패턴 검사와 Web 회귀 573개도 통과했다. production inventory는 exact Juice Shop 한 개이고
+  discovery는 계속 `proposal-only`다. 장식 이미지 차단으로 screenshot 사진이 빠지고 남은 예산은
+  5회이며, 다른 버전·target 이전 근거는 없다.
 - WEB-007 projection
   `web-analysis-projection:457f025e3dc64d1e996095f7bc4638b706c1ae87b80728931257f7caeb6449b0`은
   위 discovery-only source에서 생성됐고 target/source anchor·credential 원문을 Provider에 보내지
@@ -492,4 +524,11 @@ positive/adversarial test, audit/evidence lineage와 benchmark 영향을 명시�
   통과했다. 이 수치는 당시 SHA의 검증이며 현재 `b557276`의 CI도 별도로 성공을 확인했다.
 - 첫 compact live 시도는 별도 승인 뒤 1회 dispatch됐으나 응답 증거 없이 terminal `abandoned`로
   닫혔다. 성공 proposal과 target 요청은 없고 새 시도는 별도 준비·승인을 요구한다.
+- 후속 모델 정책은 정찰 Luna, 침투·취약점 분석·보고 초안 Sol이다. 구독 할당량을 쓰는
+  Codex SDK/CLI는 기존 Provider의 단일 무도구 호출과 동등하지 않으므로 별도 hosted advisory
+  successor가 필요하다. 고정 route와 정찰 입력·strict draft parser·단회 실행기·관측 사용량 저널은
+  모델 배정·무도구 파일 격리·terminal receipt·불명확 사용량 뒤 다음 호출 차단을 합성 입력에서
+  검증했다. 실제 PAJIN 정찰 projection은 별도 exact 승인 뒤 Luna 1회 `succeeded`로 끝나고
+  초안·영수증·관측 10,470 tokens를 로컬 재검증했다. 같은 task token ceiling은 단일 turn의
+  사전 강제가 아닌 목표값이다. 추가 외부 전송·Sol dispatch·target 실행·Finding 권위는 없다.
 - private 작업 근거는 `.pajin/four-followups-20260912/`, 재개 절차와 상세 상태는 `HANDOFF.md`에 있다.
