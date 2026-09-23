@@ -58,6 +58,7 @@ dev = [
 
 [project.scripts]
 pajin = "pajin.cli:app"
+pajin-compact-live = "pajin.web_assessment.compact_live_operator:main"
 pajin-control-plane = "pajin.entrypoints:control_plane_main"
 pajin-replay-worker-daemon = "pajin.entrypoints:replay_worker_daemon_main"
 pajin-worker-daemon = "pajin.entrypoints:worker_daemon_main"

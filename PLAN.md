@@ -79,6 +79,16 @@ OpenAI-compatible transport도 exact credential lease 하나를 사용하므로 
 interrupt/context CAS 전 crash도 exact fixed request의 deterministic lease를 same broker에서 revoke하며,
 context 부재를
 zero-lease 증거로 해석하지 않는다. zero-lease transport는 Gate D 범위가 아니다.
+2026-09-23 ADR-0323 보정에서 역사적 128-token `RuntimePin`을 바꾸지 않고 exact 4096/1024
+compact runtime Pin과 별도 compact transport Pin을 추가했다. compact Pin identity와 pinned Worker
+wire protocol을 각각 결박해 기존 `openai-chat-completion-v3` validator와의 실제 conformance를
+복원했고, 두 effective Pin을 authorization v2와 Gate D receipt/runtime에 연결했다. raw Ed25519 key를
+다루는 issuer/provisioner는 main `pajin` 의존성과 runtime import가 없는 별도 offline package로
+분리했으며, main verifier와의 wire/signature cross-conformance로 drift를 차단한다. main operator는
+상태 provisioning, 무부작용 strict preflight, 기존 store-only one-shot execution을 분리하고 caller
+clock·signing·retry·legacy fallback 권위를 노출하지 않는다. 이 구현·테스트는 operational private key,
+trust anchor, signed authorization, durable live store를 만들지 않았고 model·Provider·target 호출도
+0회다. 첫 fresh completion은 전체 검증과 별도 사용자 승인 뒤에만 가능하다.
 
 2026-09-17 AGENTIC-001에서 Codex형 논리 agent lifecycle, Canonical Graph root에 결박된
 LLM 가설 확장, Hypothesis Frontier, 결정론적 Path Scorer, bounded Dynamic Supervisor와

@@ -20,6 +20,8 @@
   [ADR-0321](../adr/0321-verify-external-one-call-web-analysis-authorization.md)
 - Cleanup-bound compact live-runtime decision:
   [ADR-0322](../adr/0322-enforce-cleanup-bound-compact-web-analysis-live-runtime.md)
+- Effective compact Pins and separated live-operation decision:
+  [ADR-0323](../adr/0323-bind-compact-live-operation-to-effective-pins-and-separated-issuance.md)
 
 ## Objective
 
@@ -83,9 +85,14 @@ review:
   external Ed25519 one-call statement against the exact admission, preparation, request, selected
   model, Capacity v2 Pin, and transport under a 180-second maximum lifetime. Its verified result is
   still unclaimed and non-dispatch-ready. Gate D's additive compact runtime, receipt, strict loader,
-  Docker pre-cleanup durability barrier, and combined model/transport cleanup evidence are
-  implemented, acceptance-verified, and preserved in a local commit. A separate explicit call
-  approval remains a prerequisite for any fresh completion.
+  Docker pre-cleanup durability barrier, and combined model/transport cleanup evidence were
+  preserved as a separate local checkpoint. That checkpoint is not sufficient live authority:
+  the historical benchmark `RuntimePin` fixes a 128-token completion ceiling while the admitted
+  compact request and Capacity v2 fix 1,024. ADR-0323 therefore requires additive effective compact
+  runtime and transport Pins, authorization v2, a physically separated offline issuer, and a
+  no-signing one-shot operator path. That successor is now implemented and locally verified, but no
+  operational key, signed authorization, durable live store, or fresh dispatch was created. A
+  separate explicit call approval remains a prerequisite for any fresh completion.
 
 WEB-007 does not make an arbitrary Web site executable. It does not add a production adapter,
 broaden the exact loopback origin, accept caller credentials, or weaken any existing WEB-006
@@ -525,10 +532,62 @@ same durable intent through candidate reload/root CAS or resumes from its exact 
 never creates a second receipt or Run, exposes a pending proposal, or redispatches. Cleanup or
 absence failure keeps the claim non-reusable and forbids a successful proposal.
 
-This integration is presently a working-tree implementation under focused and static validation.
-Its tests use injected transport seams: actual model completions, Provider dispatches, and target
-requests remain zero. A real externally signed artifact and a separate explicit approval are still
-required for the first Qwen3 4B Q8 completion.
+The original Gate D checkpoint used injected transport seams, so it performed no fresh model
+completion, Provider dispatch, or target request. Its nine-step state machine remains the required
+composition contract, but its historical benchmark `RuntimePin` is not an effective compact live
+anchor. The ADR-0323 successor below is implemented and independently verified as code, but this
+does not itself create live authority. A real externally signed v2 artifact, independently retained
+store identity, same-broker cleanup lifecycle, and separate explicit approval are still required
+for the first Qwen3 4B Q8 completion.
+
+### Effective compact Pins and separated live operation
+
+ADR-0323 preserves the historical benchmark `RuntimePin` unchanged. That Pin fixes
+`max_completion_tokens=128` and belongs to source-addressed effectiveness history; it cannot be
+edited or reinterpreted as the admitted compact request's 1,024-token completion ceiling. The
+effective live path instead requires an additive compact runtime Pin that binds the exact Capacity
+v2 and compact live request, the 4,096/1,024 token profile, model resource limits, model and image
+identity, Skill lineage, and predecessor transport digest.
+
+A compact transport successor binds that runtime Pin, the predecessor transport lineage, immutable
+Worker and proxy images, exact Worker action, 180-second Worker/proxy/job ceilings, and
+single-dispatch-only semantics under
+`pajin.web-analysis.compact-provider-transport/v1`. The predecessor transport remains readable
+lineage, but neither it nor the historical benchmark `RuntimePin` is sufficient effective live
+authority. This successor identity is not a replacement Worker payload protocol: the Pin separately
+binds the existing `openai-chat-completion-v3` wire
+`pajin.web-analysis.provider-transport/v2`, and that compatible value alone is emitted as the
+Worker stdin `transportVersion`.
+
+Authorization v2 binds both effective Pin digests in addition to the exact admission, preparation,
+request, model, Capacity, and predecessor transport lineage. Authorization v1 remains readable for
+audit under its original meaning, but is not live-authoritative for this successor and cannot be
+translated or upcast. The v2 verified result is still not dispatch-ready until Gate B atomically
+claims both identities.
+
+Private-key provisioning and signing belong to a physically separated offline utility outside the
+main execution package, runtime images, and one-shot runner. Only that utility may read the raw
+Ed25519 private key; it produces the public trust anchor, independently retained anchor digest, and
+one short-lived signed v2 bundle. The executor receives only those public verification artifacts and
+the signed bundle. It has no signer, private-key loader, issuer import, or authorization-refresh
+path. The offline utility has no dependency on or import of the main `pajin` package. It carries a
+minimal independent implementation of the public canonical v2 wire, and its output must pass the
+main verifier; this deliberate duplication preserves process isolation while cross-conformance
+tests detect schema, digest, and signature-domain drift.
+
+The operator workflow separates state provisioning, preflight, and execution. Provisioning creates
+the durable journal and terminal-output roots before any call. Preflight strict-reloads and verifies
+all immutable inputs without creating or mutating the store, claiming identities, issuing a secret,
+materializing a model, starting Docker resources, or contacting a Provider or target. Execution
+must open that existing store under an independently retained store ID, repeat the strict checks,
+construct one exact Gate D runtime, and call `invoke` exactly once. It has no retry loop, automatic
+redispatch, legacy fallback, or create-on-open behavior; recovery is cleanup/publication-only.
+
+The Pin, authorization, offline issuer, one-shot runner, Gate D integration, negative tests, and
+static verification are complete and preserved in ordered local commits. This establishes code
+eligibility, not call authority: provisioning, issuance, and preflight are zero-dispatch operations,
+no operational artifacts were created, and the execution phase remains prohibited until a separate
+explicit user approval for the first fresh completion.
 
 ## v1alpha2 expansion
 
@@ -594,7 +653,7 @@ destination-bound action with explicit authorization and a delivery receipt.
 | Performance | Adds one local inference to the analysis path | The old actual call hit the 30-second upstream I/O cap; the successor now pins 180 seconds at each relevant layer, but successful completion latency remains unmeasured |
 | Memory | Adds a local model runtime and bounded prompt/response buffers | Qwen3 4B Q8 is selected and pinned; peak RSS remains unmeasured |
 | Reliability | Model failure is isolated from target execution and closes its Run | Actual timeout was sealed terminally with no in-Run retry or target request |
-| Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Frozen source/model/SKILL-002 inputs, the independent Pin, and new immutable images pass structural checks; Capacity v2 reproduces 2,484/4,096 and 51,168/65,536, preparation and admission bind the proof and request, Gate A attests the descriptor-bound live view and cleanup, Gate B durably consumes both identities with cleanup-only recovery, Gate C verifies the external narrow grant, and Gate D's cleanup-bound runtime/receipt integration passes local acceptance verification without a real dispatch |
+| Operability | Adds model inventory, pinning, budget, receipt, and local-runtime health | Capacity v2, preparation, admission, and the four base gates establish prerequisite lineage; live eligibility additionally requires the ADR-0323 effective Pins, authorization v2, separated issuer, zero-side-effect preflight, existing-store-only runner, and their acceptance verification |
 | Migration | Additive sidecar Run; no existing artifact rewrite | Source and failure Runs strictly reload; legacy formats remain unchanged |
 
 What makes the v1alpha1 shape attractive is that we can validate the LLM boundary without giving it
@@ -616,6 +675,9 @@ Existing WEB-006 processing remains independent while this shadow analysis is ev
 Rollback disables new analysis invocation and advisory consumption. Existing analysis Runs remain
 inert audit artifacts; source evidence is neither deleted nor rewritten. v1alpha2 requires new wire
 versions and explicit migration because v1alpha1 contains no action or scheduling semantics.
+Historical benchmark `RuntimePin`, predecessor transport, and authorization v1 artifacts remain
+audit lineage only for the effective compact successor. Rollback does not upcast, rewrite, or make
+them live-authoritative.
 
 ## Validation plan
 
@@ -633,6 +695,21 @@ Implementation is not complete until focused tests demonstrate:
   timeout, or cancellation failure;
 - exact model and transport ownership, cleanup, independent absence, and aggregate absence binding,
   including proof that cleanup failure cannot return a proposal;
+- immutability of the historical 128-token benchmark `RuntimePin`, exact binding of the effective
+  compact runtime Pin to Capacity/live-request 4,096/1,024 and resource/model/image lineage, and
+  substitution rejection for every bound digest;
+- binding of the compact transport successor to the effective runtime and predecessor lineage, and
+  rejection of the predecessor transport alone as effective live identity;
+- authorization v2 binding to both effective Pin digests, bounded validity and nonce replay
+  resistance, plus fail-closed rejection of every authorization v1 artifact in the live path;
+- physical issuer/executor separation, including proof that execution code and images contain no
+  signer, private-key loader, or import of the offline issuance package;
+- zero-side-effect preflight, including negative evidence for journal creation or mutation, claim,
+  credential issuance, model materialization, Docker resource creation, Provider contact, and
+  target contact;
+- execution against only a pre-existing durable store with an independently supplied store ID,
+  exactly one runtime `invoke`, no create-on-open, no retry, no legacy fallback, and no automatic
+  redispatch;
 - exact provider, immutable model, prompt, schema, request, response, usage, and receipt lineage;
 - rejection of prompt-injected actions, extra fields, alternate aliases, missing or duplicate items,
   foreign IDs, invalid ranks, coercion, oversized text, and malformed JSON;
@@ -715,14 +792,21 @@ conformance completed without a completion, Provider dispatch, or target request
 is also complete: the preparation and authorization identities are independently single-use, and
 restart returns only audit/cleanup state. ADR-0321 Gate C is complete: the external signed grant is
 bound to the exact admission/request/model/transport, maximum 180-second validity, and the Gate B
-nonce identity without creating dispatch or downstream authority. Gate D, a real external
-authorization artifact, and separate approval remain required before one fresh completion. The
-Gate D compact runtime, receipt, strict loader, pre-cleanup barrier, and combined cleanup evidence
-pass working-tree acceptance: the focused suite reports 456 passed and one live-Docker test
-deselected, the expanded Gate A through D suite reports 602 passed and one live-Docker test
-deselected, and strict typing, lint, formatting, documentation, diff, and secret/path checks pass.
-The change is preserved in a local commit without push and has not made a model completion,
-Provider dispatch, or target request.
+nonce identity without creating dispatch or downstream authority. The base Gate D compact runtime,
+receipt, strict loader, pre-cleanup barrier, and combined cleanup evidence were preserved in a local
+commit after their focused acceptance checks. Subsequent review found that its live binding carried
+the immutable benchmark `RuntimePin`, whose 128-token completion ceiling does not describe the
+admitted compact request's exact 1,024-token ceiling. The previous Gate D check therefore does not
+establish effective live eligibility.
+
+ADR-0323 accepts an additive correction: effective compact runtime and transport Pins,
+authorization v2, a physically separated private-key issuer/provisioner, and a no-signing one-shot
+runner with zero-side-effect preflight and existing-store-only execution. The implementation,
+focused runtime/receipt tests, Worker-wire conformance, issuer cross-verification, strict mypy, and
+Ruff checks are complete locally. Authorization v1 and the historical Pins remain non-live audit
+lineage. No fresh model completion, Provider dispatch, or target request has been made for this
+correction, and the first fresh completion remains prohibited without a separate explicit user
+approval.
 
 ## Non-goals and open decisions
 
@@ -735,14 +819,18 @@ Provider dispatch, or target request.
   remediation, Finding, or report text becomes authoritative.
 - No subset selection or execution scheduling is supported by v1alpha1.
 - Qwen3 4B Instruct 2507 Q8_0 and its immutable revision are selected for this local v1alpha1 run.
-  The frozen context is 4,096 tokens and the completion ceiling is 1,024. Exact pinned-tokenizer and
-  embedded-template measurement proves the legacy full prompt does not fit: `4,208 + 1,024 = 5,232`.
+  The historical benchmark `RuntimePin` remains frozen at a 4,096-token context and 128-token
+  completion ceiling. The compact request and Capacity proof use a distinct exact 4,096/1,024
+  profile that must be carried by the ADR-0323 effective runtime Pin. Exact pinned-tokenizer and
+  embedded-template measurement proves the legacy full prompt does not fit the compact profile:
+  `4,208 + 1,024 = 5,232`.
   The additive compact `system` plus `user` prototype historically measured
   `1,505 + 1,024 = 2,529`; the final sealed proof independently recomputed
   `1,460 + 1,024 = 2,484`, leaving 1,612 tokens, and passed conservative Campaign accounting at
-  `51,168 / 65,536`. All four live-integration gates pass local implementation verification and are
-  preserved as separate local commits; a fresh completion still requires separate explicit approval. The hardware
-  floor, successful latency,
-  peak memory, output stability, and an acceptance threshold remain to be verified.
+  `51,168 / 65,536`. The four base live-integration gates are preserved as separate local commits,
+  and the effective Pin, authorization v2, issuer, and one-shot operator correction is implemented,
+  locally verified, and preserved in three ordered local commits. A fresh completion still requires
+  separate explicit approval. The hardware floor, successful latency, peak memory, output stability,
+  and an acceptance threshold remain to be verified.
 - The v1alpha2 action schemas, risk tiers, approval policy, maximum action graph, and replan cadence
   require a separate implementation contract before execution is enabled.

@@ -361,7 +361,15 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 - 계약은 `docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md`, 결정은
   ADR-0300이다.
 
-## WEB-007 — four live gates locally committed, first fresh completion awaiting approval
+## WEB-007 — four live gates and ADR-0323 correction locally committed; first completion awaiting approval
+
+- ADR-0323 보정은 역사적 `RuntimePin`을 보존하고 exact 4096/1024 compact runtime·transport Pin,
+  authorization v2, main `pajin` 의존성이 없는 offline issuer와 existing-store-only one-shot operator를
+  추가한다. compact identity와 pinned Worker wire protocol을 별도 결박하고 실제 Worker validator와
+  conformance를 확인했다. preflight는 real clock이며 signer·retry·legacy fallback이 없다.
+- fresh bypass review의 High 2건인 offline transitive runtime import와 Worker protocol 불일치를
+  보정했다. operational key·anchor·authorization·store·model/Provider/target 호출은 만들지 않았으며 첫
+  Qwen3 4B Q8 completion은 별도 사용자 승인 전까지 금지된다.
 
 - historical pre-diagnostic source, secret-free projection, frozen comparison plan과 legacy failure
   Runs의 exact IDs·roots·digests는 WEB-007 계약 문서가 권위다. 이 checkpoint에서는 해당 Runs를
@@ -460,15 +468,12 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   absent/revoked 합성·재발급 없이 pending-cleanup에 남는다.
   unauthenticated/zero-lease transport는 구현되지 않았으므로 첫 실제 호출은 cleanup까지 같은 broker
   lifecycle을 유지해야 하고, zero-lease variant는 별도 계약이 필요하다.
-- Gate D focused 회귀는 **456 passed·1 deselected**, Gate A~D 확장 회귀는 **602 passed·1
-  deselected**, 문서 정책은 **4 passed**다. 전체 Ruff, 변경 Python format, Linux strict mypy
-  **588+15+2 source**, tracked/untracked diff와 로컬경로/비밀정보 검사가 통과했다. deselected 검사는
-  actual pinned-GGUF Docker materialization이고, 실행한 테스트는 fake transport seam만 사용해 actual
-  model completion·Provider dispatch·target request 0을 유지했다.
-  모든 검증 뒤에도 별도 사용자 승인 전에는 첫 Qwen3 4B Q8 completion이나 WEB-008 action을 실행하지
-  않는다.
+- 이전 Gate A~D 확장 회귀는 **602 passed·1 deselected**, ADR-0323 correction 통합 회귀는
+  **186 passed**, 문서 정책은 **4 passed**다. 전체 Ruff, 변경 Python format, Linux strict mypy
+  **7+5 source**, diff·로컬경로·비밀정보 검사도 통과했다. actual pinned-GGUF Docker/model/Provider/
+  target 호출은 추가하지 않았다. 별도 승인 전에는 첫 completion이나 WEB-008 action을 실행하지 않는다.
 - 계약은 `docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md`, 결정은
-  ADR-0301·0304·0317·0318·0319·0320·0321·0322다.
+  ADR-0301·0304·0317·0318·0319·0320·0321·0322·0323이다.
 
 ## SKILL-001 — 지식 전용 registry 구현
 

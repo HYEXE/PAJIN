@@ -185,7 +185,9 @@ Git 상태는 `HANDOFF.md`, 상세 요구와 권한 경계는 각 버전형 계�
   명시적으로 실행해야 하고 Gate D가 실제 owner-bound cleanup을 수행해야 한다. Gate C는 externally
   provisioned public-key anchor의 independent digest와 최대 180초 signed authorization을 요구하고
   exact request·model·transport mismatch, expiry, Campaign approval 재해석과 nonce replay를 fail closed한다.
-  현재 테스트 key는 production issuer가 아니며 실제 external authorization artifact도 없다. Gate D는
+  main `pajin` 의존성이 없는 별도 offline issuer/provisioner와 main verifier cross-conformance는
+  구현됐지만 operational private seed, public trust anchor, retained digest, signed v2 authorization,
+  live durable store는 아직 provision하지 않았다. 테스트 key는 production issuer가 아니다. Gate D는
   exact Provider route를 attest하고 synchronous Worker v6 barrier에서 claim을 cleanup 전에 pending으로
   전환한다. Gate A+transport cleanup 뒤 durable publication intent, full strict unanchored candidate,
   one-use root CAS, terminal CAS/reload를 요구하도록 통합·검증됐다. intent 없는 Run, self-sealed wrong root,

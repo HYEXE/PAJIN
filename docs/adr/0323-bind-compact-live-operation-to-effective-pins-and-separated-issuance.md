@@ -3,10 +3,10 @@
 - Status: Accepted
 - Date: 2026-09-23
 - Scope: WEB-007 effective compact runtime identity and operator-only one-call composition
-- Implementation status: effective compact Pins, authorization v2, Gate D integration, and the
-  physically separated offline issuer are implemented and locally verified. The one-shot operator
-  is added by the following commit. No operational key, signed authorization, durable live store,
-  model completion, Provider dispatch, or target request was created.
+- Implementation status: implemented and locally verified without provisioning an operational key,
+  signed authorization, or durable live store. No model completion, Provider dispatch, or target
+  request is authorized by this status. The first fresh completion remains behind separate explicit
+  user approval.
 
 ## Context
 
