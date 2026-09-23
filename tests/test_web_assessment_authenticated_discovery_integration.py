@@ -111,9 +111,7 @@ async def test_browser_run_discovers_structure_in_the_authenticated_context(
         call_order.append("retire-document")
 
     login_page_handle.goto = AsyncMock(side_effect=retire_document)
-    login_page_handle.close = AsyncMock(
-        side_effect=lambda: page_scoped_session.clear()
-    )
+    login_page_handle.close = AsyncMock(side_effect=lambda: page_scoped_session.clear())
     context.new_page = AsyncMock()
 
     async def start() -> None:
@@ -281,3 +279,157 @@ async def test_assessment_browser_blocks_value_bearing_passive_subresource_befor
     assert network.evidence == []
     assert network.phase_requests == 0
     assert network.blocked == {"value-bearing-path": 1}
+
+
+@pytest.mark.asyncio
+async def test_juice_shop_decorative_image_does_not_consume_the_assessment_budget(
+    tmp_path: Path,
+) -> None:
+    browser, network = _browser(tmp_path)
+    network.begin_phase("browser-authenticated-navigation", browser.navigation_policy)
+    image_url = browser.plan.origin + "/assets/public/images/products/apple_juice.jpg"
+
+    def request(resource_type: str) -> MagicMock:
+        result = MagicMock()
+        result.method = "GET"
+        result.url = image_url
+        result.resource_type = resource_type
+        result.post_data_buffer = None
+        result.redirected_from = None
+        return result
+
+    image = request("image")
+    blocked_route = MagicMock()
+    blocked_route.abort = AsyncMock()
+    blocked_route.continue_ = AsyncMock()
+    other_resource = request("fetch")
+    permitted_route = MagicMock()
+    permitted_route.abort = AsyncMock()
+    permitted_route.continue_ = AsyncMock()
+    try:
+        await browser._gate_route(blocked_route, image)
+        assert network.total_requests == 0
+        assert browser._reservations == {}
+
+        await browser._gate_route(permitted_route, other_resource)
+        assert network.total_requests == 1
+        await network.fail(
+            browser._reservations.pop(id(other_resource)),
+            reason="synthetic-control-completed",
+        )
+    finally:
+        await network.close()
+
+    blocked_route.abort.assert_awaited_once_with("blockedbyclient")
+    blocked_route.continue_.assert_not_awaited()
+    permitted_route.abort.assert_not_awaited()
+    permitted_route.continue_.assert_awaited_once()
+    assert network.blocked == {"decorative-image-disabled": 1}
+
+
+@pytest.mark.asyncio
+async def test_passive_product_image_query_is_rejected_by_discovery_gate(
+    tmp_path: Path,
+) -> None:
+    browser, network = _browser(tmp_path)
+    network.begin_phase("browser-passive-discovery", browser.discovery_policy)
+    request = MagicMock()
+    request.method = "GET"
+    request.url = browser.plan.origin + "/assets/public/images/products/apple_juice.jpg?v=1"
+    request.resource_type = "image"
+    request.post_data_buffer = None
+    request.redirected_from = None
+    route = MagicMock()
+    route.abort = AsyncMock()
+    route.continue_ = AsyncMock()
+    try:
+        await browser._gate_route(route, request)
+    finally:
+        await network.close()
+
+    route.abort.assert_awaited_once_with("blockedbyclient")
+    route.continue_.assert_not_awaited()
+    assert network.total_requests == 0
+    assert browser._reservations == {}
+    assert network.blocked == {"query-values": 1}
+
+
+@pytest.mark.parametrize(
+    ("phase", "path", "resource_type", "redirected"),
+    (
+        (
+            "browser-authenticated-navigation",
+            "/assets/public/images/JuiceShop_Logo.png",
+            "image",
+            False,
+        ),
+        (
+            "browser-authenticated-navigation",
+            "/assets/public/images/products/apple_juice.jpg?v=1",
+            "image",
+            False,
+        ),
+        (
+            "browser-authenticated-navigation",
+            "/assets/public/images/products/apple_juice.jpg",
+            "fetch",
+            False,
+        ),
+        (
+            "browser-passive-discovery",
+            "/assets/public/images/products/apple_juice.jpg",
+            "image",
+            False,
+        ),
+        (
+            "browser-authenticated-navigation",
+            "/assets/public/images/products/apple_juice.jpg",
+            "image",
+            True,
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_decorative_image_rule_preserves_other_gate_decisions(
+    tmp_path: Path,
+    phase: str,
+    path: str,
+    resource_type: str,
+    redirected: bool,
+) -> None:
+    browser, network = _browser(tmp_path)
+    policy = (
+        browser.discovery_policy
+        if phase == "browser-passive-discovery"
+        else browser.navigation_policy
+    )
+    network.begin_phase(phase, policy)
+    request = MagicMock()
+    request.method = "GET"
+    request.url = browser.plan.origin + path
+    request.resource_type = resource_type
+    request.post_data_buffer = None
+    request.redirected_from = object() if redirected else None
+    route = MagicMock()
+    route.abort = AsyncMock()
+    route.continue_ = AsyncMock()
+    try:
+        await browser._gate_route(route, request)
+        if not redirected:
+            assert network.total_requests == 1
+            await network.fail(
+                browser._reservations.pop(id(request)),
+                reason="synthetic-control-completed",
+            )
+    finally:
+        await network.close()
+
+    assert "decorative-image-disabled" not in network.blocked
+    if redirected:
+        route.abort.assert_awaited_once_with("blockedbyclient")
+        route.continue_.assert_not_awaited()
+        assert network.total_requests == 0
+        assert network.blocked == {"redirect-disabled": 1}
+    else:
+        route.abort.assert_not_awaited()
+        route.continue_.assert_awaited_once()

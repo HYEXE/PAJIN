@@ -156,8 +156,11 @@ report conditionally renders discovery route, form, request, and evidence-digest
 same checks.
 
 Legacy WEB-003 and WEB-005 Results without the two optional discovery fields retain their previous
-digest material and remain loadable. A new Result cannot reference discovery Evidence without the
-sidecar or carry the sidecar without the matching Result reference and digest.
+digest material in the Result model. The completed WEB-005 Campaign now strictly reloads because the
+WEB-004 reference reader preserves the original wire when all five later defaulted plan/result fields
+were absent. No sealed Run was rewritten. A new Result
+cannot reference discovery Evidence without the sidecar or carry the sidecar without the matching
+Result reference and digest.
 
 ## Existing governance and reporting authority
 
@@ -222,11 +225,20 @@ WEB-006-aware strict loader; removing only its sidecar is artifact tampering, no
   that a discovered form is safe or authorized to submit.
 - The host-loopback Worker, same-host trust boundary, target-side retained account/session, local Graph
   custody, and external-delivery limitations documented by WEB-005 remain unchanged.
+- The exact Juice Shop aggregate browser aborts query-free product and carousel image GETs outside the
+  passive phase to stay under the unchanged cumulative request ceiling. Screenshots retain their page
+  and control evidence but omit those decorative pictures. The observed completed assessments used 95
+  of 100 requests, so a changed target may fail closed at the same boundary.
 
 ## Verification status
 
-The implementation and focused contract tests are being integrated on the current uncommitted `main`
-working tree. This document does not reuse the earlier WEB-005 live Run or PoC replay as evidence that
-the new profile/catalog/discovery-receipt path executed. A fresh governed Juice Shop run, independent
-strict reload, redacted PoC replay, output secret scan, and wider Web regression are pending. Until that
-checkpoint succeeds, WEB-006 is not locally runtime-verified.
+The new profile/catalog/discovery-receipt path completed a fresh governed local Juice Shop Run and a
+separate redacted PoC replay on 2026-09-23. Each Run sealed independent source and validation results,
+nine Graph events, three validated Findings, two attack paths, a report, SARIF, and a local PoC bundle.
+Both completed parent Runs passed strict reload in separate processes. Source and validation each
+recorded 95 requests, including 19 passive discovery requests, four discovered routes, and one form.
+The two output roots each contained 131 regular files; a bounded scan found no PEM private-key header,
+Bearer/Cookie header, or nonempty JSON password/token value patterns. This screen is not a universal
+secret detector. Expanded Web regression passed 573 tests, repository Ruff passed, and Linux-target
+mypy passed 597 source files. Local accounts remain on the approved target; no external delivery was
+authorized or performed. The initial budget-exhausted attempt remains terminal and is not replayed.

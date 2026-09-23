@@ -31,6 +31,7 @@ from pajin.web_assessment.login_activation import (
     prepare_login_success_activation,
 )
 from pajin.web_assessment.models import (
+    DEFAULT_WEB_ASSESSMENT_ADAPTER_IMPLEMENTATION_ID,
     BrowserPageEvidence,
     BrowserSessionSummary,
     IssueCheck,
@@ -61,6 +62,10 @@ if TYPE_CHECKING:
 
 _JWT_PATTERN = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}")
 _MAX_DIAGNOSTIC_TEXT = 500
+_JUICE_SHOP_DECORATIVE_IMAGE_PREFIXES = (
+    "/assets/public/images/products/",
+    "/assets/public/images/carousel/",
+)
 _SPECIALIST_BROWSER_INVOCATION_FACTORY_TOKEN = object()
 
 
@@ -424,6 +429,21 @@ class _PlaywrightAssessmentSession:
             self.network.record_block("redirect-disabled")
             await route.abort("blockedbyclient")
             return
+        if (
+            self.plan.adapter_implementation_id == DEFAULT_WEB_ASSESSMENT_ADAPTER_IMPLEMENTATION_ID
+            and self.network.phase
+            in {"browser-authenticated-navigation", "dom-xss-source", "dom-xss-replay"}
+            and request.method == "GET"
+            and request.resource_type == "image"
+            and "?" not in request.url
+            and any(
+                request.url.startswith(self.plan.origin + prefix)
+                for prefix in _JUICE_SHOP_DECORATIVE_IMAGE_PREFIXES
+            )
+        ):
+            self.network.record_block("decorative-image-disabled")
+            await route.abort("blockedbyclient")
+            return
         content = request.post_data_buffer or b""
         try:
             reservation = await self.network.reserve(
@@ -607,11 +627,13 @@ class _PlaywrightAssessmentSession:
         page = self._require_page()
         captured: list[BrowserPageEvidence] = []
         for route in self.plan.routes[: self.plan.max_pages]:
-            await page.goto(
-                self.plan.origin + route,
-                wait_until="domcontentloaded",
-                timeout=self.plan.request_timeout_seconds * 1_000,
-            )
+            target_url = self.plan.origin + route
+            if page.url != target_url:
+                await page.goto(
+                    target_url,
+                    wait_until="domcontentloaded",
+                    timeout=self.plan.request_timeout_seconds * 1_000,
+                )
             selector = self.plan.route_ready_selectors[route]
             await page.locator(selector).wait_for(
                 state="attached",

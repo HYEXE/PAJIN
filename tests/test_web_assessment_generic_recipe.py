@@ -155,9 +155,7 @@ def _browser_harness(
     response_value: asyncio.Future[MagicMock] = asyncio.get_running_loop().create_future()
     response_value.set_result(response)
     response_context = MagicMock()
-    response_context.__aenter__ = AsyncMock(
-        return_value=SimpleNamespace(value=response_value)
-    )
+    response_context.__aenter__ = AsyncMock(return_value=SimpleNamespace(value=response_value))
     response_context.__aexit__ = AsyncMock(return_value=False)
 
     def expect_response(predicate: object, *, timeout: int) -> MagicMock:
@@ -298,7 +296,7 @@ async def test_generic_recipe_engine_consumes_custom_login_selectors_session_and
                 wait_until="domcontentloaded",
                 timeout=plan.request_timeout_seconds * 1_000,
             )
-            for route in plan.routes
+            for route in plan.routes[1:]
         ],
     ]
     for route, selector in _ROUTE_READY_SELECTORS.items():
@@ -308,6 +306,42 @@ async def test_generic_recipe_engine_consumes_custom_login_selectors_session_and
             timeout=plan.request_timeout_seconds * 1_000,
         )
     assert capture_page.await_count == 1 + len(plan.routes)
+
+
+@pytest.mark.parametrize("initial_suffix", ("", "?q=stale"))
+@pytest.mark.asyncio
+async def test_route_exploration_reuses_exact_authenticated_document_without_skipping_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    initial_suffix: str,
+) -> None:
+    plan = _fixture_plan()
+    browser, page, locators = _browser_harness(plan)
+    page.url = plan.origin + plan.routes[0] + initial_suffix
+
+    async def navigate(url: str, *, wait_until: str, timeout: int) -> None:
+        page.url = url
+
+    page.goto = AsyncMock(side_effect=navigate)
+    capture_page = AsyncMock(return_value=cast(BrowserPageEvidence, object()))
+    monkeypatch.setattr(browser, "_capture_page", capture_page)
+    monkeypatch.setattr(browser, "_settle", AsyncMock())
+
+    captured = await browser._explore_routes()
+
+    assert len(captured) == len(plan.routes)
+    assert [item.kwargs["route"] for item in capture_page.await_args_list] == list(plan.routes)
+    assert all(
+        item.kwargs["phase"] == "authenticated-navigation" for item in capture_page.await_args_list
+    )
+    expected_navigation_routes = plan.routes[1:] if not initial_suffix else plan.routes
+    assert [item.args[0] for item in page.goto.await_args_list] == [
+        plan.origin + route for route in expected_navigation_routes
+    ]
+    for selector in plan.route_ready_selectors.values():
+        locators[selector].wait_for.assert_awaited_once_with(
+            state="attached",
+            timeout=plan.request_timeout_seconds * 1_000,
+        )
 
 
 @pytest.mark.asyncio
@@ -356,8 +390,7 @@ async def test_generic_recipe_engine_consumes_declared_diagnostic_endpoints() ->
     ]
     assert len(login_payloads) == 4
     assert all(
-        payload is not None and set(payload) == {"identity", "proof"}
-        for payload in login_payloads
+        payload is not None and set(payload) == {"identity", "proof"} for payload in login_payloads
     )
     assert all(
         authorization == f"Bearer {_TOKEN}"
@@ -365,8 +398,7 @@ async def test_generic_recipe_engine_consumes_declared_diagnostic_endpoints() ->
         if method == "GET"
     )
     assert not any(
-        path.startswith(("/rest/", "/api/")) or "/#/" in path
-        for _, path, _, _ in observed
+        path.startswith(("/rest/", "/api/")) or "/#/" in path for _, path, _, _ in observed
     )
     serialized_evidence = json.dumps(
         [item.model_dump(mode="json") for item in network.evidence],
