@@ -1,23 +1,13 @@
 # PAJIN 현재 인수인계
 
-체크포인트: 2026-09-23. EFFECT-007·GRAPH-PERF-006·UX-014, WEB-003~007·SKILL-001~002와
-AGENTIC-001~004의 이전 구현·계약은 main에 보존돼 있다. WEB-006 discovery-only actual Run은 strict
-reload됐지만 full governed Run·PoC 재실행은 남아 있다. WEB-007의 legacy 성공 proposal도 transport
-timeout으로 미검증이며 legacy `[developer,user]` wire는 `5,232 > 4,096`이라 비실행 상태로 동결한다.
-Capacity v2 `run_20260921T052042Z_0932a478`, zero-dispatch preparation
-`run_20260921T052213Z_801a9053`, non-executing admission은 strict reload됐다. Gate A의 descriptor-bound
-live view·cleanup/absence, Gate B의 dual-identity CAS·cleanup-only recovery, Gate C의 external Ed25519
-one-call verifier는 각각 구현·검증·별도 로컬 커밋됐다. Gate D의 additive compact runtime·receipt·
-strict loader, Worker pre-cleanup durability barrier, model·transport cleanup 결합도 구현·최종 검증해
-별도 로컬 커밋으로 보존했다. cleanup-bound publication intent→seal→strict candidate→root CAS→terminal
-CAS→strict reload 전에는 성공 proposal을 반환하지
-않으며 실제 completion·Provider·target 호출은 0이다. Gate D 전체 검증 뒤에도 별도 사용자 승인 없이는
-첫 Qwen3 4B Q8 completion을 실행하지 않는다. WEB-007의 owner-only 비추적 운영 입력은
-서명 요청·durable store·별도 보존 store ID·offline private seed·공개 trust anchor·별도 보존 digest까지
-준비하고 재검증했다. signed authorization은 발급하지 않았고 이 준비에서 실제 completion·Provider·
-target 호출은 0이다. 원격 CI는 수정 전 SHA의 일부 test shard에서 실패했고 원인을 재현한 test-only
-수정은 로컬 커밋으로 보존했다. 탐지기 CPU 기준 미달과 Graph 최초 조회 지연 증가는
-아래의 기존 제한으로 유지한다.
+체크포인트: 2026-09-23. 직전 코드·테스트 체크포인트 `b557276`의 CI는 통과했다.
+WEB-006 discovery-only Run은 strict reload됐지만 full governed Run·PoC 재실행은 남았다. WEB-007의
+legacy `[developer,user]` wire는 `5,232 > 4,096`이라 동결돼 있다. Capacity v2·zero-dispatch
+preparation·non-executing admission과 Gate A~D는 구현·검증됐다. 첫 compact Qwen3 4B Q8 시도는
+서명 허가와 preflight 뒤 Provider dispatch 1회에 도달했지만 응답 증거 없이 `outcome-unknown`으로
+종료됐다. terminal `abandoned` Run은 독립 strict reload됐고 소유 Docker 자원은 모두 사라졌다.
+성공 proposal은 없으며 같은 시도는 재실행하지 않는다. 탐지기 CPU 기준 미달과 Graph 최초 조회
+지연 증가는 아래의 기존 제한으로 유지한다.
 
 ## 2026-09-20 AGENTIC-002·003A/B/C1/C2/C3A/C3B1/C3B2·C3C 기반·004 체크포인트
 
@@ -367,21 +357,27 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 - 계약은 `docs/orchestration/WEB-006-installed-profile-and-authenticated-discovery-evidence.md`, 결정은
   ADR-0300이다.
 
-## WEB-007 — 호출 없는 운영 입력 준비 완료, 첫 completion은 별도 승인 대기
+## WEB-007 — 첫 compact live 시도 terminal abandoned, 재시도 금지
 
 - ADR-0323 보정은 역사적 `RuntimePin`을 보존하고 exact 4096/1024 compact runtime·transport Pin,
   authorization v2, main `pajin` 의존성이 없는 offline issuer와 existing-store-only one-shot operator를
   추가한다. compact identity와 pinned Worker wire protocol을 별도 결박하고 실제 Worker validator와
   conformance를 확인했다. preflight는 real clock이며 signer·retry·legacy fallback이 없다.
-- fresh bypass review의 High 2건인 offline transitive runtime import와 Worker protocol 불일치를
-  보정했다. 그 구현 체크포인트에서는 운영 key·anchor·store를 만들지 않았다. 이번 호출 없는 준비에서는
-  `.pajin/web007-first-live-20260923/`의 owner-only 비추적 파일에 exact manifest·effective Pins·
-  canonical authorization request v2, 새 schema v2 durable claim store와 별도 보존 store ID, 분리된
-  offline issuer의 private seed와 공개 trust anchor·별도 보존 digest를 만들었다. source·Skill·Capacity·
-  preparation·admission·effective Pins를 다시 strict reload했고 request 재구성, 공개 anchor digest,
-  기존 store ID, 파일 권한·단일 링크·symlink 부재를 재검증했다. signed bundle은 없으며 model·Provider·
-  target·Docker materialization은 실행하지 않았다. 첫 Qwen3 4B Q8 completion은 별도 사용자 승인 전까지
-  금지된다.
+- owner-only 비추적 `.pajin/web007-first-live-20260923/`에 exact manifest·effective Pins·canonical
+  authorization request v2, schema v2 claim store·별도 보존 store ID와 offline issuer의 private seed·
+  공개 trust anchor·별도 보존 digest를 준비했다. 승인된 첫 실제 시도 직전에 최대 180초 signed v2
+  bundle을 1개 발급하고 무부작용 preflight `verified-not-claimed-no-dispatch`를 통과했다.
+- 해당 시도는 `2026-09-23T04:10:59Z`에 dispatch marker 1개를 소비했다. `04:14:06Z`에
+  `outcome-unknown`·response evidence 없음·`failureStage=dispatch`로 pending-cleanup, `04:14:09Z`에
+  terminal `abandoned`로 닫혔다. dispatch→pending 약 187초는 고정 180초 transport timeout과
+  부합하지만 원시 오류가 봉인되지 않아 timeout 원인 자체는 미확정이다. draft·compiled proposal은
+  없고 target request·Tool call은 0이다. 재발급·재시도·성공 승격 권위가 없다.
+- terminal Run `run_20260923T041004Z_d5ca5abc`, root
+  `26cc81d84af36eaec7fa3a1b6db390bc5b28f8caf5c78c11debf546bf95a4e0f`은 retained store ID,
+  journal publication, source·Skill·Capacity·preparation·admission·Pins·public anchor로 별도 process
+  strict reload됐다. owner label의 model/transport container·volume·network 부재를 Docker에서 독립
+  확인했고 receipt의 credential revoke·aggregate absence도 true다. private seed·signed bundle과
+  터미널 산출물은 비추적 owner-only로 보존한다.
 
 - historical pre-diagnostic source, secret-free projection, frozen comparison plan과 legacy failure
   Runs의 exact IDs·roots·digests는 WEB-007 계약 문서가 권위다. 이 checkpoint에서는 해당 Runs를
@@ -483,12 +479,9 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
 - 이전 Gate A~D 확장 회귀는 **602 passed·1 deselected**, ADR-0323 correction 통합 회귀는
   **186 passed**, 문서 정책은 **4 passed**다. 전체 Ruff, 변경 Python format, Linux strict mypy
   **7+5 source**, diff·로컬경로·비밀정보 검사도 통과했다. actual pinned-GGUF Docker/model/Provider/
-  target 호출은 추가하지 않았다. 별도 승인 전에는 첫 completion이나 WEB-008 action을 실행하지 않는다.
-- `fddca38`의 원격 CI는 Quality Python 3.12만 통과하고 test shard 2·13·17·21이 실패했다. colored
-  CLI help의 ANSI 검사, Skill model import 허용 목록, 16 MiB payload가 pytest node ID에 들어가 duration
-  profile 한도를 넘는 문제가 원인이다. test-only 세 파일을 수정해 관련 **86 passed**, 4개 큰 payload
-  사례의 실제 duration profile **960 bytes**, Ruff check와 diff check를 확인했다. 원격 CI는 수정 전 SHA의
-  실패 결과이며 수정본의 원격 검증은 아직 없다.
+  target 호출은 추가하지 않았다. 이번 첫 실제 시도 결과와 구분한다.
+- `fddca38`의 실패 셔드는 test-only 수정 `e94e8b5`로 복구했고, `b557276`의 CI
+  `35809498395`는 완료·성공으로 확인했다.
 - 계약은 `docs/orchestration/WEB-007-llm-assisted-web-analysis-proposal.md`, 결정은
   ADR-0301·0304·0317·0318·0319·0320·0321·0322·0323이다.
 
@@ -664,16 +657,11 @@ WEB-006도 같은 exact 승인 target만 범위에 두며 production inventory�
   Gate A 검사다. 전체 Ruff, 변경 Python format, Linux strict mypy **586 source**, 문서 정책 **4 passed**,
   `git diff --check`, local-path·secret 검사가 통과했다. Gate A Docker 검증은 materialization·
   re-attestation·cleanup만 수행했고 Gate B·C model·Provider·target 호출은 0이다.
-- Gate D working-tree 변화는 focused **456 passed·1 deselected**, Gate A~D 확장 **602 passed·1
-  deselected**, transport+secrets **111 passed**, 문서 정책 **4 passed**로 최종 재검증됐다. 전체 Ruff,
-  변경 Python format, Linux strict mypy **588+15+2 source**, `git diff --check`와 untracked no-index check,
-  local-path·secret 검사도 통과했다. 실제 model·Provider·target 호출은 0이며 Gate D는 로컬
-  커밋으로만 보존하고 push하지 않았다.
-- 2026-09-23 운영 준비의 signer-neutral request·claim store·offline anchor는 전부 owner-only 비추적
-  상태이며 독립 검증됐다. CI test-only 수정은 `e94e8b5`, 운영 상태 문서는 별도 로컬 커밋으로 보존한다.
-  기준 원격 HEAD는 `fddca38`이고 push는 사용자가 수행한다. 새 SHA의 CI가 통과한
-  뒤에도 실제 호출은 별도 승인 전까지 진행하지 않는다. 호출 승인 창에서만 최대 180초 signed v2
-  bundle을 발급하고 무부작용 preflight를 거쳐 정확히 한 번 execute한다.
+- 2026-09-23 첫 compact live 시도는 위 terminal Run과 journal에만 보존됐다. 다음 단계는
+  outcome-unknown의 원인을 비실행 근거로 분석하고 필요한 경우 versioned successor Pin·Capacity·
+  preparation 계약을 마련하는 것이다. 기존 claim·authorization·Run은 재사용하지 않고 store는 감사용으로
+  보존한다. redispatch는 금지한다.
+  실제 후속 completion에는 새 독립 준비와 별도 사용자 승인이 필요하다.
 
 Private controller와 logs의 기준은 `.pajin/four-followups-20260912/`다. 실제 자격증명과
 private 모델 원문은 출력하거나 tracked 문서에 복사하지 않는다. 전 단계 근거는
